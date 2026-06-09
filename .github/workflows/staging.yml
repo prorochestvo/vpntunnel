@@ -1,0 +1,284 @@
+# Staging pipeline — lints and tests on every push and PR; on push to main
+# also builds + publishes the image and deploys to the staging host.
+#
+# Builds and publishes two tags:
+#   main-<7-char-sha>  — immutable, tied to this exact commit; used for rollback
+#   edge               — floating, always the latest main
+#
+# The immutable tag is listed first so it becomes the primary output of
+# build-image.yml (steps.meta.outputs.version) and is passed to the deploy job
+# as IMAGE_TAG. Reversing the order would make the deploy pull :edge, which
+# usually works but defeats re-running an older workflow run for rollback.
+name: staging
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs supersede their previous runs (rapid pushes during review); main pushes
+  # queue so they don't trample each other's deploys.
+  group: staging-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make lint
+      - run: make test
+
+  resolve-tags:
+    # Build + deploy only on push to main. PRs stop after lint-and-test.
+    needs: lint-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag_list: ${{ steps.tags.outputs.tag_list }}
+    steps:
+      - id: tags
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA:0:7}"
+          # newline-joined tag list; immutable tag first.
+          {
+            echo "tag_list<<EOF"
+            echo "main-${short}"
+            echo "edge"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-tags
+    # Reusable workflows inherit only the permissions the caller declares;
+    # the `publish` job needs `packages: write` to push to GHCR, so we grant
+    # it here at the job level rather than widening workflow-level perms.
+    # GITHUB_TOKEN is implicit in workflow_call; no secrets: inherit needed here
+    # because build-image.yml only uses GITHUB_TOKEN for GHCR push.
+    # Build-job concurrency is handled by the reusable workflow's workflow-level
+    # group (build-image-${{ github.ref }}, cancel-in-progress: false — queues
+    # rather than cancels). This job owns only the deploy-staging group below.
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image_tags: ${{ needs.resolve-tags.outputs.tag_list }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # `STAGE` GH Environment scopes SSH_* secrets to this job only.
+    # No protection rules — staging deploys are automatic and unsupervised.
+    # Create the environment in repo → Settings → Environments → STAGE before
+    # the first push to main.
+    environment: STAGE
+    # packages: read lets the runner pull from GHCR using GITHUB_TOKEN.
+    # The host never authenticates to GHCR — the image is streamed in via
+    # `docker save | ssh docker load`, see the "stream image" step below.
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        # Deploy needs configs/compose.yml as a render template — that's all.
+        # Tests/build live in earlier jobs; this checkout is cheap and explicit.
+
+      - name: Assert required env-scoped variables are set
+        # SSH_PRIVATEKEY (secret) is intentionally NOT checked here: GHA masks
+        # secrets to "***" when injected via env, so an empty secret is
+        # indistinguishable from a set one in this assertion. The SSH step
+        # itself fails fast if the secret is missing.
+        run: |
+          missing=0
+          for v in SSH_HOSTNAME SSH_HOSTPORT SSH_USERNAME REMOTE_DIR; do
+            val_var="vars_${v}"
+            if [ -z "${!val_var:-}" ]; then
+              echo "Required variable '$v' is not set in the STAGE environment (or at repository level)"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+        env:
+          vars_SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
+          vars_SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
+          vars_SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+          vars_REMOTE_DIR: ${{ vars.REMOTE_DIR }}
+
+      - name: Set up SSH client
+        # Write the deploy key + known_hosts onto the runner. ssh-keyscan is
+        # trust-on-first-use — matches the prior appleboy/ssh-action default.
+        env:
+          SSH_PRIVATEKEY: ${{ secrets.SSH_PRIVATEKEY }}
+          SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
+          SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # printf adds exactly one trailing newline; ssh requires the key to
+          # end with one. If the secret already has trailing whitespace, ssh
+          # tolerates it.
+          printf '%s\n' "$SSH_PRIVATEKEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$SSH_HOSTPORT" -H "$SSH_HOSTNAME" > ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Render compose.yml
+        # envsubst substitutes only ${IMAGE} and ${REMOTE_DIR}; anything else
+        # in the template (none today) is left as-is. The rendered file is
+        # logged so failed deploys make it easy to see what was about to ship.
+        env:
+          IMAGE: ghcr.io/prorochestvo/httpproxy:${{ needs.build.outputs.image_tag }}
+          REMOTE_DIR: ${{ vars.REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          [ -n "${IMAGE##*:}" ] || { echo "ERROR: IMAGE has empty tag — build.outputs.image_tag missing"; exit 1; }
+          [ -n "$REMOTE_DIR" ] || { echo "ERROR: REMOTE_DIR empty — vars.REMOTE_DIR missing"; exit 1; }
+          envsubst '${IMAGE} ${REMOTE_DIR}' < configs/compose.yml > /tmp/compose.yml
+          echo "=== rendered compose.yml ==="
+          cat /tmp/compose.yml
+
+      - name: Authenticate runner to GHCR
+        # The job's packages: read scope on GITHUB_TOKEN is enough to pull our
+        # own GHCR package. The token dies with the run — no PAT to rotate.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Pull image on runner and stream to host
+        # GHA-as-tunnel: runner owns the GHCR credentials, host never reaches
+        # ghcr.io. `set -o pipefail` propagates failures from either side of
+        # the pipe. `ssh -C` enables zlib compression — image transfer is the
+        # only bandwidth-heavy step, and runner→host bytes are not free.
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
+          SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
+          SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+        run: |
+          set -euo pipefail
+          [ -n "$IMAGE_TAG" ] || { echo "ERROR: IMAGE_TAG empty — build.outputs.image_tag missing"; exit 1; }
+          IMAGE="ghcr.io/prorochestvo/httpproxy:${IMAGE_TAG}"
+          docker pull "$IMAGE"
+          timeout 5m bash -c "docker save '$IMAGE' | ssh -C -i ~/.ssh/deploy_key \
+            -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            -p '$SSH_HOSTPORT' '$SSH_USERNAME@$SSH_HOSTNAME' docker load"
+
+      - name: Ship compose.yml to host
+        # scp uses -P (uppercase) for port; ssh uses -p (lowercase). Same key,
+        # different command, easy footgun. Lands the rendered file at
+        # $REMOTE_DIR/compose.yml — overwrites any prior copy by design.
+        env:
+          REMOTE_DIR: ${{ vars.REMOTE_DIR }}
+          SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
+          SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
+          SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+        run: |
+          set -euo pipefail
+          scp -C -i ~/.ssh/deploy_key \
+            -o ConnectTimeout=30 \
+            -P "$SSH_HOSTPORT" \
+            /tmp/compose.yml \
+            "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/compose.yml"
+
+      - name: Roll the container on host
+        # The rendered compose.yml is fully self-contained — no env vars, no
+        # cwd dependency. `docker compose -f` is invoked with the absolute path.
+        # On any failure the dump_diagnostics helper spits compose ps / logs /
+        # health state into the GHA log so the operator does not need to ssh in.
+        env:
+          REMOTE_DIR: ${{ vars.REMOTE_DIR }}
+          SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
+          SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
+          SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+        run: |
+          set -euo pipefail
+          # The heredoc is UNQUOTED — $REMOTE_DIR is substituted locally before
+          # being sent. Remote-only vars (\$body, \$cid) need \$ to survive the
+          # local expansion.
+          # --wait-timeout 120 is sized against the Dockerfile HEALTHCHECK worst
+          # case: start-period=10s + 3*(interval=30s + timeout=5s) = 115s. If
+          # the HEALTHCHECK interval is ever loosened, bump this in lockstep.
+          timeout 5m ssh -i ~/.ssh/deploy_key \
+            -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            -p "$SSH_HOSTPORT" "$SSH_USERNAME@$SSH_HOSTNAME" bash -s <<EOF
+          set -euo pipefail
+          COMPOSE_FILE="$REMOTE_DIR/compose.yml"
+          dump_diagnostics() {
+            echo "==== docker compose ps ===="
+            docker compose -f "\$COMPOSE_FILE" ps || true
+            echo "==== container logs (last 200) ===="
+            docker compose -f "\$COMPOSE_FILE" logs --tail 200 httpproxy || true
+            echo "==== health state ===="
+            cid=\$(docker compose -f "\$COMPOSE_FILE" ps -q httpproxy || true)
+            [ -n "\$cid" ] && docker inspect --format '{{json .State.Health}}' "\$cid" || true
+          }
+          if ! docker compose -f "\$COMPOSE_FILE" up -d --wait --wait-timeout 120; then
+            echo "ERROR: docker compose up --wait failed"
+            dump_diagnostics
+            exit 1
+          fi
+          # belt-and-braces: --wait blocks on the TCP HEALTHCHECK probe, but it
+          # does not assert the JSON body. This curl catches "TCP ok, handshake
+          # not yet completed" which returns a 503 body even though the port is
+          # open. Removing the grep below removes the only post-wait body assertion.
+          body=\$(curl -fsS http://127.0.0.1:8081/healthz || true)
+          if ! echo "\$body" | grep -q '"status":"ok"'; then
+            echo "ERROR: /healthz did not return status=ok"
+            echo "body: \$body"
+            dump_diagnostics
+            exit 1
+          fi
+          EOF
+      # do NOT add continue-on-error: true to any of the SSH/docker steps above
+      # — that would let job.status read `success` here even on a failed deploy.
+      - name: Workflow summary
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          TAG="${{ needs.build.outputs.image_tag }}"
+          HOST="${{ vars.SSH_HOSTNAME }}"
+          if [ "$STATUS" = "success" ]; then
+            echo "staging: ${TAG} deployed to ${HOST}, /healthz OK" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "staging: ${TAG} deploy to ${HOST} failed (status=${STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Telegram notify steps. TELEGRAM_TOKEN is read from env (not interpolated
+      # via ${{ … }} into the curl URL) so it is never echoed to the run log if
+      # the step trace is enabled. The `|| true` keeps a Telegram outage from
+      # flipping the job to failed after a successful deploy.
+      - name: Notify success
+        if: success()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_ROOT_CHAT_ID: ${{ vars.TELEGRAM_ROOT_CHAT_ID }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_ROOT_CHAT_ID" ] || exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_ROOT_CHAT_ID}" \
+            -d text="[STAGING] Deploy succeeded. Ref: ${GITHUB_REF_NAME}. Image: ${IMAGE_TAG}" || true
+
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_ROOT_CHAT_ID: ${{ vars.TELEGRAM_ROOT_CHAT_ID }}
+        run: |
+          [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_ROOT_CHAT_ID" ] || exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_ROOT_CHAT_ID}" \
+            -d text="[STAGING] Deploy FAILED. Ref: ${GITHUB_REF_NAME}. Check: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" || true

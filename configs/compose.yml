@@ -1,0 +1,23 @@
+# This file is a TEMPLATE rendered by the deploy workflow before being shipped
+# to the host. ${IMAGE} and ${REMOTE_DIR} are substituted by `envsubst` on the
+# GitHub Actions runner; what lands on the host has only literal values. Do
+# NOT edit the rendered file on the host — every deploy overwrites it. Edit
+# this template instead and let CI ship the result.
+#
+# IMAGE        — fully-qualified GHCR image incl. tag
+#                e.g. ghcr.io/prorochestvo/httpproxy:main-abc1234
+# REMOTE_DIR   — host path prefix where configs/ and logs/ live
+#                e.g. /opt/httpproxy (from the env-scoped GHA variable)
+#
+# Volumes use absolute paths after rendering, so the resulting compose.yml is
+# self-contained and works no matter where `docker compose -f` is invoked from.
+services:
+  httpproxy:
+    image: ${IMAGE}
+    ports:
+      - "127.0.0.1:1701:1701"
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ${REMOTE_DIR}/configs:/etc/httpproxy:ro
+      - ${REMOTE_DIR}/logs:/var/log/httpproxy
+    restart: unless-stopped

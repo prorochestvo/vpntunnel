@@ -1,0 +1,28 @@
+{
+  "listen": "0.0.0.0:1701",
+  "upstream": {
+    "configs": ["./tunnels/mullvad-ch-zrh-wg-001.conf"],
+    "active": "mullvad-ch-zrh-wg-001"
+  },
+  "admin": {
+    "listen": "0.0.0.0:8081",
+    "shutdown_timeout": "5s"
+  },
+  "health": {
+    "handshake_max_age": "180s"
+  },
+  "auth": {
+    "token_file": "./auth/token"
+  },
+  "dial_timeout": "10s",
+  "idle_timeout": "90s",
+  "shutdown_timeout": "15s",
+  "access_log": {
+    "path": "/var/log/httpproxy/access.log",
+    "max_size_mb": 100,
+    "max_age_days": 14,
+    "max_backups": 7,
+    "compress": true
+  },
+  "operational": { "level": "info", "format": "text" }
+}

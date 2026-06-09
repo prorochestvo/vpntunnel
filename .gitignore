@@ -1,0 +1,76 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+--Frag*.part
+
+# Packages
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# belt-and-suspenders: catch bare `go build` dropping binaries at repo root
+/bootstrap-mullvad
+/httpproxy
+
+# Logs and local databases
+*.log
+*.sqlite
+*.db
+/logs/
+/build/
+/tmp/
+# local-only runtime config; the server gets proxy.example.json (shipped
+# via `make init` and renamed to proxy.json on landing). Each operator
+# keeps their own proxy.json out of the repo.
+/configs/proxy.json
+/configs/tunnels/*
+!/configs/tunnels/.gitkeep
+/configs/auth/*
+!/configs/auth/.gitkeep
+
+# Test binary, built with `go test -c`
+*.test
+cmd/debug
+docs/swagger
+dist
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# IDE configs
+.idea
+.vscode
+
+# Environment variables
+.env
+
+# AI workspace files
+.claude/*
+!.claude/commands/
+!.claude/agents/
+!.claude/skills/
+!.claude/settings.json
+!.claude/README.md
+
+*.logs
+*.log.md
