@@ -1,0 +1,39 @@
+# CI for the main branch — lints, runs tests, and does a sanity build on every
+# push to main and every PR targeting main. No image build, no GHCR push, no
+# deploy. The production pipeline lives in release.yml and triggers on v* tags.
+name: ci-main
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs supersede their own previous runs to keep the queue tidy during review.
+  # main pushes queue rather than cancel so a follow-up push does not abort the
+  # in-flight CI for the previous commit (which may be the one a reviewer is
+  # actively staring at).
+  group: ci-main-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make lint
+      - run: make test
+      # production-shape build: CGO off, output into ./build/, matches what
+      # release.yml will ship. Catches the "tests pass but prod build breaks"
+      # class of issue (build tags, race-only files, missing main).
+      - name: Sanity build
+        env:
+          CGO_ENABLED: "0"
+        run: go build -o ./build/vpntunnel ./cmd/vpntunnel/

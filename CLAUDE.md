@@ -4,23 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project State
 
-`httpproxy` is a lightweight forward HTTP proxy that routes all egress through a
-userspace WireGuard tunnel (no root required). v4 ships one binary distributed as
-a Docker image (`ghcr.io/<owner>/httpproxy`): the long-running daemon (`cmd/httpproxy/`).
-Two environments, two hosts: staging deploys automatically on every push to `main`;
-production deploys on every `v*` tag after a manual approval gate. Server-side state
-lives at `/opt/httpproxy/` on each host and is hand-authored once during setup.
+`vpntunnel` is a lightweight forward HTTP proxy that routes all egress through a
+userspace WireGuard tunnel (no root required). v6 ships one binary deployed to the
+production host as a systemd service. One environment, one host: production deploys
+on every `v*` tag after a manual approval gate. Pushes to `main` and PRs against
+`main` run lint + tests only — no binary build, no deploy. Server-side state lives
+at `/opt/vpntunnel/` on the host and is hand-authored once during setup.
 
 Operator flow (binary): download a wg-quick `.conf` from mullvad.net or any WireGuard
-provider → drop it into `./configs/tunnels/` → add its path to `configs/proxy.json`
-under `upstream.configs` → run `./build/httpproxy -config configs/proxy.json`.
-
-Operator flow (Docker): drop the host config tree at `./configs/`, the host log dir at
-`./logs/` (chowned to UID 65532), `docker compose up -d`.
+provider → drop it into `./configs/tunnels/` — it is auto-discovered on the next startup;
+no change to `configs/proxy.json` is needed → run `./build/vpntunnel -config configs/proxy.json`
+(plain HTTP mode locally; no TLS flags needed for dev). Production passes `-tls-cert-dir`
+explicitly on the systemd `ExecStart` line; see the Deployment section.
+TLS settings are CLI flags (`-tls-cert-dir`, `-tls-hostname`, `-tls-ip-sans`), not part of
+`proxy.json`.
 
 ### Binaries
 
-- `cmd/httpproxy/` — long-running daemon; composition root wired inline in `main.go`.
+- `cmd/vpntunnel/` — long-running daemon; composition root wired inline in `main.go`.
 
 ### Layer table
 
@@ -35,61 +36,142 @@ Operator flow (Docker): drop the host config tree at `./configs/`, the host log 
 | Observability | `internal/observability` | Operational slog logger (stdout) + lumberjack rotating access log (JSONL). |
 | Orchestration | `internal/service` | `ProxyService`: `HandleHTTP`, `HandleCONNECT`, `WaitTunnels`. |
 | Transport | `internal/transport/httpserver` | Thin `*http.Server` wrapper, graceful shutdown. |
-| Health | `internal/health` | `/healthz` handler; consumes `tunnel.HealthReporter`. |
-| Admin transport | `internal/transport/adminserver` | Thin `*http.Server` wrapper for the admin/probe listener (loopback default). |
+| Health + API | `internal/transport/apiserver`, `internal/transport/apiserver/handlers` | HTTP/HTTPS API listener (plain HTTP when -tls-cert-dir empty; TLS 1.3 when set), request-ID, role-based auth, routing; multi-tunnel `/v1/admin/health` handler. |
 
 ### HTTP routes
 
-The proxy listener (default `127.0.0.1:8080`) dispatches `CONNECT` to `HandleCONNECT`
+The proxy listener (default `127.0.0.1:7788`) dispatches `CONNECT` to `HandleCONNECT`
 (hijack + bidirectional copy) and everything else to `HandleHTTP` (absolute-URI forward,
 strips hop-by-hop headers). When auth is configured, every request is challenged with
 `407 Proxy Authentication Required` before any hijack or forwarding occurs; the
-`Proxy-Authorization: Bearer <token>` header is required. The admin listener (default
-`127.0.0.1:8081`) serves `GET /healthz` and returns 404 for everything else. No REST
-API beyond `/healthz`.
+`Proxy-Authorization: Bearer <token>` header is required (except clients connecting from
+the loopback interface, which bypass the token check).
 
-### Config schema (v4)
+The API listener (default `127.0.0.1:8888`; HTTP when `-tls-cert-dir` is empty, HTTPS otherwise)
+requires one of two Bearer tokens sent via `X-Vpntunnel-Token`. There are two roles: admin
+(full access) and proxy (forward-proxy + tunnels list/use). The tunnel is selected by the `{id}` path
+segment (the HMAC tunnel id); there is no `X-Tunnel-Id` header. Routes:
 
-Flat upstream block plus optional admin, health, and auth blocks.
+| Method | Path | Roles |
+|--------|------|-------|
+| `GET` | `/v1/admin/health` | admin |
+| `GET` | `/v1/tunnels` | admin, proxy |
+| `*` | `/v1/tunnels/{id}/proxy/{scheme}/{rest...}` | admin, proxy |
+
+All other paths return 404 with a JSON error envelope. Every response carries
+`X-Request-Id` (UUIDv7) and `X-Proxy-Error` on error paths.
+
+`/v1/tunnels` returns the FULL discovered catalog grouped by country as a
+`map[country][ids]` JSON object — it is a static catalog, not a live-device report, and
+contains no `healthy` or `handshake_age` fields. An optional `?country=us,se` query parameter
+narrows the result; an unmatched filter returns `{}` with 200. With lazy building enabled,
+`/v1/admin/health` still reports only the currently live devices (1 streaming + 0..1
+on-demand); its `{status, tunnels: [{id, healthy, handshake_age_seconds}]}` shape is
+unchanged.
+
+### Config schema (v6)
+
+Proxy-egress config lives under `vpnstream`; on-demand VPN proxy config lives under
+`api.vpn`. TLS settings are CLI flags, not part of `proxy.json`. Tunnels are
+auto-discovered from `<configDir>/tunnels/`.
 
 ```json
 {
-  "upstream": {
-    "configs": ["./tunnels/se-sto-wg-001.conf"],
-    "active": "se-sto-wg-001"
+  "tunnel_id_hmac_key_file": "./auth/tunnel-id.key",
+  "vpnstream": {
+    "listen": "127.0.0.1:7788",
+    "allowed_countries": ["ch", "se", "us", "gb", "ua", "de"],
+    "auth": { "token_file": "./auth/token" },
+    "reconnect_min": "10m",
+    "reconnect_max": "3h",
+    "dial_timeout": "10s",
+    "idle_timeout": "90s",
+    "shutdown_timeout": "15s"
   },
-  "admin": {
-    "listen": "127.0.0.1:8081",
-    "shutdown_timeout": "5s"
+  "api": {
+    "listen": "127.0.0.1:8888",
+    "shutdown_timeout": "5s",
+    "auth": {
+      "proxy_token_file": "./auth/proxy_token",
+      "admin_token_file": "./auth/admin_token"
+    },
+    "vpn": {
+      "async": { "storage_path": "/opt/vpntunnel/state/async.db" },
+      "demand": { "grace": "10s", "settle_delay": "15s", "idle_ttl": "168h" },
+      "timeout": "30s",
+      "max_timeout": "5m"
+    },
+    "max_request_body_bytes": 10485760,
+    "log": { "path_sanitize_patterns": [] }
   },
-  "health": {
-    "handshake_max_age": "180s"
-  }
+  "access_log": { "path": "./logs/access.log", "max_size_mb": 100, "max_age_days": 14, "max_backups": 7, "compress": true },
+  "operational": { "level": "info", "format": "text" }
 }
 ```
 
-Optional auth block (pick one of `token` or `token_file`; both set is a config error):
+`tunnel_id_hmac_key_file` — optional top-level field (default `./auth/tunnel-id.key`), resolved
+relative to the config directory by the binary. Points to a 0600 file holding 64 random bytes.
+Generated on first run if absent; never rewritten to `proxy.json`. The KEY MATERIAL (file
+contents) must never be logged — only the basename and `key_len` may appear in startup logs.
+The derived tunnel id is `HMAC-SHA256(key, conf_basename)` hex-encoded (64 lowercase chars) and
+is non-secret: it appears in `/v1/tunnels` responses and in the `{id}` path segment.
 
-```json
-{
-  "auth": {
-    "token_file": "./auth/token"
-  }
-}
-```
+`vpnstream.allowed_countries` — optional list of two-letter lowercase country codes.
+**Scope: streaming only.** An empty list (or the field absent) means all discovered
+configs are eligible for the always-on streaming random-pick. A code that matches no
+config is silently dropped; the daemon errors at startup only when the resulting
+country-filtered set is empty (streaming is mandatory and its empty-set panics). The
+on-demand scheduler (`/v1/tunnels/{id}/proxy/...`) accepts **any** discovered tunnel regardless of
+`allowed_countries` — it uses the full unfiltered set. The single-key guard
+(`VerifySingleKey`) runs over the full discovered set, so all `.conf` files must share
+one WireGuard key.
 
-`configs` paths are resolved relative to the directory containing `proxy.json`
-(not `os.Getwd()` — systemd processes have cwd `/`). Absolute paths are used
-as-is. `active` is the basename without `.conf`; empty defaults to `configs[0]`.
+Tunnel discovery scans `<configDir>/tunnels/` for top-level `*.conf` files. Only
+regular files (no symlinks) with a `.conf` suffix are included; dotfiles (including
+`.gitkeep`) and subdirectories are ignored. A missing tunnels directory is a startup
+error. An empty directory is also a startup error. Unparseable `.conf` files are
+warn-skipped at device-build time — they do not cause startup to fail.
+
+`vpnstream.reconnect_min` / `vpnstream.reconnect_max` — initial and maximum
+exponential backoff between reconnect attempts for the always-on streaming device.
+
+`api.vpn.demand.grace` — after the last active job on the current zone finishes, how
+long the scheduler stays on that zone (each new same-zone request resets the window)
+before switching to the next zone with a backlog. Default 10s.
+`api.vpn.demand.settle_delay` — mandatory pause between tearing the current on-demand
+device down and bringing the next zone's device up, so the provider frees the old
+session before the new one starts (avoids transiently exceeding the connection budget).
+Default 15s, minimum 5s.
+`api.vpn.demand.idle_ttl` — how long the on-demand device is kept live with no active
+job before it is torn down; a request for a different zone tears it down immediately
+regardless. Default 168h.
+
+`api.vpn.async.storage_path` — SQLite path for async job state. Default
+`/opt/vpntunnel/state/async.db`. The async TTL and concurrency knobs
+(`max_concurrent_jobs`, `pending_timeout`, `complete_ttl`, `tombstone_ttl`) are no
+longer configurable — they are built-in constants in `internal/asyncjob`.
+
+`vpnstream.auth` — optional proxy bearer token (pick one of `token` or `token_file`;
+both set is a config error). Missing means proxy auth disabled.
+
+`handshake_max_age` is no longer configurable — it is `lazy.DefaultHandshakeMaxAge = 180s`,
+which is ~3× the 25s persistent keepalive plus a safety margin so quiet tunnels do not flap.
 
 WireGuard options (`PrivateKey`, `Address`, `DNS`, `Endpoint`, `AllowedIPs`,
 `PersistentKeepalive`, `PresharedKey`, `MTU`) are read from the `.conf` file via
 the `wgconf` parser.
 
-`admin`, `health`, and `auth` blocks are optional — missing → defaults apply
-(auth missing means auth disabled). `health.handshake_max_age` defaults to 180s,
-which is ~3× the 25s persistent keepalive plus a safety margin so quiet tunnels
-don't flap.
+`api` block is required. All other top-level blocks are optional — missing → defaults
+apply. `api.vpn` absent → all vpn defaults applied. `vpnstream` absent → all vpnstream
+defaults applied.
+
+**TLS CLI flags** (not part of `proxy.json`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-tls-cert-dir` | `""` (HTTP mode) | Directory holding the API TLS cert/key. Empty = plain HTTP (loopback/dev only). Production must pass `/opt/vpntunnel/tls/`. Relative resolves against cwd. |
+| `-tls-hostname` | `localhost` | TLS server name embedded in the API certificate. |
+| `-tls-ip-sans` | `` | Comma-separated list of IP Subject Alternative Names. |
 
 ### Tunnel storage
 
@@ -110,37 +192,70 @@ key (mode 0600, never commit to a shared repository).
 Note: `golang.zx2c4.com/wireguard/tun/netstack` is a sub-package of the
 `wireguard` module (not a separate module). gVisor (`gvisor.dev/gvisor`) is
 a transitive dep of netstack — adds ~20MB to the binary and ~10-50MB RSS.
-Pin `gvisor.dev/gvisor` to `v0.0.0-20250503011706-39ed1f5ac29c`; newer
-revisions have a "two packages in same dir" build error.
+Pin `gvisor.dev/gvisor` in `go.mod` to `v0.0.0-20250503011706-39ed1f5ac29c`;
+newer revisions have a "two packages in same dir" build error. gVisor is a
+transitive dep of `wireguard-go`'s `tun/netstack`; we depend on it whether or
+not the binary is containerized.
 
 ### Deployment
 
-One static binary (`CGO_ENABLED=0`). `httpproxy` runs as a daemon; bind to
-`127.0.0.1` (default). The `.conf` files in `./configs/tunnels/` contain private
-keys — treat them like SSH keys (mode 0600, never commit to a shared repo).
+One static binary (`CGO_ENABLED=0`). Deployed to the production host as a systemd
+unit at `/etc/systemd/system/vpntunnel.service`, with the config tree at
+`$REMOTE_DIR/configs/`. The live `$REMOTE_DIR/vpntunnel` is a symlink pointing at a
+versioned file `vpntunnel.${VERSION}` (e.g. `vpntunnel.v6.0.4`); the release workflow
+scps the new binary to a `.upload` temp name (`vpntunnel.${VERSION}.upload`), verifies
+its SHA256, then promotes it to the versioned name via `mv -Tf` (rename(2) — replaces
+the directory entry without truncating the inode, so redeploying an already-running
+version is `ETXTBSY`-safe and idempotent); if a versioned file with an identical hash
+already exists (same-build redeploy), the temp is discarded and the rename is skipped.
+The symlink is then atomic-swapped via
+`ln -sf … tmp && mv -Tf tmp vpntunnel`, the unit is restarted, and the deploy verifies
+via `systemctl is-active vpntunnel` and `curl -k https://127.0.0.1:8888/v1/admin/health`
+(with an admin token header); the host retains the 3 most recent versions (active always
+protected) for fast rollback. Pre-release tags (`vX.Y.Z-rc1`) deploy identically — there
+is no floating-tag surface to protect.
 
-Container image at `ghcr.io/<owner>/httpproxy`, built by the shared reusable workflow
-`.github/workflows/build-image.yml`. Linux amd64 only. Tags published per environment:
+The release health-check uses the `VPNTUNNEL_ADMIN_TOKEN` GH secret (scoped to the `PRIME`
+environment), renamed from the former `DEPLOY_TOKEN`. The deploy role no longer exists;
+the `PRIME` environment `VPNTUNNEL_ADMIN_TOKEN` secret must be created before the next `v*` tag or
+the post-deploy health-check fails.
 
-- **Staging** (`.github/workflows/staging.yml`, triggers on `push: branches: [main]`):
-  `:main-<7-char-sha>` (immutable) and `:edge` (floating).
-- **Production** (`.github/workflows/release.yml`, triggers on `push: tags: ['v*']`):
-  `:X.Y.Z` (immutable), `:X.Y` (floating minor), and `:latest` (floating).
+TLS settings are **not** in `proxy.json` — they are CLI flags. The systemd unit
+sources them from `/opt/vpntunnel/vpntunnel.env` (`EnvironmentFile`), which the
+release workflow's "Sync runtime env file" step rewrites from the PRIME GH
+variables (`VPNTUNNEL_CONFIG_PATH`, `VPNTUNNEL_TLS_CERT_DIR`,
+`VPNTUNNEL_TLS_CERT_HOST`) before each restart:
 
-Operator runs via `docker compose up -d` on each host (see README).
+```
+EnvironmentFile=/opt/vpntunnel/vpntunnel.env
+ExecStart=/opt/vpntunnel/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} \
+  -tls-cert-dir ${VPNTUNNEL_TLS_CERT_DIR} -tls-hostname ${VPNTUNNEL_TLS_CERT_HOST}
+```
+
+The deploy writes the env file into `$REMOTE_DIR` (writable by the deploy user,
+so no sudo; `EnvironmentFile` is re-read on each restart, so no `daemon-reload`).
+Each flag falls back to a `$REMOTE_DIR`-relative default if its variable is unset.
+Production's `VPNTUNNEL_TLS_CERT_DIR` is `/opt/vpntunnel/configs/tls/`; the daemon
+generates a self-signed cert there (mode 0700 dir) on first start. The unit file
+(`configs/vpntunnel.service`) and `configs/vpntunnel.env.example` are installed
+once by the operator — the deploy does not touch the unit, only the env file. A
+relative `-tls-cert-dir` resolves against the process cwd.
+
+`main` and PR pushes run `.github/workflows/ci.main.yml` (lint + test + sanity
+`go build`). The CI workflow does not touch the host.
 
 ## Commands
 
 A `Makefile` exists at the repo root with the standard targets:
 
 ```bash
-make build            # builds ./build/httpproxy
-make build-httpproxy  # ./build/httpproxy
+make build            # builds ./build/vpntunnel
+make build-vpntunnel  # ./build/vpntunnel
 make test             # gofmt check + go vet + go test -race ./...
 make lint             # go vet + forbidden-imports check
 make fmt              # gofmt -w .
-make run              # go run ./cmd/httpproxy -config ./configs/proxy.json
-                      # NOTE: requires configs/proxy.json to have upstream.configs populated
+make run              # go run ./cmd/vpntunnel -config ./configs/proxy.json
+                      # NOTE: requires at least one .conf in ./configs/tunnels/
 make clean            # rm -rf ./build ./tmp/*.tmp
 ```
 
@@ -312,6 +427,10 @@ Every controller test that exercises an error branch **must** assert:
   format. Startup logs may include `token_len` and `source` (inline or file basename)
   only. Auth failure logs record only a `reason` enum — never the attempted token
   value. The `./configs/auth/` directory is gitignored — keep it that way.
+- **Never log the tunnel-id HMAC key**: the 32 raw bytes held in `tunnel_id_hmac_key_file`
+  must NEVER appear in any log call, error message, or string format — not as raw bytes, not
+  as hex. Startup logs may include the key file basename and `key_len` only. The derived
+  hex tunnel ids (output of `HMAC-SHA256(key, basename)`) ARE non-secret and safe to log.
 - **Forbidden imports**: list any modules that must never appear in `go.mod` (e.g.
   CGO-dependent drivers, code generators the team has rejected). Enforce via the
   lint target once the Makefile exists.
@@ -383,21 +502,17 @@ Every controller test that exercises an error branch **must** assert:
   would be picked up by `git add .`. The same applies to any throwaway artifacts,
   fixtures, or intermediate files: use `./tmp/` rather than the repo root. Runtime /
   cyclic logs go to `./logs/`. Only these three directories are gitignored at the root.
-- **Docker image is distroless** (`gcr.io/distroless/static-debian12:nonroot`); runs
-  as UID 65532; no shell. The `-healthcheck` binary mode is the Docker `HEALTHCHECK`;
-  it TCP-dials `127.0.0.1:8081` and never reads config or logs.
-- **`/healthz` response body is fixed**: never include `peer_endpoint`, key material,
-  or any field outside `{status, reason, handshake_age_seconds}`. The 503 body is the
-  diagnostic surface for operators only; tightened scope prevents accidental leakage
-  if the admin port is ever exposed.
-- **Deploy SSH keys (`SSH_PRIVATEKEY` GH secret, scoped per-environment) are ed25519,
-  dedicated per server, passphrase-less. The same identifier resolves to different
-  values in the `staging` and `production` GH Environments — never generate the same
-  key for both hosts.** Never log private-key contents in workflow output. The
-  deploy workflow populates the runner's `~/.ssh/known_hosts` via `ssh-keyscan`
-  at deploy time (trust-on-first-use — there is no pinned host fingerprint).
-  The SSH port is configured per-environment via `SSH_HOSTPORT`, so non-standard
-  ports are supported without code changes.
+- **`/v1/admin/health` response body is fixed**: top-level `{status, tunnels: [...]}`;
+  each tunnel entry is `{id, healthy, handshake_age_seconds}`. Never include
+  `peer_endpoint`, key material, peer public key, or `TunnelHealth.Err` text.
+  The 503 body is the diagnostic surface for operators only; tightened scope prevents
+  accidental leakage if the API port is ever exposed.
+- **Deploy SSH key (`SSH_PRIVATEKEY` GH secret, scoped to the `PRIME` environment)
+  is ed25519, dedicated to the production host, passphrase-less.** Never log
+  private-key contents in workflow output. The deploy workflow populates the
+  runner's `~/.ssh/known_hosts` via `ssh-keyscan` at deploy time (trust-on-first-use
+  — there is no pinned host fingerprint). The SSH port lives in the env-scoped
+  `SSH_HOSTPORT` variable, so non-standard ports are supported without code changes.
 
 ## Planning Workflow
 

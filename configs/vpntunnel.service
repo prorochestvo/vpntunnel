@@ -1,0 +1,41 @@
+# /etc/systemd/system/vpntunnel.service
+#
+# Installation (one-time, by the operator):
+#   sudo cp /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/
+#   sudo cp /opt/vpntunnel/configs/vpntunnel.env.example /opt/vpntunnel/vpntunnel.env  # first time only
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now vpntunnel
+#
+# Runtime flags live in /opt/vpntunnel/vpntunnel.env (systemd EnvironmentFile
+# syntax: KEY=value). The release workflow rewrites that file from the PRIME
+# GitHub environment variables on every deploy; for the first manual start, seed
+# it from vpntunnel.env.example. EnvironmentFile is re-read on every restart, so
+# no daemon-reload is needed after a flag change — only after editing this unit.
+#
+# Logs:
+#   journalctl -u vpntunnel -f                         # operational log
+#   tail -F /opt/vpntunnel/logs/access.log             # access log (JSONL, lumberjack-rotated)
+[Unit]
+Description=vpntunnel forward HTTP proxy over WireGuard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vpntunnel
+# Flags come from the env file; the deploy keeps it in sync with the GH vars.
+# VPNTUNNEL_TLS_CERT_DIR is REQUIRED in production — an empty value runs the API
+# as plain HTTP. No leading '-' on EnvironmentFile: a missing env file fails the
+# start loudly rather than launching the daemon with blank flags.
+EnvironmentFile=/opt/vpntunnel/vpntunnel.env
+ExecStart=/opt/vpntunnel/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} -tls-cert-dir ${VPNTUNNEL_TLS_CERT_DIR} -tls-hostname ${VPNTUNNEL_TLS_CERT_HOST}
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+# graceful shutdown window before SIGKILL.
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

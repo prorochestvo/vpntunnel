@@ -1,17 +1,17 @@
-# httpproxy
+# VPNTunnel
 
 Lightweight forward HTTP proxy that routes every byte of egress through a
 **userspace WireGuard tunnel** — no root, no `setcap`, no host-level VPN.
-One static binary, distroless container, ~6k LOC.
+One static binary, systemd service.
 
 ```
    ┌────────┐  HTTP / CONNECT       ┌─────────────┐   WireGuard    ┌──────────┐
-   │ client │ ─── :8080 ─────▶───   │  httpproxy  │ ─── userspace ─│ exit IP  │
+   │ client │ ─── :7788 ─────▶───   │  vpntunnel  │ ─── userspace ─│ exit IP  │
    │  curl, │                       │   daemon    │ ───────▶─────  │ (Mullvad,│
    │ browser│                       │  (no root)  │                │  yours)  │
    │   app  │                       └─────────────┘                └──────────┘
    └────────┘                              │
-                              /healthz :8081 (loopback, no auth)
+                   GET /v1/admin/health :8888 (loopback, token required)
 ```
 
 **What it is.** A forward proxy speaking `Proxy-Authorization: Bearer` auth
@@ -43,43 +43,66 @@ is opaque.
 Bearer token from whoever operates it:
 
 ```bash
-curl --proxy http://<proxy-host>:8080 \
+curl --proxy http://<proxy-host>:7788 \
      --proxy-header "Proxy-Authorization: Bearer <your-token>" \
      https://am.i.mullvad.net/json
 # {"mullvad_exit_ip": true, "country": "Sweden", ...}
 ```
 
-**As an operator** — bring it up locally to try it out:
+**As an operator** — bring it up locally to try it out. Tunnels are
+auto-discovered: drop a wg-quick `.conf` into `./configs/tunnels/` and it is
+picked up on the next startup. No entry in `proxy.json` is needed.
 
 ```bash
 # 1. Get a wg-quick .conf from any WireGuard provider (or your own peer).
 #    Mullvad: https://mullvad.net/account/wireguard-config
 mkdir -p ./configs/tunnels ./configs/auth ./logs
 mv ~/Downloads/se-sto-wg-001.conf ./configs/tunnels/
-chmod 0400 ./configs/tunnels/*.conf
+chmod 0600 ./configs/tunnels/*.conf
 
-# 2. Generate a Bearer token.
-openssl rand -hex 32 > ./configs/auth/token
-chmod 0400 ./configs/auth/token
+# 2. Generate the tokens. The forward-proxy token is optional; the two API
+#    tokens are required and MUST be mode 0600, owned by you, 64–512 bytes.
+openssl rand -hex 48 > ./configs/auth/token          # forward-proxy (optional)
+openssl rand -hex 48 > ./configs/auth/proxy_token     # API: proxy role
+openssl rand -hex 48 > ./configs/auth/admin_token    # API: admin role
+chmod 0600 ./configs/auth/token ./configs/auth/proxy_token ./configs/auth/admin_token
 
-# 3. Write ./configs/proxy.json.
-cat > ./configs/proxy.json <<'EOF'
-{
-  "upstream": { "configs": ["./tunnels/se-sto-wg-001.conf"] },
-  "auth":     { "token_file": "./auth/token" }
-}
-EOF
-
-# 4. Build and run.
-make build && ./build/httpproxy -config ./configs/proxy.json
+# 3. Write ./configs/proxy.json. Only the `api` block is mandatory; everything
+#    else takes defaults. See configs/proxy.example.json for the full schema.
 ```
 
-For a remote-server deployment via Docker + GitHub Actions, see
+```json
+{
+  "vpnstream": {
+    "listen": "127.0.0.1:7788",
+    "auth": { "token_file": "./auth/token" }
+  },
+  "api": {
+    "listen": "127.0.0.1:8888",
+    "auth": {
+      "proxy_token_file": "./auth/proxy_token",
+      "admin_token_file": "./auth/admin_token"
+    }
+  }
+}
+```
+
+```bash
+# 4. Build and run. Locally the API serves plain HTTP (no TLS flags needed);
+#    production adds -tls-cert-dir to serve HTTPS — see Deploying.
+make build && ./build/vpntunnel -config ./configs/proxy.json
+```
+
+On first run the daemon generates `./configs/auth/tunnel-id.key` (64 random
+bytes, mode 0600) if it is absent. Treat it like a private key — see
+[Security](#security).
+
+For a remote-server deployment via systemd + GitHub Actions, see
 [Deploying](#deploying-as-an-operator).
 
 ## Using the proxy (as a client)
 
-You need two things: the proxy URL (`http://<host>:8080`) and a Bearer
+You need two things: the proxy URL (`http://<host>:7788`) and a Bearer
 token. Both come from the operator. The auth header is **always**
 `Proxy-Authorization` — not `Authorization`, which would travel to the
 upstream origin and leak the token.
@@ -88,12 +111,12 @@ upstream origin and leak the token.
 
 ```bash
 # HTTPS via CONNECT
-curl --proxy http://<host>:8080 \
+curl --proxy http://<host>:7788 \
      --proxy-header "Proxy-Authorization: Bearer <token>" \
      https://example.com
 
 # HTTP via forward proxy
-curl --proxy http://<host>:8080 \
+curl --proxy http://<host>:7788 \
      --proxy-header "Proxy-Authorization: Bearer <token>" \
      http://example.com
 ```
@@ -106,7 +129,7 @@ expects it.
 A shell alias for repeat use:
 
 ```bash
-alias xcurl='curl --proxy http://<host>:8080 --proxy-header "Proxy-Authorization: Bearer $(cat ~/.httpproxy.token)"'
+alias xcurl='curl --proxy http://<host>:7788 --proxy-header "Proxy-Authorization: Bearer $(cat ~/.vpntunnel.token)"'
 xcurl https://am.i.mullvad.net/json
 ```
 
@@ -115,7 +138,7 @@ xcurl https://am.i.mullvad.net/json
 **Firefox** (`about:preferences#general → Network Settings → Manual proxy
 configuration`):
 
-- HTTP Proxy: `<host>` Port: `8080`
+- HTTP Proxy: `<host>` Port: `7788`
 - "Also use this proxy for HTTPS": yes
 
 Firefox has no UI for Bearer-style proxy auth. Options:
@@ -132,8 +155,8 @@ disabled.
 **Environment variables** (shell, most CLI tools):
 
 ```bash
-export HTTPS_PROXY=http://<host>:8080
-export HTTP_PROXY=http://<host>:8080
+export HTTPS_PROXY=http://<host>:7788
+export HTTP_PROXY=http://<host>:7788
 # Most tools that read these vars do NOT pass Proxy-Authorization
 # automatically — either disable auth or use the tool's programmatic API.
 ```
@@ -143,7 +166,7 @@ export HTTP_PROXY=http://<host>:8080
 **Go (`net/http`):**
 
 ```go
-proxyURL, _ := url.Parse("http://<host>:8080")
+proxyURL, _ := url.Parse("http://<host>:7788")
 
 transport := &http.Transport{
     Proxy: http.ProxyURL(proxyURL),
@@ -166,7 +189,7 @@ CONNECT request to the proxy. A plain `req.Header.Set("Proxy-Authorization",
 import httpx
 
 client = httpx.Client(
-    proxy="http://<host>:8080",
+    proxy="http://<host>:7788",
     headers={"Proxy-Authorization": "Bearer <token>"},
 )
 r = client.get("https://example.com")
@@ -184,56 +207,89 @@ saw your token).
 | Symptom | Probable cause | Fix |
 |---|---|---|
 | `407 Proxy Authentication Required` | wrong / missing Bearer token, or sent as `Authorization` instead of `Proxy-Authorization` | check the token; ensure `--proxy-header` (curl) or `ProxyConnectHeader` (Go) |
-| `Connection refused` on the proxy port | daemon not running, or listening on loopback while you're connecting remotely | `docker logs httpproxy`; check `listen` is bound where you expect |
-| HTTPS hangs ~30s then times out | WireGuard handshake stale or peer unreachable | `curl http://<host>:8081/healthz` — a 503 means the tunnel is down |
+| `Connection refused` on the proxy port | daemon not running, or listening on loopback while you're connecting remotely | `journalctl -u vpntunnel -n 200 --no-pager`; check `listen` is bound where you expect |
+| HTTPS hangs ~30s then times out | WireGuard handshake stale or peer unreachable | `curl -k -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" https://<host>:8888/v1/admin/health` — a 503 means the tunnel is down |
 | Exit IP is your real IP, not the VPN | proxy URL points at the wrong host, or upstream isn't routing | confirm `am.i.mullvad.net/json` returns `mullvad_exit_ip: true` |
 | Browser shows mixed-content warnings | proxy itself is plain HTTP (no TLS-termination) | this is expected; the tunnel **through** the proxy is encrypted (WireGuard), the client→proxy hop is not |
 | `Proxy-Authorization` header appearing in upstream request logs | client sent it as `Authorization` or via a `-H`-equivalent | use the proxy-specific header API (`--proxy-header`, `ProxyConnectHeader`) |
 
-For tunnel-level state, hit the admin endpoint:
+For tunnel-level state, query the API health endpoint with the admin token in
+the `X-Vpntunnel-Token` header. On the production host the API serves HTTPS with
+a self-signed certificate, so pass `-k`; the admin token lives at
+`/opt/vpntunnel/configs/auth/admin_token`. (A local dev daemon without
+`-tls-cert-dir` serves plain HTTP — drop the `-k` and use `http://`.)
+Note that the `$(cat ...)` substitution puts the token bytes in your shell
+history — if that matters, pass it via an env var instead (`ADMIN_TOKEN=... curl ...`).
 
 ```bash
-curl -sS http://<host>:8081/healthz | jq .
-# 200: {"status":"ok", "handshake_age_seconds": 42}
-# 503: {"status":"unhealthy", "reason":"handshake_stale", "handshake_age_seconds": 312}
+# -k because the production daemon serves a self-signed certificate
+curl -k -sS \
+  -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" \
+  https://<host>:8888/v1/admin/health | jq .
+# 200: {"status":"ok",    "tunnels":[{"id":"se-sto","healthy":true,"handshake_age_seconds":42}]}
+# 200: {"status":"degraded","tunnels":[{"id":"se-sto","healthy":true,...},{"id":"de-ber","healthy":false,...}]}
+# 503: {"status":"down",  "tunnels":[{"id":"se-sto","healthy":false,"handshake_age_seconds":312}]}
 ```
 
-`reason` enum:
+Unlike the proxy listener (`:7788`), the API server has **no loopback bypass** — every
+request must carry the `X-Vpntunnel-Token` header regardless of where it originates.
 
-- `no_handshake` — tunnel hasn't completed its first handshake since startup.
-- `handshake_stale` — last handshake older than `health.handshake_max_age`.
-- `reporter_error` — internal failure reading tunnel state.
+Aggregation rules:
+
+- `ok` — every tunnel in the pool is healthy (200).
+- `degraded` — at least one tunnel is healthy and at least one is not (200).
+- `down` — no tunnels are healthy, or the pool is empty (503).
 
 ## Configuration reference
 
-`proxy.json` is the only configuration file. All paths inside it are
-resolved relative to the directory **containing `proxy.json`** (not the
-process cwd — systemd and cron use `/`).
+`proxy.json` is the only configuration file. The **`api` block is required**;
+every other top-level block is optional and falls back to defaults. Relative
+paths to the token files, the tunnel-id key, and the `tunnels/` directory
+resolve against the directory **containing `proxy.json`**; `access_log.path`
+resolves against the process working directory, so prefer an absolute path
+there. The full,
+canonical schema — including the on-demand-VPN (`api.vpn`) and
+reconnect/timeout knobs not shown here — lives in
+[`configs/proxy.example.json`](./configs/proxy.example.json).
 
-| Field | Type | Default | Purpose |
-|---|---|---|---|
-| `listen` | string | `127.0.0.1:8080` | Proxy listener (HTTP/CONNECT) |
-| `dial_timeout` | duration | `10s` | Per-upstream dial timeout |
-| `idle_timeout` | duration | `90s` | `http.Server` idle connection timeout |
-| `shutdown_timeout` | duration | `15s` | Graceful shutdown drain on SIGTERM |
-| `upstream.configs` | string[] | **required** | Paths to wg-quick `.conf` files |
-| `upstream.active` | string | first entry | Basename (no `.conf`) of the tunnel to use |
-| `auth.token` | string | empty | Inline Bearer token (mutually exclusive with `token_file`) |
-| `auth.token_file` | string | empty | Path to a file whose contents are the Bearer token |
-| `admin.listen` | string | `127.0.0.1:8081` | Admin/healthz listener |
-| `admin.shutdown_timeout` | duration | `5s` | Admin graceful-shutdown drain |
-| `health.handshake_max_age` | duration | `180s` | Age threshold for `/healthz` to flip to 503 |
-| `access_log.path` | string | required | Path to rotating JSONL access log |
-| `access_log.max_size_mb` | int | lumberjack default | Rotation size threshold |
-| `access_log.max_age_days` | int | lumberjack default | Rotated-file age cap |
-| `access_log.max_backups` | int | lumberjack default | Rotated-file count cap |
-| `access_log.compress` | bool | `true` | gzip rotated files |
-| `operational.level` | string | `info` | slog level: `debug`/`info`/`warn`/`error` |
-| `operational.format` | string | `text` | slog format: `text`/`json` |
+The table below covers only the knobs an operator typically sets:
 
-Auth is **optional**. Missing or empty `auth` block disables challenge — the
-proxy serves any client reachable on `listen`. If you take that path, bind
-to loopback (`127.0.0.1`, default) or front it with another access control.
+| Field | Default | Purpose |
+|---|---|---|
+| `vpnstream.listen` | `127.0.0.1:7788` | Forward-proxy listener (HTTP/CONNECT) |
+| `vpnstream.allowed_countries` | `[]` (all) | Two-letter ISO codes the streaming tunnel may pick from |
+| `vpnstream.auth.token_file` | empty | Forward-proxy Bearer token (optional; or inline `vpnstream.auth.token`) |
+| `api.listen` | `127.0.0.1:8888` | API listener (health, tunnel catalog, proxy routing) |
+| `api.auth.proxy_token_file` | **required** | Token file for the `proxy` role |
+| `api.auth.admin_token_file` | **required** | Token file for the `admin` role |
+| `tunnel_id_hmac_key_file` | `./auth/tunnel-id.key` | HMAC key deriving stable tunnel ids (auto-generated if absent) |
+| `access_log.path` | `./logs/access.log` | Rotating JSONL access log |
+| `operational.level` | `info` | slog level: `debug`/`info`/`warn`/`error` |
+| `operational.format` | `text` | slog format: `text`/`json` |
+
+**Tunnel auto-discovery.** Tunnels are not listed in `proxy.json`. The daemon
+scans `<config-dir>/tunnels/` for top-level `*.conf` files at startup; drop a
+wg-quick `.conf` in and restart. A missing or empty `tunnels/` directory is a
+startup error. Unparseable `.conf` files are warn-skipped, not fatal.
+
+**Forward-proxy auth is optional; the two API tokens are required.** If
+`vpnstream.auth` is absent the forward proxy serves any client reachable on
+`vpnstream.listen` — bind to loopback (the default) or front it with other
+access control if you take that path. The `api.auth.proxy_token_file` and
+`api.auth.admin_token_file` are both mandatory whenever the `api` block is
+present, must be mode `0600`, owned by the running user, and 64–512 bytes; the
+daemon rejects other modes or lengths at startup.
+
+**TLS is set by CLI flags, not `proxy.json`.** Pass `-tls-cert-dir` (empty →
+plain HTTP, loopback/dev only; e.g. `/opt/vpntunnel/tls/` → HTTPS 1.3 with a
+self-signed cert the daemon manages), `-tls-hostname` (default `localhost`),
+and `-tls-ip-sans` (comma-separated IP SANs). Locally the API is plain HTTP;
+production passes `-tls-cert-dir` and serves HTTPS.
+
+If you move `access_log.path` outside `/opt/vpntunnel/logs/` (the path
+covered by the unit's `ReadWritePaths`), also edit `vpntunnel.service` to
+add the new path to `ReadWritePaths` and run `systemctl daemon-reload`.
+Otherwise the daemon fails to open the log at startup and systemd restart-loops.
 
 The WireGuard `.conf` is standard wg-quick format:
 
@@ -255,542 +311,367 @@ custom format, no provider-specific bootstrap.
 
 ## Deploying (as an operator)
 
-For remote-server deployment the proxy ships as a Docker image hosted on
-GHCR at `ghcr.io/<owner>/httpproxy`, with two automated pipelines:
+The deploy pipeline copies a fresh binary to the production host on every
+`v*` tag, atomically swaps it in, and restarts the systemd unit.
 
-- **Staging** — every push to `main` runs `.github/workflows/staging.yml`,
-  publishes `:main-<7-char-sha>` (immutable) and `:edge` (floating), and
-  rolls the staging host.
-- **Production** — every `v*` tag push runs
-  `.github/workflows/release.yml`, publishes `:vX.Y.Z`, `:X.Y`, and
-  `:latest`, waits for required-reviewer approval, then rolls the
-  production host.
+- **CI** — every push to `main` and every PR against `main` runs
+  `.github/workflows/ci.main.yml`. Lint + tests + sanity `go build`. No
+  binary build, no deploy.
+- **Release** — every `v*` tag push runs `.github/workflows/release.yml`,
+  waits for required-reviewer approval on the PRIME environment, builds the
+  binary on the runner, scps it to the host, atomic-mv's over the current
+  binary, restarts the unit, and verifies with `systemctl is-active` +
+  `GET /v1/admin/health` (HTTPS, admin token). Pre-release tags (`vX.Y.Z-rc1`
+  etc.) deploy identically — there is no floating-tag surface to protect.
 
-Both pipelines share a single build defined in
-`.github/workflows/build-image.yml`. The image built from a given SHA is
-byte-identical whether it was triggered by a main push or a tag push.
-
-**Replace `<owner>` with the actual GitHub username / org in every snippet
-below.**
-
-> **v4 → v5 cutover (skip if this is a first-time install)**
+> **v5 → v6 cutover: Docker → systemd**
 >
-> Plan 006 changed both the repo `configs/compose.yml` and the server-side
-> template to use `${IMAGE_TAG}` (no default) instead of the literal `:latest` tag.
-> Before the first v5-built tag is deployed to your server, edit
-> `/opt/httpproxy/compose.yml` on the server and replace `:latest` with
-> `:${IMAGE_TAG}`:
+> If you are upgrading from the previous Docker-based deploy, complete the
+> one-time migration below **before pushing the first v6-series tag**. The
+> automated deploy workflow will fail if these prerequisites are absent.
 >
-> ```yaml
-> image: ghcr.io/<owner>/httpproxy:${IMAGE_TAG}
-> ```
+> 1. On the production host, stop and remove the Docker container:
+>    ```bash
+>    cd /opt/vpntunnel
+>    docker compose down || true
+>    ```
+> 2. Build the binary locally and scp it to the host as a versioned file, then
+>    create the initial symlink:
+>    ```bash
+>    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ./build/vpntunnel ./cmd/vpntunnel/
+>    scp ./build/vpntunnel user@host:/opt/vpntunnel/vpntunnel.v<TAG>
+>    ssh user@host 'chmod +x /opt/vpntunnel/vpntunnel.v<TAG> && ln -sfn vpntunnel.v<TAG> /opt/vpntunnel/vpntunnel'
+>    ```
+>    Then run `make init` to seed configs, the tunnel `.conf`, unit file, and
+>    forward-proxy token on the host. Create the two required API tokens
+>    (`proxy_token`, `admin_token`) under `/opt/vpntunnel/configs/auth/` at mode
+>    `0600` (see § 7 step 3).
+> 3. On the host, promote the unit file and start the service:
+>    ```bash
+>    sudo mv /tmp/vpntunnel.service /etc/systemd/system/
+>    sudo systemctl daemon-reload
+>    sudo systemctl enable --now vpntunnel
+>    sudo systemctl status vpntunnel
+>    curl -k -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" \
+>      https://127.0.0.1:8888/v1/admin/health
+>    ```
+> 4. Drop the sudoers line for the deploy user (see § 7 step 6 below).
 >
-> Then run a manual smoke to confirm the new shape works before letting
-> GitHub Actions take over:
->
-> ```bash
-> sudo -iu httpproxy
-> cd /opt/httpproxy
-> IMAGE_TAG=<current-tag> docker compose up -d --wait --wait-timeout 120
-> ```
->
-> Substitute `<current-tag>` with the latest version already on GHCR (e.g.
-> `1.0.0`). If `--wait` succeeds, the server is ready for automated deploys.
-
-> **`config/` → `configs/` rename (skip if this is a first-time install)**
->
-> The runtime config directory was renamed from `config/` to `configs/`
-> across the repo (Dockerfile and `compose.yml` were also moved into the
-> same directory). The server-side bind-mount path therefore changed from
-> `./config:/etc/httpproxy:ro` to `./configs:/etc/httpproxy:ro`. Before
-> the first post-rename deploy, on each host:
->
-> ```bash
-> sudo -iu httpproxy
-> cd /opt/httpproxy
-> mv config configs
-> # edit compose.yml so the volume reads:  - ./configs:/etc/httpproxy:ro
-> IMAGE_TAG=<current-tag> docker compose up -d --wait --wait-timeout 120
-> ```
->
-> The deploy job does NOT do this migration for you — it `cd`s into
-> `$REMOTE_DIR` and runs `docker compose up`. A mismatched bind-mount
-> path means the container starts with an empty `/etc/httpproxy`,
-> fails to load `proxy.json`, and the `/healthz` smoke step trips.
+> Only after all four steps above succeed should you push the first v6
+> production tag.
 
 <details>
-<summary><b>Full deployment guide</b> — one-shot run, compose, server bootstrap, GH Environments, rollback (click to expand)</summary>
+<summary><b>Full deployment guide</b> — smoke test, server bootstrap, GH Environments, rollback (click to expand)</summary>
 
-### 1. One-shot `docker run`
+### 1. Local smoke test
 
-```bash
-mkdir -p ./logs
-sudo chown 65532:65532 ./logs    # distroless runs as UID 65532
-
-docker run -d --name httpproxy --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 \
-  -p 127.0.0.1:8081:8081 \
-  -v $(pwd)/configs:/etc/httpproxy:ro \
-  -v $(pwd)/logs:/var/log/httpproxy \
-  ghcr.io/<owner>/httpproxy:latest
-```
-
-Use `:edge` to pull the latest staging image or `:latest` for the latest
-production release.
-
-### 2. Compose (recommended)
+Build the binary and run it locally against your dev config to confirm
+it starts and the WireGuard handshake completes. Without `-tls-cert-dir`
+the API serves plain HTTP, so use `http://` and no `-k`:
 
 ```bash
-mkdir -p ./logs
-sudo chown 65532:65532 ./logs
-IMAGE_TAG=latest docker compose -f configs/compose.yml up -d
-docker compose -f configs/compose.yml logs -f
+make build
+./build/vpntunnel -config ./configs/proxy.json
+# in another terminal:
+curl -sS \
+  -H "X-Vpntunnel-Token: $(cat ./configs/auth/admin_token)" \
+  http://127.0.0.1:8888/v1/admin/health | jq .
+# expected: {"status":"ok","tunnels":[{"id":"...","healthy":true,"handshake_age_seconds":N}]}
 ```
 
-### 3. First-time GHCR package visibility
+`make examination` runs the same checks plus the role/routing contract
+(admin-only health, the `/v1/tunnels` catalog, unknown-id handling) against
+a locally running daemon. This is a local sanity check only; it does not
+deploy to the server.
 
-Every first workflow run that pushes a new tag shape creates a **private**
-package entry. External `docker pull` fails with `unauthorized: unauthorized`
-until you flip it. This affects both `:edge` (first `staging.yml` run) and
-any new semver tags (first `release.yml` run after a new major version).
+### 4. File modes
 
-If you wire up staging before pushing the first production tag (the
-recommended order), the first `staging.yml` run publishes `:edge` as a
-private package. Flip it to public before the first `release.yml` run, or
-`docker compose pull` on the production host will fail.
-
-1. After the first `staging.yml` run succeeds, go to
-   `https://github.com/users/<owner>/packages/container/httpproxy/settings`
-   (user-owned repo) or
-   `https://github.com/orgs/<org>/packages/container/httpproxy/settings`
-   (org-owned).
-2. Scroll to "Danger Zone" → "Change package visibility".
-3. Select "Public", confirm.
-
-After this, `docker pull ghcr.io/<owner>/httpproxy:edge` and
-`docker pull ghcr.io/<owner>/httpproxy:latest` work unauthenticated.
-
-### 4. Volume permissions
-
-The distroless image runs as UID 65532. The bind-mounted `./logs/` directory
-must be writable by that UID, otherwise lumberjack fails to open the access
-log at startup:
+Restrict access to secrets before placing them on the server. The two API
+token files **must** be mode `0600` and owned by the running user — the daemon
+rejects any other mode at startup:
 
 ```bash
-sudo chown 65532:65532 ./logs
+chmod 0600 /opt/vpntunnel/configs/tunnels/*.conf
+chmod 0600 /opt/vpntunnel/configs/auth/token            # forward-proxy (optional)
+chmod 0600 /opt/vpntunnel/configs/auth/proxy_token       # API: required
+chmod 0600 /opt/vpntunnel/configs/auth/admin_token      # API: required
+chown -R root:root /opt/vpntunnel
+chmod 0750 /opt/vpntunnel
 ```
 
-Do this once per host before the first run.
+The service runs as `root` (matching the sibling fx_rate_monitor pattern).
+`/opt/vpntunnel/logs/` must stay writable by root so lumberjack can rotate
+the access log. The daemon also generates `configs/auth/tunnel-id.key` (mode
+`0600`) on first run if absent — back it up; see [Security](#security).
 
 ### 5. `.conf` files
 
-Bind-mount the directory containing your `.conf` files onto
-`/etc/httpproxy/tunnels/` (the path that relative entries in `proxy.json`
-resolve to). Treat each file like an SSH key:
+Place each `.conf` file at `/opt/vpntunnel/configs/tunnels/` and set mode
+`0600`. They are auto-discovered on the next startup — no entry in
+`proxy.json`. Treat each file like an SSH private key — never commit it to a
+shared repository.
+
+### 6. Debugging the running service
 
 ```bash
-chmod 0400 ./configs/tunnels/*.conf
+journalctl -u vpntunnel -f                          # follow operational log
+journalctl -u vpntunnel --since '10 minutes ago'    # last 10 minutes
+systemctl status vpntunnel                          # unit state + last lines
+ss -tnlp | grep vpntunnel                           # verify listen ports
+# WireGuard tunnel health (-k for the production self-signed cert; token in shell history — use env var if that matters)
+curl -k -sS -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" \
+  https://127.0.0.1:8888/v1/admin/health
 ```
 
-The container reads them via the read-only mount; they never enter the
-image.
+### 7. Server-side prerequisites (do this once on the production host)
 
-### 6. Debugging a running container
+The deploy pipeline ships to a single host. The steps below configure it
+end-to-end so `release.yml` has something healthy to update.
 
-The distroless image has no shell — `docker exec -it container sh` will
-fail. Use one of:
+**The deploy workflow does NOT install the unit file.** The operator does
+this once, as described in step 5.
 
-- `docker logs <container>` — operational log goes to stdout.
-- `docker run --rm --entrypoint=/httpproxy ghcr.io/<owner>/httpproxy:latest -healthcheck`
-  — one-shot TCP probe.
-- `docker inspect <container>` — full state including healthcheck history
-  (in `Health.Log`).
+**1. Provision the deployment directory.**
 
-### 7. Server-side prerequisites (do this on each host: staging and production)
-
-The procedure is identical for both hosts. The only difference is which
-image tag the operator uses for the first-time manual smoke test: `:edge`
-on staging, the latest semver (e.g. `1.0.0`) on production.
-
-If you are adding a staging host for the first time (the existing host from
-Plan 006 becomes the production host), there is no migration — both
-environments are independent state. Stand up the second host fresh,
-following these steps.
-
-**1. Install Docker Engine and Docker Compose v2.17+.**
-
-Docker Compose v2.17 is load-bearing — it introduced the `--wait` flag that
-the deploy job depends on. Verify after install:
+The service runs as `root` (User=root in the systemd unit), so no
+dedicated service user is needed.
 
 ```bash
-docker compose version
-# must be >= 2.17.0
+sudo mkdir -p /opt/vpntunnel/configs/tunnels /opt/vpntunnel/configs/auth /opt/vpntunnel/logs
+sudo chown -R root:root /opt/vpntunnel
+sudo chmod 0750 /opt/vpntunnel
 ```
 
-Follow the [official installation guide](https://docs.docker.com/engine/install/)
-for your distro. On Debian/Ubuntu, `docker-compose-plugin` from the Docker
-apt repo ships v2; the `docker-compose` (v1) snap does not.
+**3. Drop the config files.**
 
-**2. Create a dedicated deploy user.**
+Place `proxy.json` and your `.conf` files under `/opt/vpntunnel/configs/`, and
+create the auth tokens in `/opt/vpntunnel/configs/auth/`. The two API tokens
+(`proxy_token`, `admin_token`) are **required** and must be 64–512 bytes; the
+forward-proxy `token` is optional. Generate and lock them down:
 
 ```bash
-useradd -m -s /bin/bash httpproxy
-usermod -aG docker httpproxy
+openssl rand -hex 48 | sudo tee /opt/vpntunnel/configs/auth/proxy_token  > /dev/null
+openssl rand -hex 48 | sudo tee /opt/vpntunnel/configs/auth/admin_token > /dev/null
+openssl rand -hex 48 | sudo tee /opt/vpntunnel/configs/auth/token       > /dev/null  # optional
+
+chmod 0600 /opt/vpntunnel/configs/tunnels/*.conf
+chmod 0600 /opt/vpntunnel/configs/auth/proxy_token /opt/vpntunnel/configs/auth/admin_token
+chmod 0600 /opt/vpntunnel/configs/auth/token
 ```
 
-> **Security note:** membership in the `docker` group is effectively root on
-> the host — any user in the group can mount `/` via `docker run -v /:/host`.
-> This is the accepted trade-off for unattended deploys without `sudo`.
-> Rootless Docker is listed under §10 hardening follow-ups.
+The two API token files must be mode `0600` and owned by the running user, or
+the daemon refuses to start.
 
-The `docker` group membership lets the `httpproxy` user run `docker compose`
-without `sudo`. Log out and back in (or open a new login shell for the
-`httpproxy` user) before proceeding — the group is not effective until the
-session is refreshed.
+**4. Bootstrap the binary and install the systemd unit.**
 
-**3. Provision the deployment directory.**
+Build the binary locally and place it on the host as a versioned file, then
+create the initial symlink (no daemon running yet, so `ln -sfn` is fine):
 
 ```bash
-mkdir -p /opt/httpproxy/configs/tunnels /opt/httpproxy/logs
-chown -R httpproxy:httpproxy /opt/httpproxy
-chown 65532:65532 /opt/httpproxy/logs
+CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ./build/vpntunnel ./cmd/vpntunnel/
+scp ./build/vpntunnel user@host:/opt/vpntunnel/vpntunnel.v<TAG>
+ssh user@host 'chmod +x /opt/vpntunnel/vpntunnel.v<TAG> && ln -sfn vpntunnel.v<TAG> /opt/vpntunnel/vpntunnel'
 ```
 
-The `chown 65532:65532` step is required because the distroless container
-image runs as UID 65532 (nonroot). There is no `65532` user on the host —
-that is intentional; the bind mount is matched by UID, not by name.
-
-**4. Drop the config files.**
-
-Switch to the `httpproxy` user and place `proxy.json` and the WireGuard
-`.conf` file:
+Then run `make init` from your workstation to seed configs, the tunnel `.conf`,
+unit file, and forward-proxy token (the API tokens are created in step 3). Then
+on the host:
 
 ```bash
-sudo -iu httpproxy
-cd /opt/httpproxy
-# copy proxy.json and your .conf file here
-chmod 0400 configs/tunnels/*.conf
+sudo mv /tmp/vpntunnel.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now vpntunnel
+sudo systemctl status vpntunnel
+curl -k -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" \
+  https://127.0.0.1:8888/v1/admin/health
 ```
 
-Each host should use its own `.conf` with its own WireGuard tunnel. The
-staging and production tunnels should be distinct — sharing a single
-WireGuard peer endpoint between both hosts defeats the independence
-guarantee of having separate environments.
+If the unit file changes in a future repo update, re-scp and `daemon-reload`
+manually — the deploy workflow does not push unit file changes.
 
-**5. Hand-author `/opt/httpproxy/compose.yml`.**
+**6. Authorize the deploy user to restart the unit (only if SSH user is not root).**
 
-This file is NOT copied automatically from the repo. It is authored once
-by the operator and is never overwritten by the deploy job. Legitimate
-divergences (sidecars, restart policy, volume paths, `env_file`) are
-preserved across every deploy. The only contract the deploy job imposes
-is that the file accepts `IMAGE_TAG` from the environment and that
-`docker compose up -d --wait` works against it.
-
-The repo ships a minimal template at `configs/compose.yml` — use it as
-a starting point (`scp configs/compose.yml <host>:/opt/httpproxy/`) and
-edit on the server, or paste the snippet below verbatim. The image
-reference is hardcoded for this project (`ghcr.io/prorochestvo/httpproxy`);
-if you fork to your own GHCR namespace, swap it out:
-
-```yaml
-services:
-  httpproxy:
-    # --wait relies on the image-level HEALTHCHECK. Do NOT add `healthcheck: disable`.
-    image: ghcr.io/prorochestvo/httpproxy:${IMAGE_TAG}
-    ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:8081:8081"
-    volumes:
-      - ./configs:/etc/httpproxy:ro
-      - ./logs:/var/log/httpproxy
-    restart: unless-stopped
-```
-
-`${IMAGE_TAG}` has no default — if unset, Compose fails loud. This is
-intentional.
-
-**6. First-time manual smoke.**
-
-Before allowing GitHub Actions to drive deploys, confirm the setup
-end-to-end.
-
-On **staging** — use `:edge` if it already exists on GHCR (i.e.,
-`staging.yml` has run at least once from a feature branch or previous
-merge), otherwise use the latest semver tag:
+If the deploy `SSH_USERNAME` is `root`, skip this step — root runs `sudo
+systemctl restart vpntunnel` without a sudoers entry. If the deploy user is
+non-root (e.g. a dedicated `deploy` user), add a restricted sudoers entry
+so the workflow's commands work without a password:
 
 ```bash
-sudo -iu httpproxy
-cd /opt/httpproxy
-IMAGE_TAG=edge docker compose up -d --wait --wait-timeout 120
-curl -sS http://127.0.0.1:8081/healthz | jq .
-# expected: {"status":"ok","handshake_age_seconds":N}
+sudo visudo -f /etc/sudoers.d/vpntunnel-deploy
 ```
 
-On **production** — use the latest semver tag already on GHCR (e.g.
-`1.0.0`):
+Paste exactly (substitute `<deploy_user>` with the actual SSH username):
+
+```
+<deploy_user> ALL=(root) NOPASSWD: /bin/systemctl restart vpntunnel, /bin/systemctl is-active --quiet vpntunnel, /bin/journalctl -u vpntunnel --since * -n 200 --no-pager
+```
+
+Then:
 
 ```bash
-sudo -iu httpproxy
-cd /opt/httpproxy
-IMAGE_TAG=1.0.0 docker compose up -d --wait --wait-timeout 120
-curl -sS http://127.0.0.1:8081/healthz | jq .
-# expected: {"status":"ok","handshake_age_seconds":N}
+sudo chmod 0440 /etc/sudoers.d/vpntunnel-deploy
 ```
 
-If `--wait` times out before the container becomes healthy,
-`docker compose logs httpproxy` is the first diagnostic. Check that the
-`.conf` file is valid and that the WireGuard peer is reachable.
-
-> **GHCR package visibility:** the first workflow run that publishes new
-> tag shapes creates a private GHCR package (or adds private tags to an
-> existing one). `docker compose pull` on the server will fail with
-> `unauthorized` until you flip the package to public in the GitHub UI
-> (see §3 of this README). Do this before running the first GHA-driven
-> deploy on each host.
+The line is split into three exact commands (not prefixes) so that a leaked
+deploy key cannot run arbitrary `sudo` — only these three specific invocations
+are permitted. Any future workflow change that adds a new `sudo` command must
+update this line in lockstep, or the deploy will fail on that step.
 
 ### 8. GitHub secrets, variables, and environments
 
-The deploy jobs read configuration from **GitHub Environments** — one per
-deployment target. Secrets and variables are scoped to their environment:
-the `SSH_PRIVATEKEY` secret in the `STAGE` environment is a different
-value from the `SSH_PRIVATEKEY` secret in the `PRIME` environment,
-and the staging deploy job cannot read the production one (and vice versa).
-The variable names are identical across both environments; the
-environment scoping is what keeps them apart.
+The deploy job reads its configuration from the **`PRIME` GitHub
+Environment**. Scoping the SSH secret to an Environment (rather than the
+repo) keeps it off any workflow that has no business reaching the
+production host.
 
-#### Creating the GitHub Environments
+#### Creating the GitHub Environment
 
 1. Go to `repo → Settings → Environments`.
-2. Create an environment named **`STAGE`**.
-   - No protection rules — staging deploys are automatic and unsupervised.
-   - Add the `SSH_*` and (optionally) `TELEGRAM_*` secrets and variables
-     listed below, using the staging-host values.
-3. Create an environment named **`PRIME`**.
+2. Create an environment named **`PRIME`**.
    - Under "Deployment protection rules", enable "Required reviewers" and
      add the repo owner (yourself). This creates a manual approval gate:
      every `v*` tag push pauses before the deploy step until you click
-     "Approve and deploy" in the Actions UI. Five seconds of
-     deliberateness per production deploy; worth it.
-   - Add the same set of secrets and variables, using the production-host values.
+     "Approve and deploy" in the Actions UI.
+   - Add the `SSH_*` and (optionally) `TELEGRAM_*` secrets and variables
+     listed below.
 
 #### Full secret and variable inventory
 
-The `SSH_*` and `TELEGRAM_*` names are created in **each environment**;
-only the values differ between STAGE and PRIME. `REMOTE_DIR` is a
-**repository-level variable** because both hosts use the same path
-(`/opt/httpproxy`); override per environment if any host differs.
+`REMOTE_DIR` is a **repository-level variable** because the path
+(`/opt/vpntunnel`) doesn't carry environment-specific value; override at
+the environment level only if the host actually uses a different path.
+
+> **Note:** if migrating from the `httpproxy` name, update the PRIME
+> environment's `REMOTE_DIR` from `/opt/httpproxy` to `/opt/vpntunnel` and
+> `SSH_USERNAME` from `httpproxy` to `vpntunnel` before pushing the first tag
+> under the new name.
 
 | Name | Scope | Type | Purpose | Example value |
 |---|---|---|---|---|
-| `SSH_PRIVATEKEY` | Environment | Secret | ed25519 private key for the target host | full key contents |
-| `SSH_HOSTNAME` | Environment | Variable | hostname or IP of the target VPS | `staging.example.com` / `proxy.example.com` |
-| `SSH_HOSTPORT` | Environment | Variable | SSH port of the target VPS (use the real port, not 22) | `2222` |
-| `SSH_USERNAME` | Environment | Variable | SSH user on the target VPS | `httpproxy` |
-| `REMOTE_DIR` | Repository (or Environment override) | Variable | Absolute path on the host containing `compose.yml`; the deploy step `cd`s here before `docker compose pull` | `/opt/httpproxy` |
-| `TELEGRAM_TOKEN` | Environment | Secret (optional) | Bot token used by the post-deploy notify steps | `123456:AbCdEf…` |
-| `TELEGRAM_ROOT_CHAT_ID` | Environment | Variable (optional) | Telegram chat ID that receives deploy notifications | `-1001234567890` |
+| `SSH_PRIVATEKEY` | Environment (`PRIME`) | Secret | ed25519 private key for the production host | full key contents |
+| `SSH_HOSTNAME` | Environment (`PRIME`) | Variable | hostname or IP of the production VPS | `proxy.example.com` |
+| `SSH_HOSTPORT` | Environment (`PRIME`) | Variable | SSH port of the production VPS | `2222` |
+| `SSH_USERNAME` | Environment (`PRIME`) | Variable | SSH user on the production VPS | `vpntunnel` |
+| `REMOTE_DIR` | Repository (or `PRIME` override) | Variable | Absolute path on the host where the binary lives | `/opt/vpntunnel` |
+| `TELEGRAM_TOKEN` | Environment (`PRIME`) | Secret (optional) | Bot token used by the post-deploy notify steps | `123456:AbCdEf…` |
+| `TELEGRAM_ROOT_CHAT_ID` | Environment (`PRIME`) | Variable (optional) | Telegram chat ID that receives deploy notifications | `-1001234567890` |
 
 The Telegram pair is optional — if either value is empty, the notify steps
 short-circuit and no message is sent. The deploy itself never depends on
 Telegram reachability.
 
-**Why variables (not secrets) for host/user/port?** None of
-these values are sensitive. Making them variables keeps them visible in
-workflow logs, which is useful when debugging "did this deploy hit the
-right host?" Storing them as secrets would suppress them from logs with
-no security benefit.
+**Why variables (not secrets) for host/user/port?** None of these values
+are sensitive. Making them variables keeps them visible in workflow logs,
+which is useful when debugging "did this deploy hit the right host?"
 
 **Note on host-key verification.** The workflow does NOT pin the server's
-SSH fingerprint — `appleboy/ssh-action` accepts whatever host key the
-server presents at deploy time (TOFU). MITM-resistance therefore depends
-on the path between GitHub's runner and your VPS not being hijacked.
-This matches the `fx_rate_monitor` deploy style and trades fingerprint
-bookkeeping for simpler setup. If you want strict pinning, switch the
-SSH step to a manual `ssh -o StrictHostKeyChecking=yes` with a
+SSH fingerprint — `ssh-keyscan` accepts whatever host key the server
+presents at deploy time (TOFU). MITM-resistance depends on the path
+between GitHub's runner and your VPS not being hijacked. If you want strict
+pinning, switch to a manual `ssh -o StrictHostKeyChecking=yes` with a
 pre-pinned `known_hosts` entry.
 
-#### Generating the deploy keys
-
-**Critical: generate a separate ed25519 key pair for each host.** Do NOT
-reuse the same key on both staging and production — a leaked key would
-then compromise both environments. Two hosts, two keys, no exceptions.
+#### Generating the deploy key
 
 ```bash
-# staging key — run on your workstation
-ssh-keygen -t ed25519 -C "httpproxy-deploy-staging@$(hostname)" \
-  -f ~/.ssh/httpproxy_staging_deploy -N ""
-
-# production key — run on your workstation
-ssh-keygen -t ed25519 -C "httpproxy-deploy-prod@$(hostname)" \
-  -f ~/.ssh/httpproxy_prod_deploy -N ""
+ssh-keygen -t ed25519 -C "vpntunnel-deploy-prod@$(hostname)" \
+  -f ~/.ssh/vpntunnel_prod_deploy -N ""
 ```
 
 `-N ""` creates a passphrase-less key, which is intentional — unattended
 deploys require a key that can be used without interactive input.
 
-**Installing the public key on each server:**
+**Installing the public key on the server:**
 
 ```bash
-# staging host
-ssh-copy-id -i ~/.ssh/httpproxy_staging_deploy.pub httpproxy@<staging-host>
-
-# production host
-ssh-copy-id -i ~/.ssh/httpproxy_prod_deploy.pub httpproxy@<prod-host>
+ssh-copy-id -i ~/.ssh/vpntunnel_prod_deploy.pub vpntunnel@<prod-host>
 ```
 
-**Adding the private keys to GitHub:**
+**Adding the private key to GitHub:**
 
-Paste the full contents of each private key file (not the `.pub` file) into
-the corresponding secret in each environment. The value **must** include the
+Paste the full contents of the private key file into the `SSH_PRIVATEKEY`
+secret in the `PRIME` environment. The value must include the
 `-----BEGIN OPENSSH PRIVATE KEY-----` and `-----END OPENSSH PRIVATE KEY-----`
-lines and a trailing newline. Truncating either marker breaks the
-`appleboy/ssh-action` parser with a cryptic error.
+lines and a trailing newline.
 
-#### Upgrading from the prefixed-variable setup
+**Key rotation procedure:**
 
-If you previously set up the repo with `STAGING_HOST`/`STAGING_USER`/
-`STAGING_FINGERPRINT`/`STAGING_SSH_KEY` and the corresponding `PROD_*`
-names, rename them to the prefix-less form:
-
-1. In `repo → Settings → Environments → STAGE`, recreate the variables
-   under the new names (`SSH_HOSTNAME`, `SSH_HOSTPORT`, `SSH_USERNAME`)
-   and the secret under `SSH_PRIVATEKEY`. `SSH_HOSTPORT` is new — fill
-   it with the actual SSH port of the host (use `22` only if the daemon
-   really listens there). `SSH_FINGERPRINT` is no longer used — drop it.
-2. Same for `PRIME`.
-3. Delete the old prefixed entries from each environment. Leaving them in
-   place is harmless but misleading — they are no longer read.
-
-If you previously set up the repo with the even older `DEPLOY_SSH_KEY` /
-`SERVER_HOST` / `SERVER_USER` / `SERVER_FINGERPRINT` as repository-level
-secrets/variables, delete those after the migration too — they are
-likewise unread.
-
-**Key rotation procedure** (trigger on workstation loss, sale, wipe, or
-periodic scheduled rotation; repeat per environment):
-
-1. Generate a new ed25519 key pair on your workstation (command above).
-2. Add the **new** public key to `~httpproxy/.ssh/authorized_keys` on the
-   target server **before** removing the old one.
-3. Update the `SSH_PRIVATEKEY` secret in the corresponding GH Environment
-   (`staging` or `production`) with the new private key.
-4. Trigger a deploy (push to main for staging; push a throwaway tag for
-   production) and confirm the workflow run is green.
-5. Remove the **old** public key from `authorized_keys` on the server.
+1. Generate a new ed25519 key pair on your workstation.
+2. Add the **new** public key to `~vpntunnel/.ssh/authorized_keys` on the
+   server **before** removing the old one.
+3. Update the `SSH_PRIVATEKEY` secret in the `PRIME` environment.
+4. Push a throwaway pre-release tag and confirm the workflow run is green.
+5. Remove the **old** public key from `authorized_keys`.
 
 Always add before removing — reverting step 3 is easy if step 4 fails; a
 server locked out by premature deletion is not.
 
 ### 9. Rollback
 
-Rollback is manual and re-uses the same deploy pipeline. Automated
-rollback is deliberately not implemented: if `docker compose up --wait`
-times out, the container failed its healthcheck for a reason. Auto-reverting
-masks that bug. The right response is to look at
-`docker compose logs httpproxy`, diagnose, fix, and re-deploy forward.
+Rollback re-uses the same deploy pipeline. Automated rollback is
+deliberately not implemented: if `systemctl is-active` fails or `GET /v1/admin/health`
+returns unhealthy after a deploy, the cause is a real problem. Auto-reverting
+masks it. Diagnose first, then deploy forward or manually scp a known-good binary.
 
-**Source of truth for "what's running" (on either host):**
+**Source of truth for "what's running" on the host:**
 
 ```bash
-docker inspect httpproxy --format='{{.Config.Image}}'
+readlink /opt/vpntunnel/vpntunnel
+systemctl show vpntunnel --property=ExecMainStartTimestamp,ExecMainPID
 ```
-
-Not any file. Not `compose.yml`. Not the workflow run history.
-
-#### Staging rollback
-
-**Primary path:** push a fix commit to `main`. The next `staging.yml` run
-supersedes the broken one automatically.
-
-**Fallback (if the new code is bad but you need immediate relief):** re-run
-an older `staging.yml` workflow run from the GH Actions UI. Because every
-previous run also published an immutable `:main-<sha>` tag, the re-run
-re-pulls that specific image and rolls the staging host back to the
-known-good state. `:edge` alone would not work here — GHCR has overwritten
-it. The immutable per-commit tag is the only durable rollback handle.
-
-#### Production rollback
 
 **Primary path:** push a new tag pointing at an older commit.
 
 ```bash
-# find the SHA you want to roll back to
 git log --oneline --tags | head
-
-# push a new tag pointing at that commit
 git tag v1.2.4-rollback <oldsha>
 git push origin v1.2.4-rollback
 ```
 
-The workflow re-runs end-to-end: test → build → publish → approval gate →
-deploy. Use a fresh tag — re-pushing an existing tag requires deleting and
-re-creating it on both git and GHCR, breaks immutability expectations, and
-confuses anyone who pulled by the original exact version.
+The workflow re-runs end-to-end: test → build → approval gate → deploy.
+Use a fresh tag — re-pushing an existing tag breaks immutability expectations.
 
-**Fast fallback (image already on GHCR, no time to wait for a rebuild):**
-SSH manually and re-deploy by tag:
+**Fast fallback (no time to wait for a pipeline run):**
+The host retains the **3 most recent versioned binaries** (the active version plus
+2 rollback candidates). The active version is always protected from cleanup
+regardless of its mtime, so rolling back to any of the 3 retained versions is
+always safe. To roll back:
 
 ```bash
-ssh httpproxy@<prod-host>
-cd /opt/httpproxy
-IMAGE_TAG=1.2.2 docker compose up -d --wait --wait-timeout 120
+# list the 3 versioned binaries on the host, newest first
+ssh vpntunnel@<prod-host> 'ls -t /opt/vpntunnel/vpntunnel.v* | head -3'
+
+# roll back to a specific version (replace vX.Y.Z with an actual version from the list above)
+ssh vpntunnel@<prod-host> \
+  'ln -sfn vpntunnel.vX.Y.Z /opt/vpntunnel/vpntunnel && sudo systemctl restart vpntunnel'
 ```
 
-This bypasses the approval gate and the pipeline entirely, but rolls the
-host immediately to a known-published image.
-
-**Anti-pattern — do not use `git tag --force`:** moving an existing tag
-pointer to a different SHA reuses an immutable identifier, breaks GHCR's
-expectations for that tag, and confuses anyone who pulled the original
-image. Document it in a post-incident note; don't do it.
-
-**Expected timeline (primary path):** ~3–4 minutes from `git push` to
-served traffic on the rolled-back image (add ~1 minute for the approval
-click).
-
-**Soft floor:** tags built before Plan 006 shipped do not have a `deploy`
-job in their `release.yml`. Tagging an ancient pre-006 commit will rebuild
-and push the image but will not deploy it to the server automatically. Only
-tags built after Plan 006 merged are safe rollback targets via the pipeline.
-
-**`:latest` semantics post-rollback:** the `release.yml` pipeline publishes
-`:latest` against the most-recently-pushed tag. After a rollback tag is
-pushed, `:latest` resolves to the rolled-back image. This is consistent —
-"the last `docker push` wins".
+This bypasses the approval gate entirely — use it only in genuine production
+emergencies. If the version you need is older than the 3 retained on the host,
+check out the older tag on your workstation, build, and scp it manually.
 
 ### 10. Hardening follow-ups (out of scope for current plans)
 
-None of the items below are implemented. They are tracked here as future
-work. Implementing any of them is a separate plan.
+None of the items below are implemented. They are tracked here as future work.
 
-- **SHA-pin actions in workflow files** — all workflow files are currently
-  on floating major-version pins (`@v4`, `@v5`, `@v6`). Pinning to specific
-  commit SHAs prevents a supply-chain compromise from running arbitrary code
-  in CI. Migrate all three files at once; piecemeal sends mixed signals.
+- **SHA-pin actions in workflow files** — all workflow files are on floating
+  major-version pins. Pinning to commit SHAs prevents supply-chain compromise.
 
-- **`command=` restriction in `authorized_keys`** — adding a `command=`
-  prefix limits what an attacker can do if a deploy key is leaked. Blast
-  radius shrinks from "interactive shell as `httpproxy`" to "can re-run the
-  deploy script". Requires the deploy script to be stable; any workflow
-  change must update the `command=` in lockstep.
+- **`command=` restriction in `authorized_keys`** — limits attacker blast
+  radius if a deploy key is leaked. Requires the deploy script to be stable.
 
-- **`fail2ban` on the SSH port** — brute-force mitigation against
-  credential stuffing. Orthogonal to the deploy key mechanism.
+- **`fail2ban` on the SSH port** — brute-force mitigation.
 
-- **Off-machine log shipping** (Loki, Vector, S3, etc.) — logs currently
-  live only on each server. A compromised or crashed host loses its
-  forensic trail.
+- **Off-machine log shipping** (Loki, Vector, S3) — logs currently live only
+  on the server.
 
-- **Tailscale or WireGuard for the SSH channel** — pulling SSH inside an
-  overlay network eliminates the public-internet SSH attack surface
-  entirely. More infrastructure overhead; justified when the servers have
-  other services or a higher threat model.
+- **Tailscale or WireGuard for the SSH channel** — eliminates the
+  public-internet SSH attack surface.
 
-- **Staging implies signal, not guarantee** — staging runs on its own VPS
-  with its own WireGuard `.conf`. A bug that only manifests with the
-  production `.conf` (e.g. a provider-specific MTU quirk) will not be
-  caught on staging. Staging is a signal-strength multiplier, not a
-  bug-free guarantee.
+- **Version-pinned ExecStart** — the live `/opt/vpntunnel/vpntunnel` path is
+  now a symlink; `readlink` identifies the running version at a glance. The
+  open question is whether `ExecStart=` should reference the versioned filename
+  directly rather than the symlink — a minor ergonomic change, not yet implemented.
 
 </details>
 
@@ -798,12 +679,22 @@ work. Implementing any of them is a separate plan.
 
 The daemon emits two log streams:
 
-**Operational log** (stdout, slog):
+**Operational log** (stdout → journald via `StandardOutput=journal`):
 
 - Lifecycle: startup, config load, tunnel handshake, graceful shutdown.
 - Auth failures: `client_addr`, `method`, `target`, `reason` (one of
   `missing`, `wrong_scheme`, `wrong_token`, `malformed`). **Never** the
   token itself.
+- **Auth bypass (loopback)**. One line per request when `auth` is configured and
+  the client connects from `127.0.0.0/8` or `::1`. Shape: `msg="auth bypassed"`,
+  fields `reason=loopback`, `client_addr=<RemoteAddr>`. Expected during normal
+  local use; spot-check `client_addr` if you see unexpectedly high volume —
+  every value must be an actual loopback address, since the log line only
+  fires when `isLoopbackRemote` returns true.
+
+```bash
+journalctl -u vpntunnel -f
+```
 
 **Access log** (rotating JSONL file via lumberjack):
 
@@ -821,35 +712,75 @@ The daemon emits two log streams:
 }
 ```
 
+```bash
+tail -F /opt/vpntunnel/logs/access.log
+```
+
 The access log has no `Authorization` or `Proxy-Authorization` field by
 design. The Bearer token never appears in any log stream.
 
-**Health endpoint** — `GET /healthz` on `admin.listen` (default
-`127.0.0.1:8081`) returns 200 when the WireGuard tunnel handshake is
-within `health.handshake_max_age`, otherwise 503. See the
-[Troubleshooting](#troubleshooting) table for the body shapes and `reason`
-enum. The endpoint is unauthenticated; keep it on loopback unless you
-intend to expose tunnel-uptime to the network.
+**Health endpoint** — `GET /v1/admin/health` on `api.listen` (default
+`127.0.0.1:8888`) returns the aggregated multi-tunnel health snapshot.
+Requires the `X-Vpntunnel-Token` header with the admin token — there is no
+loopback bypass on the API server. The API is plain HTTP unless the daemon was
+started with `-tls-cert-dir`, in which case it serves HTTPS with a self-signed
+certificate (pass `-k` to curl). Production runs with TLS; a local dev daemon
+does not.
+
+Response body shape:
+
+```json
+{
+  "status": "ok",
+  "tunnels": [
+    {"id": "se-sto-wg-001", "healthy": true,  "handshake_age_seconds": 42},
+    {"id": "de-ber-wg-001", "healthy": false, "handshake_age_seconds": -1}
+  ]
+}
+```
+
+`status` values: `ok` (all tunnels healthy, HTTP 200), `degraded` (some healthy,
+HTTP 200 — automation must parse the body), `down` (none healthy or empty pool, HTTP 503).
+`handshake_age_seconds` is `-1` when no handshake has been observed or an error
+occurred reading tunnel state. The staleness threshold is a fixed 180s (not
+configurable).
 
 ## Security
 
-**Threat model (brief).** `httpproxy` hides your egress IP from upstream
+**Threat model (brief).** `vpntunnel` hides your egress IP from upstream
 origins by routing every byte through a WireGuard exit. It does **not**
 encrypt the client → proxy hop (use it on loopback, an SSH tunnel, or a
 Tailscale / WireGuard overlay network), does **not** prevent client-side
 DNS leaks (the client must resolve through the proxy or DoH), and does
 **not** protect against traffic analysis by your WireGuard provider.
 
+**Loopback bypass (forward proxy only).** Clients connecting to the forward
+proxy (`vpnstream.listen`, default `:7788`) from the loopback interface
+(`127.0.0.1` or `::1`) bypass the Bearer-token challenge. With the default
+loopback binding this means every local process can use the proxy without a
+token; with a non-loopback `vpnstream.listen` the bypass is inactive and every
+request must carry a valid Bearer token. The rule is: if you change
+`vpnstream.listen` to a non-loopback address, also configure `vpnstream.auth`,
+or the proxy is open to any network client. The API listener has **no** such
+bypass — every API request always needs a valid `X-Vpntunnel-Token`.
+
 **Secrets discipline.**
 
 - WireGuard private keys live in `.conf` files in `./configs/tunnels/`, mode
-  `0400`, gitignored.
-- Bearer tokens live in `./configs/auth/`, mode `0400`, gitignored.
-- Neither value appears in log output, error messages, or HTTP response
+  `0600`, gitignored.
+- Bearer/API tokens live in `./configs/auth/`, mode `0600`, gitignored. The two
+  API token files are rejected by the daemon unless they are exactly `0600` and
+  owned by the running user.
+- The tunnel-id HMAC key (`tunnel_id_hmac_key_file`, default
+  `./configs/auth/tunnel-id.key`) is 64 bytes of key material, mode `0600`,
+  auto-generated on first run. **Never log it; back it up like a private key** —
+  overwriting it silently rotates every derived tunnel id. The derived hex ids
+  themselves are public and may appear in logs and API responses.
+- None of the above appear in log output, error messages, or HTTP response
   bodies. Auth-failure responses are uniform — `407` with body
   `Proxy authentication required.\n`, no diagnostic that leaks token shape.
-- Deploy SSH keys are ed25519, passphrase-less, **dedicated per server** —
-  never reuse across environments.
+- The deploy SSH key is ed25519, passphrase-less, dedicated to the
+  production host. Rotate per the procedure in §8.
 - Token comparison uses `crypto/subtle.ConstantTimeCompare`. No length
   oracle, no early exit.
 

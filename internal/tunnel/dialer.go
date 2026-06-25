@@ -1,12 +1,14 @@
 // Package tunnel defines the egress dialer interfaces used by the proxy.
 // Callers use Dialer exclusively; implementations that own resources (e.g. a
 // userspace WireGuard device) also implement DialerCloser; implementations
-// that report tunnel health also implement HealthReporter.
+// that report tunnel health also implement HealthReporter; implementations
+// that support DNS resolution inside the tunnel also implement Resolver.
 package tunnel
 
 import (
 	"context"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -30,6 +32,18 @@ type DialerCloser interface {
 	// Close releases all resources held by the dialer. It must be safe to
 	// call more than once (subsequent calls are no-ops).
 	Close() error
+}
+
+// Resolver looks up the IP addresses that a tunnel's DNS would return for a
+// hostname. Implementations are concurrent-safe. The returned slice is non-nil
+// on success but may be empty if the host resolves to no addresses (NXDOMAIN /
+// empty answer — both surface as len() == 0 with err == nil; callers must map
+// an empty result to a "no such host" error themselves).
+type Resolver interface {
+	// LookupHost resolves host to IP addresses using the tunnel's DNS.
+	// Returns a nil slice and non-nil error on resolution failure.
+	// Returns a non-nil, possibly empty slice and nil error on NXDOMAIN.
+	LookupHost(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 // HealthReporter is implemented by Dialers that can report tunnel-level

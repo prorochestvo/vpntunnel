@@ -22,11 +22,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"httpproxy/internal/auth"
-	"httpproxy/internal/domain"
-	"httpproxy/internal/observability"
-	"httpproxy/internal/publicerror"
-	"httpproxy/internal/tunnel"
+	"vpntunnel/internal/auth"
+	"vpntunnel/internal/domain"
+	"vpntunnel/internal/observability"
+	"vpntunnel/internal/publicerror"
+	"vpntunnel/internal/tunnel"
 )
 
 // ErrFallbackMessage is the generic error body sent to clients when an
@@ -370,6 +370,13 @@ func (s *ProxyService) checkAuth(w http.ResponseWriter, r *http.Request) bool {
 	if s.verifier == nil {
 		return true
 	}
+	if isLoopbackRemote(r.RemoteAddr) {
+		s.logger().Info("auth bypassed",
+			slog.String("reason", "loopback"),
+			slog.String("client_addr", r.RemoteAddr),
+		)
+		return true
+	}
 	header := r.Header.Get("Proxy-Authorization")
 	if header != "" && s.verifier.Verify(header) {
 		return true
@@ -377,7 +384,7 @@ func (s *ProxyService) checkAuth(w http.ResponseWriter, r *http.Request) bool {
 
 	reason := classifyAuthFailure(header)
 	target := authLogTarget(r)
-	w.Header().Set("Proxy-Authenticate", `Bearer realm="httpproxy"`)
+	w.Header().Set("Proxy-Authenticate", `Bearer realm="vpntunnel"`)
 	http.Error(w, "Proxy authentication required.", http.StatusProxyAuthRequired)
 	s.logger().Info("auth failed",
 		slog.String("client_addr", r.RemoteAddr),
@@ -460,6 +467,33 @@ func halfClose(conn net.Conn) {
 		return
 	}
 	_ = conn.Close()
+}
+
+// isLoopbackRemote reports whether addr (an "ip:port" string as set by net/http
+// in r.RemoteAddr) belongs to a client connecting over the loopback interface.
+// It covers 127.0.0.0/8, ::1, and IPv4-mapped IPv6 loopback (::ffff:127.0.0.1).
+// Empty or unparseable addresses return false (fail closed: an abnormal RemoteAddr
+// must not grant an auth bypass — failing open on malformed input is the shape of
+// a classic auth bypass bug).
+//
+// Trust boundary: this function reads r.RemoteAddr, which net/http sets to the TCP
+// peer address of the accepted connection. Any middleware that rewrites RemoteAddr
+// (a PROXY-protocol parser, a reverse-proxy hop) would silently widen the bypass to
+// whatever address that middleware injects. In the current deploy model the daemon
+// binds to 127.0.0.1 by default, so this branch is the active gate for local-client
+// auth bypass; remote clients reach the daemon only when listen is changed to a
+// non-loopback address, at which point this branch is inactive and the Bearer token
+// is enforced.
+func isLoopbackRemote(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // hopByHopHeaders lists the standard hop-by-hop header names defined in

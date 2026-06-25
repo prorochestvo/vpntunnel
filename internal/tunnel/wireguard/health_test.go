@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"httpproxy/internal/tunnel"
+	"vpntunnel/internal/tunnel"
 )
 
 // compile-time assertion: WireGuardDialer satisfies tunnel.HealthReporter.

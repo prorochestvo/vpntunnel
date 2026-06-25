@@ -22,14 +22,15 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
-	"httpproxy/internal/tunnel"
+	"vpntunnel/internal/tunnel"
 )
 
-// compile-time assertions that WireGuardDialer satisfies all three interfaces.
+// compile-time assertions that WireGuardDialer satisfies all four interfaces.
 var (
 	_ tunnel.Dialer         = (*WireGuardDialer)(nil)
 	_ tunnel.DialerCloser   = (*WireGuardDialer)(nil)
 	_ tunnel.HealthReporter = (*WireGuardDialer)(nil)
+	_ tunnel.Resolver       = (*WireGuardDialer)(nil)
 )
 
 // NewDialer builds the WireGuard device and brings it up administratively.
@@ -150,6 +151,28 @@ func (d *WireGuardDialer) DialContext(ctx context.Context, network, address stri
 		return nil, fmt.Errorf("wireguard: dial %s: %w", address, err)
 	}
 	return conn, nil
+}
+
+// LookupHost resolves host via the tunnel's DNS (netstack-backed resolver).
+// Returns netip.Addr values; non-parseable strings from netstack are dropped
+// silently (defensive against future netstack API changes). The returned slice
+// is nil-safe: a non-nil empty slice means the host resolved but had no
+// addresses (NXDOMAIN / empty answer). Safe for concurrent use.
+func (d *WireGuardDialer) LookupHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	strs, err := d.tnet.LookupContextHost(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("wireguard: lookup %s: %w", host, err)
+	}
+	addrs := make([]netip.Addr, 0, len(strs))
+	for _, s := range strs {
+		a, parseErr := netip.ParseAddr(s)
+		if parseErr != nil {
+			// skip non-parseable; defensive against netstack returning unexpected strings.
+			continue
+		}
+		addrs = append(addrs, a)
+	}
+	return addrs, nil
 }
 
 // newDeviceLogger builds a wireguard-go device.Logger that bridges to slog.

@@ -21,11 +21,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"httpproxy/internal/auth"
-	"httpproxy/internal/config"
-	"httpproxy/internal/observability"
-	"httpproxy/internal/service"
-	"httpproxy/internal/tunnel"
+	"vpntunnel/internal/auth"
+	"vpntunnel/internal/config"
+	"vpntunnel/internal/observability"
+	"vpntunnel/internal/service"
+	"vpntunnel/internal/tunnel"
 )
 
 var _ tunnel.Dialer = (*mockDialer)(nil)
@@ -53,6 +53,26 @@ func (m *mockDialer) DialContext(ctx context.Context, network, address string) (
 		return m.dialFn(ctx, network, address)
 	}
 	return net.Dial(network, address)
+}
+
+// lockedBuffer is a bytes.Buffer guarded by a mutex. It satisfies io.Writer
+// and is safe for concurrent use, meeting the contract required by
+// slog.NewJSONHandler when the underlying writer is shared across goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (lb *lockedBuffer) Write(p []byte) (int, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.buf.Write(p)
+}
+
+func (lb *lockedBuffer) String() string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.buf.String()
 }
 
 // directDialer routes DialContext directly to net.Dial.
@@ -233,7 +253,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 			MaxAgeDays: 14,
 			MaxBackups: 7,
 			Compress:   false,
-		}, nil)
+		}, nil, nil)
 		require.NoError(t, err)
 
 		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
@@ -292,7 +312,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 			MaxAgeDays: 14,
 			MaxBackups: 7,
 			Compress:   false,
-		}, nil)
+		}, nil, nil)
 		require.NoError(t, err)
 
 		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
@@ -366,7 +386,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
 		assert.Equal(t, "Proxy authentication required.\n", rr.Body.String())
-		assert.Equal(t, `Bearer realm="httpproxy"`, rr.Header().Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, rr.Header().Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth enabled with Basic scheme returns 407", func(t *testing.T) {
@@ -381,7 +401,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
 		assert.Equal(t, "Proxy authentication required.\n", rr.Body.String())
-		assert.Equal(t, `Bearer realm="httpproxy"`, rr.Header().Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, rr.Header().Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth enabled with wrong token returns 407", func(t *testing.T) {
@@ -398,7 +418,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
 		assert.Equal(t, "Proxy authentication required.\n", rr.Body.String())
-		assert.Equal(t, `Bearer realm="httpproxy"`, rr.Header().Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, rr.Header().Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth enabled with malformed header returns 407", func(t *testing.T) {
@@ -413,7 +433,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
 		assert.Equal(t, "Proxy authentication required.\n", rr.Body.String())
-		assert.Equal(t, `Bearer realm="httpproxy"`, rr.Header().Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, rr.Header().Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth success strips Proxy-Authorization before forwarding", func(t *testing.T) {
@@ -509,6 +529,82 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
 		assert.Contains(t, buf.String(), `reason=malformed`,
 			"Bearer with trailing space and no token must be classified as malformed, not wrong_token")
+	})
+
+	t.Run("auth enabled bypasses loopback IPv4", func(t *testing.T) {
+		t.Parallel()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, "ok")
+		}))
+		t.Cleanup(upstream.Close)
+
+		var lb lockedBuffer
+		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+			o.Verifier = &mockVerifier{verifyFn: func(string) bool {
+				t.Fatal("verifier must not be called for loopback client")
+				return false
+			}}
+			o.OpLog = slog.New(slog.NewJSONHandler(&lb, nil))
+		})
+		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Contains(t, lb.String(), `"reason":"loopback"`)
+	})
+
+	t.Run("auth enabled bypasses loopback IPv6", func(t *testing.T) {
+		t.Parallel()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, "ok")
+		}))
+		t.Cleanup(upstream.Close)
+
+		var lb lockedBuffer
+		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+			o.Verifier = &mockVerifier{verifyFn: func(string) bool {
+				t.Fatal("verifier must not be called for loopback client")
+				return false
+			}}
+			o.OpLog = slog.New(slog.NewJSONHandler(&lb, nil))
+		})
+		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+		req.RemoteAddr = "[::1]:12345"
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Contains(t, lb.String(), `"reason":"loopback"`)
+	})
+
+	t.Run("auth enabled rejects non-loopback", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
+		})
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		req.RemoteAddr = "192.0.2.4:12345"
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
+		assert.Equal(t, `Bearer realm="vpntunnel"`, rr.Header().Get("Proxy-Authenticate"))
+	})
+
+	t.Run("auth enabled fails closed on empty RemoteAddr", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
+		})
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		req.RemoteAddr = ""
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		assert.Equal(t, http.StatusProxyAuthRequired, rr.Code)
+		assert.Equal(t, `Bearer realm="vpntunnel"`, rr.Header().Get("Proxy-Authenticate"))
 	})
 }
 
@@ -891,7 +987,10 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
 			o.Verifier = v
 		})
+		// force non-loopback so the loopback bypass does not fire and the token
+		// check is the actual code path under test.
 		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.RemoteAddr = "192.0.2.4:12345"
 			svc.HandleCONNECT(w, r)
 		}))
 		t.Cleanup(proxyServer.Close)
@@ -917,7 +1016,9 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
+		// override RemoteAddr to non-loopback so the bypass does not fire
 		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.RemoteAddr = "192.0.2.4:12345"
 			svc.HandleCONNECT(w, r)
 		}))
 		t.Cleanup(proxyServer.Close)
@@ -934,7 +1035,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Equal(t, "Proxy authentication required.\n", string(body))
-		assert.Equal(t, `Bearer realm="httpproxy"`, resp.Header.Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, resp.Header.Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth enabled with wrong token returns 407 without hijacking", func(t *testing.T) {
@@ -944,7 +1045,9 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
 			o.Verifier = v
 		})
+		// override RemoteAddr to non-loopback so the bypass does not fire
 		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.RemoteAddr = "192.0.2.4:12345"
 			svc.HandleCONNECT(w, r)
 		}))
 		t.Cleanup(proxyServer.Close)
@@ -962,7 +1065,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Equal(t, "Proxy authentication required.\n", string(body))
-		assert.Equal(t, `Bearer realm="httpproxy"`, resp.Header.Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, resp.Header.Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth enabled with Basic scheme returns 407 without hijacking", func(t *testing.T) {
@@ -972,7 +1075,9 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
 			o.Verifier = v
 		})
+		// override RemoteAddr to non-loopback so the bypass does not fire
 		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.RemoteAddr = "192.0.2.4:12345"
 			svc.HandleCONNECT(w, r)
 		}))
 		t.Cleanup(proxyServer.Close)
@@ -990,7 +1095,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Equal(t, "Proxy authentication required.\n", string(body))
-		assert.Equal(t, `Bearer realm="httpproxy"`, resp.Header.Get("Proxy-Authenticate"))
+		assert.Equal(t, `Bearer realm="vpntunnel"`, resp.Header.Get("Proxy-Authenticate"))
 	})
 
 	t.Run("auth failure op log never contains token value for CONNECT", func(t *testing.T) {
@@ -1005,7 +1110,9 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 			o.Verifier = v
 			o.OpLog = logger
 		})
+		// override RemoteAddr to non-loopback so the bypass does not fire
 		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.RemoteAddr = "192.0.2.4:12345"
 			svc.HandleCONNECT(w, r)
 		}))
 		t.Cleanup(proxyServer.Close)
@@ -1025,4 +1132,101 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		assert.NotContains(t, buf.String(), "connectwrongattempt",
 			"the attempted token must never appear in any log output")
 	})
+
+	t.Run("auth enabled bypasses loopback", func(t *testing.T) {
+		t.Parallel()
+		echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = echoLn.Close() })
+		go func() {
+			conn, err := echoLn.Accept()
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			_, _ = io.Copy(conn, conn)
+		}()
+
+		var lb lockedBuffer
+		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+			o.Verifier = &mockVerifier{verifyFn: func(string) bool {
+				t.Fatal("verifier must not be called for loopback client")
+				return false
+			}}
+			o.OpLog = slog.New(slog.NewJSONHandler(&lb, nil))
+		})
+		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			svc.HandleCONNECT(w, r)
+		}))
+		t.Cleanup(proxyServer.Close)
+
+		target := echoLn.Addr().String()
+		conn, err := net.Dial("tcp", proxyServer.Listener.Addr().String())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		// the proxy server loopback address means RemoteAddr will be 127.0.0.1:port
+		_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		require.NoError(t, err)
+
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, lb.String(), `"reason":"loopback"`)
+	})
+
+	t.Run("auth enabled rejects non-loopback", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
+		})
+		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// override RemoteAddr before the handler sees it
+			r.RemoteAddr = "192.0.2.4:12345"
+			svc.HandleCONNECT(w, r)
+		}))
+		t.Cleanup(proxyServer.Close)
+
+		req, err := http.NewRequest(http.MethodConnect, proxyServer.URL, nil)
+		require.NoError(t, err)
+		req.Host = "example.com:443"
+
+		resp, err := proxyServer.Client().Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusProxyAuthRequired, resp.StatusCode)
+		assert.Equal(t, `Bearer realm="vpntunnel"`, resp.Header.Get("Proxy-Authenticate"))
+	})
+}
+
+func TestIsLoopbackRemote(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:12345", true},
+		{"127.0.0.1:0", true},
+		{"[::1]:12345", true},
+		{"[::ffff:127.0.0.1]:80", true},
+		{"192.0.2.4:12345", false},
+		{"", false},
+		{"garbage", false},
+		{"127.0.0.1", false},       // no port — SplitHostPort error
+		{"127.0.0.1.:1234", false}, // trailing dot — ParseIP returns nil
+		{"notanip:1234", false},    // not an IP address
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.addr, func(t *testing.T) {
+			t.Parallel()
+			got := service.IsLoopbackRemote(tc.addr)
+			assert.Equal(t, tc.want, got, "addr=%q", tc.addr)
+		})
+	}
 }

@@ -26,8 +26,8 @@ Thumbs.db
 *.dylib
 
 # belt-and-suspenders: catch bare `go build` dropping binaries at repo root
-/bootstrap-mullvad
-/httpproxy
+/vpntunnel
+/generatevpnconfig
 
 # Logs and local databases
 *.log
@@ -44,6 +44,8 @@ Thumbs.db
 !/configs/tunnels/.gitkeep
 /configs/auth/*
 !/configs/auth/.gitkeep
+# runtime-generated TLS cert + private key for the HTTPS API listener
+/configs/tls/
 
 # Test binary, built with `go test -c`
 *.test

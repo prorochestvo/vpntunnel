@@ -1,24 +1,33 @@
 {
-  "listen": "0.0.0.0:1701",
-  "upstream": {
-    "configs": ["./tunnels/mullvad-ch-zrh-wg-001.conf"],
-    "active": "mullvad-ch-zrh-wg-001"
+  "tunnel_id_hmac_key_file": "./auth/tunnel-id.key",
+  "vpnstream": {
+    "listen": "127.0.0.1:7788",
+    "allowed_countries": ["ch", "se", "us", "gb", "ua", "de"],
+    "auth": { "token_file": "./auth/token" },
+    "reconnect_min": "10m",
+    "reconnect_max": "3h",
+    "dial_timeout": "10s",
+    "idle_timeout": "90s",
+    "shutdown_timeout": "15s"
   },
-  "admin": {
-    "listen": "0.0.0.0:8081",
-    "shutdown_timeout": "5s"
+  "api": {
+    "listen": "127.0.0.1:8888",
+    "shutdown_timeout": "5s",
+    "auth": {
+      "proxy_token_file": "./auth/proxy_token",
+      "admin_token_file": "./auth/admin_token"
+    },
+    "vpn": {
+      "async": { "storage_path": "/opt/vpntunnel/state/async.db" },
+      "demand": { "grace": "10s", "settle_delay": "15s", "idle_ttl": "168h" },
+      "timeout": "30s",
+      "max_timeout": "5m"
+    },
+    "max_request_body_bytes": 10485760,
+    "log": { "path_sanitize_patterns": [] }
   },
-  "health": {
-    "handshake_max_age": "180s"
-  },
-  "auth": {
-    "token_file": "./auth/token"
-  },
-  "dial_timeout": "10s",
-  "idle_timeout": "90s",
-  "shutdown_timeout": "15s",
   "access_log": {
-    "path": "/var/log/httpproxy/access.log",
+    "path": "./logs/access.log",
     "max_size_mb": 100,
     "max_age_days": 14,
     "max_backups": 7,

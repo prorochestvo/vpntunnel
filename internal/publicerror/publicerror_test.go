@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"httpproxy/internal/publicerror"
+	"vpntunnel/internal/publicerror"
 )
 
 func TestError(t *testing.T) {

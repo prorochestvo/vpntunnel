@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"httpproxy/internal/auth"
+	"vpntunnel/internal/auth"
 )
 
 func TestBearerVerifier_Verify(t *testing.T) {

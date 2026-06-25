@@ -1,4 +1,4 @@
-// Package domain defines the core value types shared across the httpproxy
+// Package domain defines the core value types shared across the vpntunnel
 // internal packages. It has no I/O, no business logic, and no imports beyond
 // the standard library.
 package domain

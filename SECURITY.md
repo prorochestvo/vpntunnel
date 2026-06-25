@@ -4,8 +4,9 @@
 
 This project ships from a single branch. The actively supported versions are:
 
-- The latest `vX.Y.Z` tag (production image: `ghcr.io/<owner>/httpproxy:latest`).
-- The current `main` branch (staging image: `ghcr.io/<owner>/httpproxy:edge`).
+- The latest `vX.Y.Z` tag (production binary, deployed via the `release` workflow).
+- Pre-release tags (`vX.Y.Z-rcN`) — immutable, manually verified, not auto-promoted
+  to stable; treat them as experimental.
 
 Older tags are not patched. If you find a vulnerability that also affects an
 older tag, the fix is rolled forward via a new release — there is no separate
@@ -13,7 +14,7 @@ backport stream.
 
 ## Threat model
 
-### What `httpproxy` protects
+### What `vpntunnel` protects
 
 - **Egress IP privacy.** Every byte leaving the proxy exits via the configured
   WireGuard tunnel. Upstream origins see the WireGuard peer's IP, never the
@@ -27,7 +28,7 @@ backport stream.
   bodies. The access log records request metadata only; no `Authorization`
   or `Proxy-Authorization` headers reach disk.
 
-### What `httpproxy` does NOT protect
+### What `vpntunnel` does NOT protect
 
 - **The client → proxy hop.** The proxy listener speaks plain HTTP. Use it
   on `127.0.0.1`, an SSH tunnel, or a Tailscale / WireGuard overlay network
@@ -47,10 +48,8 @@ backport stream.
 - WireGuard `.conf` files live in `./configs/tunnels/`, mode `0400`,
   gitignored.
 - Bearer tokens live in `./configs/auth/`, mode `0400`, gitignored.
-- Deploy SSH keys (`SSH_PRIVATEKEY` GH secret, scoped per-environment) are ed25519,
-  passphrase-less, dedicated per server. The same identifier resolves to different
-  values in the `staging` and `production` GH Environments; never reuse the same
-  key across them.
+- The deploy SSH key (`SSH_PRIVATEKEY` GH secret) is ed25519, passphrase-less,
+  scoped to the `PRIME` GH Environment, dedicated to the production host.
 - The `/healthz` endpoint is unauthenticated by design. Keep it on loopback
   unless you intend to expose tunnel-uptime as a public oracle.
 
@@ -61,7 +60,7 @@ Please **do not** open public GitHub issues for security problems.
 Use one of:
 
 - **GitHub Security Advisories** — open a private advisory at
-  `https://github.com/<owner>/httpproxy/security/advisories/new`.
+  `https://github.com/<owner>/vpntunnel/security/advisories/new`.
 - **Email** — `seilbekskindirov@gmail.com`.
 
 Include a description, reproduction steps, and the affected version (tag

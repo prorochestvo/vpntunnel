@@ -10,23 +10,35 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
-	"httpproxy/internal/config"
-	"httpproxy/internal/service"
+	"vpntunnel/internal/service"
 )
 
-// New constructs a Server from cfg, svc, and opLog. opLog may be nil; if nil
+// Options configures the HTTP proxy server. It carries only the three scalars
+// httpserver needs; it does not depend on the full config.Config.
+type Options struct {
+	// Listen is the address to bind to, in "host:port" form.
+	Listen string
+	// ReadHeaderTimeout bounds the time to read request headers.
+	// Fed by the proxy's DialTimeout.
+	ReadHeaderTimeout time.Duration
+	// IdleTimeout is the maximum time to wait for the next request.
+	IdleTimeout time.Duration
+}
+
+// New constructs a Server from opts, svc, and opLog. opLog may be nil; if nil
 // slog.Default() is used. WriteTimeout is intentionally zero — CONNECT tunnels
 // must outlive any per-write deadline. The risk of slow-write attacks against
 // the forward-HTTP path is mitigated by ReadHeaderTimeout and upstream
 // http.Client timeouts; accepted for v1.
-func New(cfg config.Config, svc *service.ProxyService, opLog *slog.Logger) *Server {
-	return NewWithHandler(cfg, svc, opLog)
+func New(opts Options, svc *service.ProxyService, opLog *slog.Logger) *Server {
+	return NewWithHandler(opts, svc, opLog)
 }
 
 // NewWithHandler constructs a Server that dispatches to handler instead of
 // a concrete *service.ProxyService. Intended for testing with stub handlers.
-func NewWithHandler(cfg config.Config, handler proxyHandler, opLog *slog.Logger) *Server {
+func NewWithHandler(opts Options, handler proxyHandler, opLog *slog.Logger) *Server {
 	logger := opLog
 	if logger == nil {
 		logger = slog.Default()
@@ -36,10 +48,10 @@ func NewWithHandler(cfg config.Config, handler proxyHandler, opLog *slog.Logger)
 	errLogger := slog.NewLogLogger(logger.Handler(), slog.LevelWarn)
 
 	httpSrv := &http.Server{
-		Addr:              cfg.Listen,
+		Addr:              opts.Listen,
 		Handler:           rootHandler(handler),
-		ReadHeaderTimeout: cfg.DialTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
+		ReadHeaderTimeout: opts.ReadHeaderTimeout,
+		IdleTimeout:       opts.IdleTimeout,
 		// WriteTimeout intentionally unset; CONNECT tunnels must outlive any
 		// per-write deadline. The hijacked conn manages its own lifecycle.
 		WriteTimeout: 0,

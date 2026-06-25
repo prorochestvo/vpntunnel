@@ -1,8 +1,0 @@
-# Defense in depth: the script writes all key material to <repo>/tmp/, which
-# is already gitignored. This file is a belt-and-braces guard in case anyone
-# changes the script, runs it from a wrong cwd, or accidentally copies key
-# material into this directory.
-*.key
-*.pub
-*.conf
-*.bak

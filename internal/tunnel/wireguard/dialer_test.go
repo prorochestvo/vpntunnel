@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"httpproxy/internal/tunnel/wireguard"
+	"vpntunnel/internal/tunnel/wireguard"
 )
 
 // newTestLogger returns a slog logger suitable for tests.

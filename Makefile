@@ -1,32 +1,17 @@
-# httpproxy — forward HTTP proxy over WireGuard
+# vpntunnel — forward HTTP proxy over WireGuard
 #
-# Quick start:
-#   1. Download a wg-quick .conf from your VPN provider.
-#   2. mv ~/Downloads/<name>.conf ./configs/tunnels/
-#   3. Edit configs/proxy.json: set upstream.configs and upstream.active.
-#   4. make run
-#
-# NOTE: make run requires configs/proxy.json to be populated with at least
-# one .conf path under upstream.configs. Out-of-the-box it will exit with
-# a validation error — this is expected; configure it first.
-#
-# Docker targets (local dev only; CI builds + pushes to GHCR):
-#   docker-build  — build the production image tagged httpproxy:dev.
-#   docker-run    — run an existing local image, mounting ./configs/ and ./logs/.
-#                   Does NOT build — call `make docker-build` first (or chain:
-#                   `make docker-build docker-run`).
-#                   NOTE: ./logs/ must be writable by UID 65532 (distroless nonroot).
-#                   Run once: sudo chown 65532:65532 ./logs/
+# `make run` needs at least one wg-quick .conf in ./configs/tunnels/ (auto-
+# discovered at startup) or the daemon exits; `make generate-vpn-config` makes one.
 
-IMAGE_TAG ?= dev
-
-.PHONY: build build-httpproxy run test lint format clean docker-build docker-run
+.PHONY: build build-vpntunnel run test lint format clean init deploy-nginx generate-vpn-config healthz examination
 
 build: format
-	CGO_ENABLED=0 go build -o ./build/httpproxy ./cmd/httpproxy/
+	CGO_ENABLED=0 go build -o ./build/vpntunnel ./cmd/vpntunnel/
 
 run: build
-	CGO_ENABLED=0 go run ./cmd/httpproxy -config ./configs/proxy.json
+	# no -tls-cert-dir: the API serves plain HTTP (loopback-only dev). Pass the
+	# flag to get HTTPS; production sets it on the systemd ExecStart.
+	CGO_ENABLED=0 go run ./cmd/vpntunnel -config ./configs/proxy.json
 
 test: lint
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
@@ -40,58 +25,72 @@ lint:
 format:
 	go fmt ./...
 
-# clean removes build artifacts. The bootstrap-mullvad entries are kept as
-# belt-and-suspenders against accidental bare `go build` runs in the future;
-# the binary has been removed from the project.
 clean:
 	rm -rf ./build ./tmp/*.tmp
-	rm -f ./bootstrap-mullvad ./httpproxy ./build/bootstrap-mullvad ./build/httpproxy
 
-# docker-build builds the production image locally and tags it as httpproxy:dev.
-# CI builds + pushes; this target is for local smoke only.
-docker-build:
-	docker build -f configs/httpproxy.distroless.go1.26.dockerfile -t httpproxy:dev .
+# interactively generate WireGuard tunnel .conf file(s) into configs/tunnels/.
+# the zip-ingest flow prompts for an optional name prefix; pass -force to
+# overwrite existing files: make generate-vpn-config ARGS="-force"
+generate-vpn-config:
+	CGO_ENABLED=0 go run ./cmd/generatevpnconfig $(ARGS)
 
-# docker-run runs a container from an existing local image with the operator's config
-# tree mounted read-only and a writable logs/ volume. It does NOT build the image first
-# — call `make docker-build` before this if you need a fresh local build, then
-# `make docker-run` (or chain: `make docker-build docker-run`).
-# Override the image tag with IMAGE_TAG=1.2.3 make docker-run — the image must already
-# exist locally (pulled or tagged); this target does not pull from a registry.
-# NOTE: ./logs/ must be writable by UID 65532 (distroless nonroot).
-# Run once: sudo chown 65532:65532 ./logs/
-docker-run:
-	mkdir -p ./logs
-	docker run --rm \
-		-p 127.0.0.1:1701:1701 \
-		-p 127.0.0.1:8081:8081 \
-		-v $(PWD)/configs:/etc/httpproxy:ro \
-		-v $(PWD)/logs:/var/log/httpproxy \
-		httpproxy:$(IMAGE_TAG)
-
-
-# init seeds the server's /opt/httpproxy/ with the operator-owned files
-# (runtime config + WireGuard .conf + bearer-auth token). compose.yml is NOT
-# shipped here — it is rendered by the deploy workflow on every run from
-# configs/compose.yml in this repo, so the on-host file is a deploy-managed
-# artifact, not operator-managed.
-#
-# Two proxy config files live in this repo:
-#   configs/proxy.example.json — server template, binds on 0.0.0.0 so Docker's
-#                                bridge port-forward can reach the listener.
-#                                Shipped by `make init` and renamed to
-#                                proxy.json on the server.
-#   configs/proxy.json         — local-only, gitignored, binds on 127.0.0.1
-#                                for `make run`. Each operator keeps their own.
-#
-# The bearer-auth token is generated ON THE SERVER (the secret never leaves
-# the host). The openssl-or-write block is idempotent: if the token file
-# already exists and is non-empty, it is left alone so active clients keep
-# working. Delete the file on the server first to force a rotation.
-#
-# File ownership and mode are deliberately not touched here — the operator
-# manages permissions on /opt/httpproxy/configs/{auth,tunnels} out of band.
+# provision/update the host, then restart the live daemon. Seeds proxy.json from
+# the repo example only if the host has none — an existing host proxy.json is
+# never clobbered. Manages the systemd unit, which the release workflow
+# deliberately never touches.
 init:
-	scp ./configs/proxy.example.json be-happy.kz:/opt/httpproxy/configs/proxy.json
-	scp ./configs/tunnels/mullvad-ch-zrh-wg-001.conf be-happy.kz:/opt/httpproxy/configs/tunnels/mullvad-ch-zrh-wg-001.conf
-	ssh be-happy.kz '[ -s /opt/httpproxy/configs/auth/token ] || openssl rand -base64 128 | tr -d "\n" > /opt/httpproxy/configs/auth/token'
+	ssh be-happy.kz 'test -s /opt/vpntunnel/configs/proxy.json' || scp ./configs/proxy.example.json be-happy.kz:/opt/vpntunnel/configs/proxy.json
+	scp -r ./configs/tunnels/*.conf be-happy.kz:/opt/vpntunnel/configs/tunnels
+	scp ./configs/vpntunnel.service be-happy.kz:/opt/vpntunnel/configs/vpntunnel.service
+	# seed the runtime env file the unit requires, only if absent — its
+	# EnvironmentFile= has no leading '-', so a missing file makes systemd refuse
+	# to start the unit. The release workflow later rewrites it from the GH vars.
+	ssh be-happy.kz 'test -s /opt/vpntunnel/vpntunnel.env' || scp ./configs/vpntunnel.env.example be-happy.kz:/opt/vpntunnel/vpntunnel.env
+	# generate the two REQUIRED API tokens if absent (mode 0600); never overwrite
+	# an existing token. The sudo block below fixes their owner to root.
+	ssh be-happy.kz 'umask 077; for t in proxy_token admin_token; do f=/opt/vpntunnel/configs/auth/$$t; [ -s "$$f" ] || openssl rand -hex 48 > "$$f"; done'
+	# the daemon runs as root and rejects token files that are not root-owned and
+	# 0600, plus a TLS cert dir whose mode is not 0700. Normalise both, install the
+	# unit, reload, and restart.
+	ssh -t be-happy.kz 'sudo chown root:root /opt/vpntunnel/configs/auth/admin_token /opt/vpntunnel/configs/auth/proxy_token && sudo chmod 0600 /opt/vpntunnel/configs/auth/admin_token /opt/vpntunnel/configs/auth/proxy_token && sudo chmod 0700 /opt/vpntunnel/configs/tls && sudo install -m 0644 /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/vpntunnel.service && sudo systemctl daemon-reload && sudo systemctl restart vpntunnel'
+	$(MAKE) deploy-nginx
+
+# install/refresh the public edge vhost (Cloudflare-fronted) and reload nginx.
+# Staged under /opt/vpntunnel/deploy, then installed into /etc/nginx with sudo
+# and symlinked into sites-enabled with a .conf suffix (nginx only includes
+# sites-enabled/*.conf). The Cloudflare origin-pull CA is fetched on the host
+# (public, not a secret). The CF Origin Certificate + key are operator-placed
+# once at /etc/nginx/certificates/cloudflare/ and are never shipped from the repo. If they are
+# absent the vhost is staged but nginx is NOT reloaded — placing the cert and
+# rerunning this target completes the install.
+deploy-nginx:
+	ssh be-happy.kz 'mkdir -p /opt/vpntunnel/deploy'
+	scp ./deploy/dev.seilbekskindirov.vpntunnel.conf be-happy.kz:/opt/vpntunnel/deploy/dev.seilbekskindirov.vpntunnel.conf
+	ssh -t be-happy.kz 'set -e; \
+		sudo mkdir -p /etc/nginx/certificates/cloudflare; \
+		sudo curl -fsSL https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem -o /etc/nginx/certificates/cloudflare/origin-pull-ca.pem; \
+		sudo install -m 0644 /opt/vpntunnel/deploy/dev.seilbekskindirov.vpntunnel.conf /etc/nginx/sites-available/dev.seilbekskindirov.vpntunnel; \
+		sudo ln -sfn /etc/nginx/sites-available/dev.seilbekskindirov.vpntunnel /etc/nginx/sites-enabled/dev.seilbekskindirov.vpntunnel.conf; \
+		sudo rm -f /etc/nginx/sites-enabled/vpntunnel; \
+		if sudo test -s /etc/nginx/certificates/cloudflare/seilbekskindirov.dev.pem && sudo test -s /etc/nginx/certificates/cloudflare/seilbekskindirov.dev.key; then \
+			sudo nginx -t && sudo systemctl reload nginx && echo "nginx: vpntunnel edge vhost live"; \
+		else \
+			echo "WARNING: /etc/nginx/certificates/cloudflare/seilbekskindirov.dev.{pem,key} missing — place the Cloudflare Origin Certificate, then rerun: make deploy-nginx"; \
+		fi'
+
+# over SSH to the prod host: assert egress leaves through the Mullvad exit and
+# the health plane reports ok.
+healthz:
+	@ssh be-happy.kz 'curl -s -x http://127.0.0.1:7788 https://am.i.mullvad.net/json | grep -q "mullvad_exit_ip.:true" && echo "egress  PASS" || echo "egress  FAIL"; curl -sk -H "X-Vpntunnel-Token: $$(cat /opt/vpntunnel/configs/auth/admin_token)" https://127.0.0.1:8888/v1/admin/health | grep -q "status.:.ok" && echo "health  PASS" || echo "health  FAIL"'
+
+# PASS/FAIL each API route against a daemon already running locally (`make run`):
+# the 401 no-token gate and the two roles (user gets 403 on admin/health).
+examination:
+	@a=$$(cat configs/auth/admin_token 2>/dev/null); u=$$(cat configs/auth/user_token 2>/dev/null); b=http://127.0.0.1:8888; \
+	code() { curl -s -m5 -o /dev/null -w '%{http_code}' "$$@"; }; \
+	pf() { [ "$$1" = "$$2" ] && echo "PASS    $$3" || echo "FAILED  $$3 (got $$1 want $$2)"; }; \
+	pf "$$(code $$b/v1/admin/health)" 401 "no-token  health"; \
+	pf "$$(code -H "X-Vpntunnel-Token: $$a" $$b/v1/admin/health)" 200 "admin     health"; \
+	pf "$$(code -H "X-Vpntunnel-Token: $$u" $$b/v1/admin/health)" 403 "user      health"; \
+	pf "$$(code -H "X-Vpntunnel-Token: $$a" $$b/v1/tunnels)" 200 "admin     tunnels"; \
+	pf "$$(code -H "X-Vpntunnel-Token: $$u" $$b/v1/tunnels)" 200 "user      tunnels"

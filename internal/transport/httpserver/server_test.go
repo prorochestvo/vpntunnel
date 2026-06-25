@@ -16,10 +16,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"httpproxy/internal/config"
-	"httpproxy/internal/service"
-	"httpproxy/internal/transport/httpserver"
-	"httpproxy/internal/tunnel"
+	"vpntunnel/internal/service"
+	"vpntunnel/internal/transport/httpserver"
+	"vpntunnel/internal/tunnel"
 )
 
 var _ tunnel.Dialer = (*stubDialer)(nil)
@@ -32,20 +31,11 @@ func (s *stubDialer) DialContext(ctx context.Context, network, address string) (
 	return d.DialContext(ctx, network, address)
 }
 
-func makeCfg(addr string) config.Config {
-	return config.Config{
-		Listen:          addr,
-		DialTimeout:     5 * time.Second,
-		IdleTimeout:     90 * time.Second,
-		ShutdownTimeout: 2 * time.Second,
-		AccessLog: config.AccessLog{
-			Path:       "./logs/access.log",
-			MaxSizeMB:  100,
-			MaxAgeDays: 14,
-			MaxBackups: 7,
-			Compress:   false,
-		},
-		Operational: config.Operational{Level: "info", Format: "text"},
+func makeOpts(addr string) httpserver.Options {
+	return httpserver.Options{
+		Listen:            addr,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       90 * time.Second,
 	}
 }
 
@@ -94,8 +84,7 @@ func TestServer(t *testing.T) {
 		svc := newSvc(t)
 		ln := bindListener(t)
 		addr := ln.Addr().String()
-		cfg := makeCfg(addr)
-		srv := httpserver.New(cfg, svc, nil)
+		srv := httpserver.New(makeOpts(addr), svc, nil)
 		go func() { _ = srv.StartOn(ln) }()
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -138,8 +127,7 @@ func TestServer(t *testing.T) {
 		svc := newSvc(t)
 		ln := bindListener(t)
 		addr := ln.Addr().String()
-		cfg := makeCfg(addr)
-		srv := httpserver.New(cfg, svc, nil)
+		srv := httpserver.New(makeOpts(addr), svc, nil)
 		go func() { _ = srv.StartOn(ln) }()
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -166,8 +154,7 @@ func TestServer(t *testing.T) {
 		svc := newSvc(t)
 		ln := bindListener(t)
 		addr := ln.Addr().String()
-		cfg := makeCfg(addr)
-		srv := httpserver.New(cfg, svc, nil)
+		srv := httpserver.New(makeOpts(addr), svc, nil)
 
 		errCh := make(chan error, 1)
 		go func() { errCh <- srv.StartOn(ln) }()
@@ -205,8 +192,7 @@ func TestServer(t *testing.T) {
 		svc := newSvc(t)
 		ln := bindListener(t)
 		addr := ln.Addr().String()
-		cfg := makeCfg(addr)
-		srv := httpserver.New(cfg, svc, nil)
+		srv := httpserver.New(makeOpts(addr), svc, nil)
 		go func() { _ = srv.StartOn(ln) }()
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -247,13 +233,12 @@ func TestServer(t *testing.T) {
 		svc := newSvc(t)
 		ln := bindListener(t)
 		addr := ln.Addr().String()
-		cfg := makeCfg(addr)
 
 		// wrap the service to detect when HandleCONNECT returns (so WaitTunnels
 		// does not race against Add(1) in the still-running handler goroutine).
 		handlerDone := make(chan struct{}, 1)
 		hookSvc := &connectNotifier{svc: svc, done: handlerDone}
-		srv := httpserver.NewWithHandler(cfg, hookSvc, nil)
+		srv := httpserver.NewWithHandler(makeOpts(addr), hookSvc, nil)
 		go func() { _ = srv.StartOn(ln) }()
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"os"
 
-	"httpproxy/internal/config"
+	"vpntunnel/internal/config"
 )
 
 // NewOperationalLogger builds a *slog.Logger from cfg that writes to stdout.
