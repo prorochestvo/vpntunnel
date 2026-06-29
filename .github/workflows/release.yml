@@ -66,6 +66,18 @@ jobs:
           BINARY_SHA256=$(sha256sum ./build/vpntunnel | awk '{print $1}')
           echo "BINARY_SHA256=$BINARY_SHA256" >> "$GITHUB_ENV"
 
+      - name: Compute VERSION_ID
+        # VERSION_ID = <UTC timestamp>-r_<version>. The UTC timestamp keeps the
+        # artifact store chronologically sortable across machines; the leading
+        # channel letter (r = release) reads at a glance. <version> is the git
+        # tag with its leading 'v' stripped. date -u runs on the GH runner, so
+        # the stamp is unambiguous regardless of host timezone.
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          VERSION_ID="$(date -u +%Y%m%d%H%M%S)-r_${version}"
+          echo "VERSION_ID=$VERSION_ID" >> "$GITHUB_ENV"
+
       - name: Assert required env-scoped variables are set
         # SSH_PRIVATEKEY (secret) is intentionally NOT checked here: GHA masks
         # secrets to "***" when injected via env, so an empty secret is
@@ -107,13 +119,12 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Copy binary to host
-        # Upload to a .upload temp name, not the final versioned name. The versioned
-        # file is the live symlink target when redeploying an already-running version;
-        # scp open-for-write on a running binary fails with ETXTBSY. The temp name is
-        # never a symlink target and never executed, so the write always succeeds.
-        # The "Deploy on host" step atomically renames the temp into the versioned name
-        # via rename(2), which replaces the directory entry without opening the busy
-        # inode — safe even against the currently-running binary.
+        # Upload straight into artifacts/$VERSION_ID/. The VERSION_ID carries a
+        # UTC timestamp, so the directory is unique to this deploy: it is never a
+        # live symlink target and never a running inode, so there is no ETXTBSY
+        # risk and no need for a .upload temp + rename dance. SHA256 is verified
+        # in "Deploy on host" before the channel is flipped; a mismatch removes
+        # only the fresh artifact dir and never touches the live channel.
         env:
           REMOTE_DIR: ${{ vars.REMOTE_DIR }}
           SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
@@ -122,38 +133,33 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee -a "$RUNNER_TEMP/deploy_trace.log") 2>&1
+          ssh -i /tmp/deploy_key -p "$SSH_HOSTPORT" \
+            -o BatchMode=yes -o ConnectTimeout=30 \
+            "$SSH_USERNAME@$SSH_HOSTNAME" "mkdir -p '$REMOTE_DIR/artifacts/$VERSION_ID'"
           scp -i /tmp/deploy_key \
             -o ConnectTimeout=30 \
             -P "$SSH_HOSTPORT" \
             ./build/vpntunnel \
-            "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}.upload"
+            "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/artifacts/$VERSION_ID/vpntunnel"
 
-      - name: Sync runtime env file
-        # Render $REMOTE_DIR/vpntunnel.env from the PRIME GH variables so the
-        # systemd unit's flags (config path, TLS cert dir + hostname) are driven
-        # from GitHub. Written before the restart in "Deploy on host" so the unit
-        # picks it up. The file lives in $REMOTE_DIR — writable by the deploy user
-        # (same place the binary is scp'd), so no sudo; EnvironmentFile is re-read
-        # on every restart, so no daemon-reload either. Values fall back to the
-        # standard $REMOTE_DIR-relative paths if a variable is unset.
+      - name: Capture current channel target
+        # Read bin/release's target BEFORE the flip so both the deploy step (on a
+        # failed restart) and the health-check step (on a failed probe) can roll
+        # the channel back to the last-good VERSION_ID. Single source of truth for
+        # PREV; "none" on the very first deploy guards against ln -sfn none.
         env:
           REMOTE_DIR: ${{ vars.REMOTE_DIR }}
           SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
           SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
           SSH_USERNAME: ${{ vars.SSH_USERNAME }}
-          VPNTUNNEL_CONFIG_PATH: ${{ vars.VPNTUNNEL_CONFIG_PATH }}
-          VPNTUNNEL_TLS_CERT_DIR: ${{ vars.VPNTUNNEL_TLS_CERT_DIR }}
-          VPNTUNNEL_TLS_CERT_HOST: ${{ vars.VPNTUNNEL_TLS_CERT_HOST }}
         run: |
           set -euo pipefail
           exec > >(tee -a "$RUNNER_TEMP/deploy_trace.log") 2>&1
-          printf 'VPNTUNNEL_CONFIG_PATH=%s\nVPNTUNNEL_TLS_CERT_DIR=%s\nVPNTUNNEL_TLS_CERT_HOST=%s\n' \
-            "${VPNTUNNEL_CONFIG_PATH:-$REMOTE_DIR/configs/proxy.json}" \
-            "${VPNTUNNEL_TLS_CERT_DIR:-$REMOTE_DIR/configs/tls/}" \
-            "${VPNTUNNEL_TLS_CERT_HOST:-localhost}" \
-          | ssh -i /tmp/deploy_key -p "$SSH_HOSTPORT" \
-              -o BatchMode=yes -o ConnectTimeout=30 \
-              "$SSH_USERNAME@$SSH_HOSTNAME" "cat > '$REMOTE_DIR/vpntunnel.env'"
+          PREV_TARGET=$(ssh -i /tmp/deploy_key -p "$SSH_HOSTPORT" \
+            -o BatchMode=yes -o ConnectTimeout=30 \
+            "$SSH_USERNAME@$SSH_HOSTNAME" \
+            "readlink '$REMOTE_DIR/bin/release' 2>/dev/null || echo none")
+          echo "PREV_TARGET=$PREV_TARGET" >> "$GITHUB_ENV"
 
       - name: Deploy on host
         env:
@@ -165,69 +171,59 @@ jobs:
           set -euo pipefail
           exec > >(tee -a "$RUNNER_TEMP/deploy_trace.log") 2>&1
           # The heredoc is UNQUOTED — runner-side vars ($REMOTE_DIR, $BINARY_SHA256,
-          # $SSH_USERNAME, $SSH_HOSTNAME, ${GITHUB_REF_NAME}) expand before SSH.
-          # Remote-side vars (\$PREVIOUS_VERSION, \$ACTIVE, \$actual, etc.) are
-          # backslash-escaped so they evaluate inside the remote shell.
+          # $VERSION_ID, $SSH_USERNAME, $SSH_HOSTNAME) expand before SSH.
+          # Remote-side vars (\$PREV, \$actual, \$new, etc.) are backslash-escaped
+          # so they evaluate inside the remote shell.
           timeout 3m ssh -i /tmp/deploy_key \
             -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             -p "$SSH_HOSTPORT" "$SSH_USERNAME@$SSH_HOSTNAME" bash -s <<EOF
           set -euo pipefail
+          new="$REMOTE_DIR/artifacts/$VERSION_ID/vpntunnel"
           dump_diagnostics() {
             echo "==== journalctl (last 200 lines) ===="
-            sudo /bin/journalctl -u vpntunnel --since '5 minutes ago' -n 200 --no-pager || true
-            echo "INFO: previous version was \$PREVIOUS_VERSION"
-            if [ "\$PREVIOUS_VERSION" != "none" ]; then
-              echo "  rollback: ssh $SSH_USERNAME@$SSH_HOSTNAME 'ln -sfn \$PREVIOUS_VERSION $REMOTE_DIR/vpntunnel && sudo systemctl restart vpntunnel'"
+            sudo /bin/journalctl -u vpntunnel -n 200 --no-pager || true
+            echo "INFO: previous channel target was \$PREV"
+            if [ "\$PREV" != "none" ]; then
+              echo "  rollback: ssh $SSH_USERNAME@$SSH_HOSTNAME 'ln -sfn \$PREV $REMOTE_DIR/bin/release.tmp && mv -Tf $REMOTE_DIR/bin/release.tmp $REMOTE_DIR/bin/release && sudo /bin/systemctl restart vpntunnel'"
             else
-              echo "  (no previous version to roll back to — this was the first deploy)"
+              echo "  (no previous channel target to roll back to — this was the first deploy)"
             fi
           }
-          # verify the scp transfer was not truncated/corrupted before we touch the live binary.
-          # this is integrity protection, NOT authenticity — both the binary and the expected
-          # hash travel over the same SSH channel. An MITM could substitute both.
-          # sha256 is checked against the .upload temp, not the final versioned name, so a
-          # hash mismatch never removes a good running binary (only the temp is cleaned up).
+          # verify the scp transfer was not truncated/corrupted before flipping the
+          # channel. this is integrity protection, NOT authenticity — both the binary
+          # and the expected hash travel over the same SSH channel. The hash is checked
+          # on the fresh artifact dir, so a mismatch removes only that dir and never
+          # touches the live channel or a running binary.
           expected="$BINARY_SHA256"
-          actual=\$(sha256sum "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}.upload" | awk '{print \$1}')
+          actual=\$(sha256sum "\$new" | awk '{print \$1}')
           if [ "\$actual" != "\$expected" ]; then
             echo "ERROR: SHA256 mismatch — uploaded binary is corrupted or truncated"
             echo "  expected: \$expected"
             echo "  actual:   \$actual"
-            rm -f "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}.upload"
+            rm -rf "$REMOTE_DIR/artifacts/$VERSION_ID"
             exit 1
           fi
-          # capture the current symlink target before the swap for rollback diagnostics.
-          PREVIOUS_VERSION=\$(readlink "$REMOTE_DIR/vpntunnel" 2>/dev/null || echo "none")
-          # promote the .upload temp to the final versioned name.
-          # if the final versioned file already exists and is byte-identical (same-build
-          # redeploy), skip the rename to avoid swapping the inode of a running, healthy
-          # binary unnecessarily. A non-identical file (rebuilt same tag) still gets promoted.
-          # the rename itself uses mv -Tf (treat dest as normal file, force) which is
-          # rename(2) under the hood: replaces the directory entry without opening or
-          # truncating the target inode, so it succeeds even when the target is the
-          # currently-running binary (no ETXTBSY).
-          if [ -f "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}" ]; then
-            existing_hash=\$(sha256sum "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}" | awk '{print \$1}')
-          else
-            existing_hash=""
+          chmod +x "\$new"
+          # the channel target captured before the flip (relative, e.g.
+          # ../artifacts/<oldVID>, or "none" on the first deploy), passed in from
+          # the "Capture current channel target" step so a failed restart can roll back.
+          PREV="$PREV_TARGET"
+          # bin/ is created once by the host migration runbook (root-owned base dir,
+          # github_aide-owned bin/). Fail with a clear message if it is missing rather
+          # than letting the ln below emit an opaque "No such file or directory".
+          if [ ! -d "$REMOTE_DIR/bin" ]; then
+            echo "ERROR: $REMOTE_DIR/bin/ does not exist — run the host migration runbook first"
+            exit 1
           fi
-          if [ "\$existing_hash" = "\$actual" ]; then
-            echo "INFO: uploaded binary is byte-identical to the existing versioned file — skipping rename"
-            rm -f "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}.upload"
-          else
-            chmod +x "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}.upload"
-            mv -Tf "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}.upload" "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}"
-          fi
-          # belt-and-suspenders: the versioned binary must exist at this point
-          # (either it was already there or just renamed into place).
-          test -f "$REMOTE_DIR/vpntunnel.${GITHUB_REF_NAME}" || { echo "ERROR: versioned binary not found, aborting"; exit 1; }
-          # atomic symlink swap: ln -sf creates vpntunnel.tmp pointing at the versioned
-          # binary, then mv -Tf renames it over the live vpntunnel in a single rename(2).
-          # Using ln -sfn directly on the live symlink is NOT atomic (unlink + symlink).
+          # atomic channel flip with a RELATIVE target (resolved from bin/, so
+          # renaming the base dir never breaks it). ln -sfn into a temp name in the
+          # same dir, then mv -Tf over the live symlink in a single rename(2);
+          # ln -sfn directly on the live symlink is NOT atomic (unlink + symlink).
           # systemctl restart needs a sudoers line:
-          #   vpntunnel ALL=(root) NOPASSWD: /bin/systemctl restart vpntunnel, /bin/systemctl is-active --quiet vpntunnel, /bin/journalctl -u vpntunnel --since * -n 200 --no-pager
-          ln -sf "vpntunnel.${GITHUB_REF_NAME}" "$REMOTE_DIR/vpntunnel.tmp"
-          mv -Tf "$REMOTE_DIR/vpntunnel.tmp" "$REMOTE_DIR/vpntunnel"
+          #   github_aide ALL=(root) NOPASSWD: /bin/systemctl restart vpntunnel, /bin/systemctl is-active --quiet vpntunnel, /bin/journalctl -u vpntunnel -n 200 --no-pager
+          #   (the full grant ships as configs/vpntunnel.sudoers)
+          ln -sfn "../artifacts/$VERSION_ID" "$REMOTE_DIR/bin/release.tmp"
+          mv -Tf "$REMOTE_DIR/bin/release.tmp" "$REMOTE_DIR/bin/release"
           sudo /bin/systemctl restart vpntunnel
           # give the unit a few seconds to come up (Type=simple returns
           # immediately; poll until the process is active).
@@ -238,7 +234,12 @@ jobs:
             sleep 1
           done
           if ! sudo /bin/systemctl is-active --quiet vpntunnel; then
-            echo "ERROR: vpntunnel unit is not active after restart"
+            echo "ERROR: vpntunnel unit is not active after restart — rolling channel back"
+            if [ "\$PREV" != "none" ]; then
+              ln -sfn "\$PREV" "$REMOTE_DIR/bin/release.tmp"
+              mv -Tf "$REMOTE_DIR/bin/release.tmp" "$REMOTE_DIR/bin/release"
+              sudo /bin/systemctl restart vpntunnel || true
+            fi
             dump_diagnostics
             exit 1
           fi
@@ -255,11 +256,13 @@ jobs:
         # in the PRIME GH environment before the next v* tag or this step will 401.
         env:
           VPNTUNNEL_ADMIN_TOKEN: ${{ secrets.VPNTUNNEL_ADMIN_TOKEN }}
+          REMOTE_DIR: ${{ vars.REMOTE_DIR }}
           SSH_HOST: ${{ vars.SSH_HOSTNAME }}
           SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
           SSH_USERNAME: ${{ vars.SSH_USERNAME }}
         run: |
           set +x  # do not echo the curl command — would leak the token
+          set -euo pipefail
           exec > >(tee -a "$RUNNER_TEMP/deploy_trace.log") 2>&1
           # /v1/admin/health proves the tunnel handshake is up and the API is serving.
           # retry up to 30 times (60s total) so a cold WireGuard handshake can complete.
@@ -295,16 +298,36 @@ jobs:
             ssh -i /tmp/deploy_key -p "$SSH_HOSTPORT" \
               -o BatchMode=yes -o ConnectTimeout=30 \
               "$SSH_USERNAME@$SSH_HOST" \
-              "sudo /bin/journalctl -u vpntunnel --since '5 minutes ago' -n 200 --no-pager" 2>&1 || true
+              "sudo /bin/journalctl -u vpntunnel -n 200 --no-pager" 2>&1 || true
+            # auto-rollback: flip the channel back to the pre-deploy target and
+            # restart, so an unhealthy deploy self-heals to the last-good version.
+            # PREV_TARGET comes from the "Capture current channel target" step;
+            # "none" means this was the first deploy (nothing to roll back to).
+            if [ "${PREV_TARGET:-none}" != "none" ]; then
+              echo "rolling channel back to $PREV_TARGET"
+              rollback_ok=0
+              ssh -i /tmp/deploy_key -p "$SSH_HOSTPORT" \
+                -o BatchMode=yes -o ConnectTimeout=30 \
+                "$SSH_USERNAME@$SSH_HOST" \
+                "ln -sfn '$PREV_TARGET' '$REMOTE_DIR/bin/release.tmp' && mv -Tf '$REMOTE_DIR/bin/release.tmp' '$REMOTE_DIR/bin/release' && sudo /bin/systemctl restart vpntunnel" 2>&1 \
+                && rollback_ok=1 || true
+              if [ "$rollback_ok" -eq 1 ]; then
+                echo "rollback complete — channel restored to $PREV_TARGET"
+              else
+                echo "ERROR: rollback also failed — channel may be stuck at the bad version; manual intervention required"
+              fi
+            else
+              echo "no previous channel target — first deploy, nothing to roll back to"
+            fi
             exit 1
           fi
 
       - name: Retention cleanup
-        # keep the 3 newest versioned binaries (active + 2 rollback candidates).
-        # The active symlink target is always protected regardless of mtime.
-        # fall back to the just-deployed name: if readlink fails after a successful
-        # swap, ACTIVE="" would make grep -vxF "" match only empty lines, leaving
-        # the active binary unprotected.
+        # channel-aware pruning of the immutable artifact store: keep the 3 newest
+        # version dirs (active + 2 rollback candidates) and NEVER delete a dir any
+        # channel symlink still points at. A version referenced by a live channel
+        # but older than the newest 3 is still protected, so pruning can never
+        # leave a dangling channel / dead service.
         env:
           REMOTE_DIR: ${{ vars.REMOTE_DIR }}
           SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
@@ -316,20 +339,18 @@ jobs:
             -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             -p "$SSH_HOSTPORT" "$SSH_USERNAME@$SSH_HOSTNAME" bash -s <<EOF
           set -euo pipefail
-          ACTIVE=\$(readlink "$REMOTE_DIR/vpntunnel" 2>/dev/null || echo "vpntunnel.${GITHUB_REF_NAME}")
+          KEEP=3
           cd "$REMOTE_DIR"
-          # grep -v exits 1 when it filters all lines (single-active-version case);
-          # || true makes the empty-result case successful under pipefail.
-          # grep -v '\.upload$' excludes stale .upload temp files from the versioned
-          # binary list so they are neither counted toward the keep-3 quota nor
-          # accidentally protected as if they were valid deployable versions.
-          ls -t vpntunnel.v* 2>/dev/null | grep -v '\.upload$' | grep -vxF "\$ACTIVE" | tail -n +3 | xargs -r rm -f || true
-          # unconditionally sweep any stale .upload temps left by an interrupted
-          # deploy (scp succeeded but the promote step never ran). They are never a
-          # symlink target nor executed, so removing them can never affect the
-          # running service; the retention filter above deliberately ignores them,
-          # so this is the only place they get cleaned up.
-          rm -f vpntunnel.v*.upload 2>/dev/null || true
+          # every VERSION_ID any channel symlink resolves to — protected regardless of age.
+          # `continue` (not `&&`) so the loop body always exits 0 on a non-symlink;
+          # otherwise the false `&&` makes the loop exit 1, pipefail propagates it,
+          # and `set -e` aborts the whole cleanup step when bin/ holds no symlinks.
+          in_use=\$(for l in bin/*; do [ -L "\$l" ] || continue; basename "\$(readlink -f "\$l")"; done | sort -u)
+          # delete version dirs past the newest KEEP that no channel references.
+          ls -1dt artifacts/*/ 2>/dev/null | tail -n +\$((KEEP+1)) | while read -r d; do
+            v=\$(basename "\$d")
+            printf '%s\n' "\$in_use" | grep -qxF "\$v" || rm -rf "artifacts/\$v"
+          done
           EOF
 
       # do NOT add continue-on-error: true to any of the SSH steps above
@@ -383,10 +404,17 @@ jobs:
           LABEL="${APP_LABEL:+$APP_LABEL }"
           # surface the captured failure reason from the shared trace (see the exec-tee line at
           # the top of the deploy steps); last error-ish lines explain the failure inline.
+          # the second grep -v drops journalctl lines (syslog short format:
+          # "Mon DD HH:MM:SS host vpntunnel[pid]: ...") so daemon log content — which
+          # may include peer_endpoint and other egress topology — never reaches Telegram.
+          # our own control messages (ERROR:, hints) and ssh/scp transport errors have no
+          # such prefix and pass through.
           reason=""
           if [ -f "$RUNNER_TEMP/deploy_trace.log" ]; then
             reason=$(grep -iE 'error|sudo:|denied|mismatch|not active|not found|refused|timed out|no route' \
-              "$RUNNER_TEMP/deploy_trace.log" | tail -n 3 | cut -c1-300)
+              "$RUNNER_TEMP/deploy_trace.log" \
+              | grep -vE '^[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}:[0-9]{2} ' \
+              | tail -n 3 | cut -c1-300)
           fi
           text=$(printf '#%s %sdeploy FAILED (%s)\n<b>%s</b>\nref:  %s (%s)\nrun:  <a href="%s/%s/actions/runs/%s">#%s</a>' \
             "$PROJECT_TAG" "$LABEL" "$WF_FILE" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "${GITHUB_SHA:0:7}" \

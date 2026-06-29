@@ -42,17 +42,24 @@ init:
 	ssh be-happy.kz 'test -s /opt/vpntunnel/configs/proxy.json' || scp ./configs/proxy.example.json be-happy.kz:/opt/vpntunnel/configs/proxy.json
 	scp -r ./configs/tunnels/*.conf be-happy.kz:/opt/vpntunnel/configs/tunnels
 	scp ./configs/vpntunnel.service be-happy.kz:/opt/vpntunnel/configs/vpntunnel.service
+	scp ./configs/vpntunnel.sudoers be-happy.kz:/opt/vpntunnel/configs/vpntunnel.sudoers
 	# seed the runtime env file the unit requires, only if absent — its
 	# EnvironmentFile= has no leading '-', so a missing file makes systemd refuse
-	# to start the unit. The release workflow later rewrites it from the GH vars.
-	ssh be-happy.kz 'test -s /opt/vpntunnel/vpntunnel.env' || scp ./configs/vpntunnel.env.example be-happy.kz:/opt/vpntunnel/vpntunnel.env
-	# generate the two REQUIRED API tokens if absent (mode 0600); never overwrite
-	# an existing token. The sudo block below fixes their owner to root.
-	ssh be-happy.kz 'umask 077; for t in proxy_token admin_token; do f=/opt/vpntunnel/configs/auth/$$t; [ -s "$$f" ] || openssl rand -hex 48 > "$$f"; done'
-	# the daemon runs as root and rejects token files that are not root-owned and
-	# 0600, plus a TLS cert dir whose mode is not 0700. Normalise both, install the
-	# unit, reload, and restart.
-	ssh -t be-happy.kz 'sudo chown root:root /opt/vpntunnel/configs/auth/admin_token /opt/vpntunnel/configs/auth/proxy_token && sudo chmod 0600 /opt/vpntunnel/configs/auth/admin_token /opt/vpntunnel/configs/auth/proxy_token && sudo chmod 0700 /opt/vpntunnel/configs/tls && sudo install -m 0644 /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/vpntunnel.service && sudo systemctl daemon-reload && sudo systemctl restart vpntunnel'
+	# to start the unit. It is operator-managed (the release workflow does NOT
+	# rewrite it) and lives in the root-only base dir, so stage the example in /tmp
+	# (deploy-user-writable) and sudo-install it (mode 0600, root-owned).
+	scp ./configs/vpntunnel.env.example be-happy.kz:/tmp/vpntunnel.env.example
+	ssh -t be-happy.kz 'test -s /opt/vpntunnel/vpntunnel.env || sudo install -m 0600 -o root -g root /tmp/vpntunnel.env.example /opt/vpntunnel/vpntunnel.env'
+	# generate the two REQUIRED API tokens and the tunnel-id HMAC key if absent
+	# (mode 0600); never overwrite. The daemon runs as github_aide (the SSH user),
+	# so files created here are already github_aide-owned — no chown needed.
+	ssh be-happy.kz 'umask 077; for t in proxy_token admin_token; do f=/opt/vpntunnel/configs/auth/$$t; [ -s "$$f" ] || openssl rand -hex 48 > "$$f"; done; k=/opt/vpntunnel/configs/auth/tunnel-id.key; [ -s "$$k" ] || head -c 64 /dev/urandom > "$$k"'
+	# the daemon (running as github_aide) requires token files at mode 0600 owned by
+	# itself, the tunnel-id key at 0600, and the TLS cert dir at exactly 0700.
+	# normalise modes (no chown — github_aide already owns them), then install the
+	# unit + the deploy sudoers (root-only paths), reload, and restart.
+	ssh be-happy.kz 'chmod 0700 /opt/vpntunnel/configs/auth /opt/vpntunnel/configs/tls && chmod 0600 /opt/vpntunnel/configs/auth/admin_token /opt/vpntunnel/configs/auth/proxy_token /opt/vpntunnel/configs/auth/tunnel-id.key'
+	ssh -t be-happy.kz 'sudo install -m 0644 /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/vpntunnel.service && sudo install -m 0440 /opt/vpntunnel/configs/vpntunnel.sudoers /etc/sudoers.d/vpntunnel-deploy && sudo systemctl daemon-reload && sudo systemctl restart vpntunnel'
 	$(MAKE) deploy-nginx
 
 # install/refresh the public edge vhost (Cloudflare-fronted) and reload nginx.

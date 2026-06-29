@@ -311,16 +311,18 @@ custom format, no provider-specific bootstrap.
 
 ## Deploying (as an operator)
 
-The deploy pipeline copies a fresh binary to the production host on every
-`v*` tag, atomically swaps it in, and restarts the systemd unit.
+The deploy pipeline uploads a fresh binary into an immutable per-version
+artifact store on the production host on every `v*` tag, atomically flips the
+`release` channel symlink to it, and restarts the systemd unit (self-healing
+back to the previous version if the restart or health check fails).
 
 - **CI** — every push to `main` and every PR against `main` runs
   `.github/workflows/ci.main.yml`. Lint + tests + sanity `go build`. No
   binary build, no deploy.
 - **Release** — every `v*` tag push runs `.github/workflows/release.yml`,
   waits for required-reviewer approval on the PRIME environment, builds the
-  binary on the runner, scps it to the host, atomic-mv's over the current
-  binary, restarts the unit, and verifies with `systemctl is-active` +
+  binary on the runner, uploads it into `artifacts/<VERSION_ID>/`, flips the
+  `release` channel symlink, restarts the unit, and verifies with `systemctl is-active` +
   `GET /v1/admin/health` (HTTPS, admin token). Pre-release tags (`vX.Y.Z-rc1`
   etc.) deploy identically — there is no floating-tag surface to protect.
 
@@ -335,17 +337,20 @@ The deploy pipeline copies a fresh binary to the production host on every
 >    cd /opt/vpntunnel
 >    docker compose down || true
 >    ```
-> 2. Build the binary locally and scp it to the host as a versioned file, then
->    create the initial symlink:
+> 2. Build the binary locally and seed it into the artifact store, then point the
+>    `release` channel at it (see § 7 step 4 for the full form):
 >    ```bash
 >    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ./build/vpntunnel ./cmd/vpntunnel/
->    scp ./build/vpntunnel user@host:/opt/vpntunnel/vpntunnel.v<TAG>
->    ssh user@host 'chmod +x /opt/vpntunnel/vpntunnel.v<TAG> && ln -sfn vpntunnel.v<TAG> /opt/vpntunnel/vpntunnel'
+>    VID="$(date -u +%Y%m%d%H%M%S)-r_<version>"
+>    ssh github_aide@host "mkdir -p /opt/vpntunnel/artifacts/$VID"
+>    scp ./build/vpntunnel "github_aide@host:/opt/vpntunnel/artifacts/$VID/vpntunnel"
+>    ssh github_aide@host "chmod +x /opt/vpntunnel/artifacts/$VID/vpntunnel && ln -sfn ../artifacts/$VID /opt/vpntunnel/bin/release"
 >    ```
->    Then run `make init` to seed configs, the tunnel `.conf`, unit file, and
->    forward-proxy token on the host. Create the two required API tokens
->    (`proxy_token`, `admin_token`) under `/opt/vpntunnel/configs/auth/` at mode
->    `0600` (see § 7 step 3).
+>    Then seed configs, the tunnel `.conf`, and the unit file per § 7. Create the
+>    two required API tokens (`proxy_token`, `admin_token`) under
+>    `/opt/vpntunnel/configs/auth/` at mode `0600`, owned by `github_aide` (see
+>    § 7 step 3). The full one-time host restructure is in
+>    `configs/RUNBOOK-migrate-release-layout.md`.
 > 3. On the host, promote the unit file and start the service:
 >    ```bash
 >    sudo mv /tmp/vpntunnel.service /etc/systemd/system/
@@ -387,22 +392,32 @@ deploy to the server.
 ### 4. File modes
 
 Restrict access to secrets before placing them on the server. The two API
-token files **must** be mode `0600` and owned by the running user — the daemon
-rejects any other mode at startup:
+token files **must** be mode `0600` and owned by the running user (`github_aide`) —
+the daemon rejects any other mode/owner at startup:
 
 ```bash
+# the whole configs/ tree is owned by the service user, because the daemon
+# requires its secrets to be owned by the process UID and the service runs as
+# github_aide (= the deploy user).
+sudo chown -R github_aide:github_aide /opt/vpntunnel/configs
+chmod 0700 /opt/vpntunnel/configs/auth /opt/vpntunnel/configs/tls
 chmod 0600 /opt/vpntunnel/configs/tunnels/*.conf
 chmod 0600 /opt/vpntunnel/configs/auth/token            # forward-proxy (optional)
-chmod 0600 /opt/vpntunnel/configs/auth/proxy_token       # API: required
+chmod 0600 /opt/vpntunnel/configs/auth/proxy_token      # API: required
 chmod 0600 /opt/vpntunnel/configs/auth/admin_token      # API: required
-chown -R root:root /opt/vpntunnel
-chmod 0750 /opt/vpntunnel
+sudo chown root:root /opt/vpntunnel
+sudo chmod 0755 /opt/vpntunnel
 ```
 
-The service runs as `root` (matching the sibling fx_rate_monitor pattern).
-`/opt/vpntunnel/logs/` must stay writable by root so lumberjack can rotate
-the access log. The daemon also generates `configs/auth/tunnel-id.key` (mode
-`0600`) on first run if absent — back it up; see [Security](#security).
+The service is de-rooted: it runs as `github_aide` (the same user that deploys).
+The base dir, `vpntunnel.env`, and the unit stay root-owned; the CI/service user
+owns `configs/`, `artifacts/`, `bin/`, `state/`, and `logs/`.
+`/opt/vpntunnel/logs/` must stay writable by `github_aide` so lumberjack can rotate
+the access log. The daemon generates `configs/auth/tunnel-id.key` (mode `0600`) on
+first run if absent — but `ProtectSystem=strict` blocks that on a cold start, so
+pre-generate it (see the runbook); back it up, see [Security](#security). Full
+ownership/mode table and the one-time restructure are in
+`configs/RUNBOOK-migrate-release-layout.md`.
 
 ### 5. `.conf` files
 
@@ -433,13 +448,19 @@ this once, as described in step 5.
 
 **1. Provision the deployment directory.**
 
-The service runs as `root` (User=root in the systemd unit), so no
-dedicated service user is needed.
+The service is de-rooted: the unit runs as `github_aide`, the same user that
+deploys (no separate runtime user). The base dir, `vpntunnel.env`, and the unit
+stay `root:root`; the CI/service user owns the artifact store, channel symlinks,
+the state/logs/cert dirs, and the `configs/` tree (the daemon requires its secrets
+to be owned by the process UID).
 
 ```bash
-sudo mkdir -p /opt/vpntunnel/configs/tunnels /opt/vpntunnel/configs/auth /opt/vpntunnel/logs
-sudo chown -R root:root /opt/vpntunnel
-sudo chmod 0750 /opt/vpntunnel
+sudo install -d -o github_aide -g github_aide -m 0755 /opt/vpntunnel/configs /opt/vpntunnel/configs/tunnels
+sudo install -d -o github_aide -g github_aide -m 0700 /opt/vpntunnel/configs/auth /opt/vpntunnel/configs/tls
+sudo install -d -o github_aide -g github_aide -m 0755 /opt/vpntunnel/artifacts /opt/vpntunnel/bin
+sudo install -d -o github_aide -g github_aide -m 0750 /opt/vpntunnel/state /opt/vpntunnel/logs
+sudo chown root:root /opt/vpntunnel
+sudo chmod 0755 /opt/vpntunnel
 ```
 
 **3. Drop the config files.**
@@ -464,21 +485,25 @@ the daemon refuses to start.
 
 **4. Bootstrap the binary and install the systemd unit.**
 
-Build the binary locally and place it on the host as a versioned file, then
-create the initial symlink (no daemon running yet, so `ln -sfn` is fine):
+Build the binary locally and seed an initial version into the artifact store,
+then point the `release` channel at it (no daemon running yet, so the swap is
+simple). `VID` is `<UTC-timestamp>-r_<version>`:
 
 ```bash
 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ./build/vpntunnel ./cmd/vpntunnel/
-scp ./build/vpntunnel user@host:/opt/vpntunnel/vpntunnel.v<TAG>
-ssh user@host 'chmod +x /opt/vpntunnel/vpntunnel.v<TAG> && ln -sfn vpntunnel.v<TAG> /opt/vpntunnel/vpntunnel'
+VID="$(date -u +%Y%m%d%H%M%S)-r_<version>"
+ssh github_aide@host "mkdir -p /opt/vpntunnel/artifacts/$VID"
+scp ./build/vpntunnel "github_aide@host:/opt/vpntunnel/artifacts/$VID/vpntunnel"
+ssh github_aide@host "chmod +x /opt/vpntunnel/artifacts/$VID/vpntunnel && ln -sfn ../artifacts/$VID /opt/vpntunnel/bin/release"
 ```
 
-Then run `make init` from your workstation to seed configs, the tunnel `.conf`,
-unit file, and forward-proxy token (the API tokens are created in step 3). Then
-on the host:
+Seed `proxy.json`, the tunnel `.conf` files, and the auth tokens per step 3 (all
+under `configs/`, owned by `github_aide`). Then install the unit and sudoers and
+start the service on the host:
 
 ```bash
-sudo mv /tmp/vpntunnel.service /etc/systemd/system/
+sudo install -m 0644 /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/vpntunnel.service
+sudo install -m 0440 /opt/vpntunnel/configs/vpntunnel.sudoers /etc/sudoers.d/vpntunnel-deploy
 sudo systemctl daemon-reload
 sudo systemctl enable --now vpntunnel
 sudo systemctl status vpntunnel
@@ -489,33 +514,22 @@ curl -k -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" \
 If the unit file changes in a future repo update, re-scp and `daemon-reload`
 manually — the deploy workflow does not push unit file changes.
 
-**6. Authorize the deploy user to restart the unit (only if SSH user is not root).**
+**6. Authorize the deploy user to restart the unit.**
 
-If the deploy `SSH_USERNAME` is `root`, skip this step — root runs `sudo
-systemctl restart vpntunnel` without a sudoers entry. If the deploy user is
-non-root (e.g. a dedicated `deploy` user), add a restricted sudoers entry
-so the workflow's commands work without a password:
-
-```bash
-sudo visudo -f /etc/sudoers.d/vpntunnel-deploy
-```
-
-Paste exactly (substitute `<deploy_user>` with the actual SSH username):
-
-```
-<deploy_user> ALL=(root) NOPASSWD: /bin/systemctl restart vpntunnel, /bin/systemctl is-active --quiet vpntunnel, /bin/journalctl -u vpntunnel --since * -n 200 --no-pager
-```
-
-Then:
+The deploy user `github_aide` is non-root, so it needs a restricted sudoers grant
+to run the workflow's `systemctl`/`journalctl` commands without a password. The
+exact grant ships in the repo — install it verbatim:
 
 ```bash
-sudo chmod 0440 /etc/sudoers.d/vpntunnel-deploy
+sudo install -m 0440 /opt/vpntunnel/configs/vpntunnel.sudoers /etc/sudoers.d/vpntunnel-deploy
+sudo visudo -c            # must report "parsed OK"
 ```
 
-The line is split into three exact commands (not prefixes) so that a leaked
-deploy key cannot run arbitrary `sudo` — only these three specific invocations
-are permitted. Any future workflow change that adds a new `sudo` command must
-update this line in lockstep, or the deploy will fail on that step.
+The grant is split into three exact commands (not prefixes) so a leaked deploy
+key cannot run arbitrary `sudo` — only `systemctl restart`, `systemctl is-active
+--quiet`, and the deploy's `journalctl` invocation are permitted. Any future
+workflow change that adds a new `sudo` command must update
+`configs/vpntunnel.sudoers` in lockstep, or the deploy will fail on that step.
 
 ### 8. GitHub secrets, variables, and environments
 
@@ -541,19 +555,19 @@ production host.
 (`/opt/vpntunnel`) doesn't carry environment-specific value; override at
 the environment level only if the host actually uses a different path.
 
-> **Note:** if migrating from the `httpproxy` name, update the PRIME
-> environment's `REMOTE_DIR` from `/opt/httpproxy` to `/opt/vpntunnel` and
-> `SSH_USERNAME` from `httpproxy` to `vpntunnel` before pushing the first tag
-> under the new name.
+> **Note:** the deploy/runtime user is `github_aide`. If migrating from an older
+> setup, set the PRIME environment's `REMOTE_DIR` to `/opt/vpntunnel` and
+> `SSH_USERNAME` to `github_aide` before pushing the first tag.
 
 | Name | Scope | Type | Purpose | Example value |
 |---|---|---|---|---|
 | `SSH_PRIVATEKEY` | Environment (`PRIME`) | Secret | ed25519 private key for the production host | full key contents |
 | `SSH_HOSTNAME` | Environment (`PRIME`) | Variable | hostname or IP of the production VPS | `proxy.example.com` |
 | `SSH_HOSTPORT` | Environment (`PRIME`) | Variable | SSH port of the production VPS | `2222` |
-| `SSH_USERNAME` | Environment (`PRIME`) | Variable | SSH user on the production VPS | `vpntunnel` |
-| `REMOTE_DIR` | Repository (or `PRIME` override) | Variable | Absolute path on the host where the binary lives | `/opt/vpntunnel` |
-| `TELEGRAM_TOKEN` | Environment (`PRIME`) | Secret (optional) | Bot token used by the post-deploy notify steps | `123456:AbCdEf…` |
+| `SSH_USERNAME` | Environment (`PRIME`) | Variable | SSH/deploy user on the production VPS (also the service user) | `github_aide` |
+| `REMOTE_DIR` | Repository (or `PRIME` override) | Variable | Absolute path to the service base dir on the host | `/opt/vpntunnel` |
+| `VPNTUNNEL_ADMIN_TOKEN` | Environment (`PRIME`) | Secret | Admin API token for the post-deploy `/v1/admin/health` check — **required**, or the health check 401s and the deploy auto-rolls-back and fails | matches `configs/auth/admin_token` on the host |
+| `ACTION_EMITER_TBOT_TOKEN` | Environment (`PRIME`) | Secret (optional) | Bot token used by the post-deploy notify steps | `123456:AbCdEf…` |
 | `TELEGRAM_ROOT_CHAT_ID` | Environment (`PRIME`) | Variable (optional) | Telegram chat ID that receives deploy notifications | `-1001234567890` |
 
 The Telegram pair is optional — if either value is empty, the notify steps
@@ -584,7 +598,7 @@ deploys require a key that can be used without interactive input.
 **Installing the public key on the server:**
 
 ```bash
-ssh-copy-id -i ~/.ssh/vpntunnel_prod_deploy.pub vpntunnel@<prod-host>
+ssh-copy-id -i ~/.ssh/vpntunnel_prod_deploy.pub github_aide@<prod-host>
 ```
 
 **Adding the private key to GitHub:**
@@ -597,7 +611,7 @@ lines and a trailing newline.
 **Key rotation procedure:**
 
 1. Generate a new ed25519 key pair on your workstation.
-2. Add the **new** public key to `~vpntunnel/.ssh/authorized_keys` on the
+2. Add the **new** public key to `~github_aide/.ssh/authorized_keys` on the
    server **before** removing the old one.
 3. Update the `SSH_PRIVATEKEY` secret in the `PRIME` environment.
 4. Push a throwaway pre-release tag and confirm the workflow run is green.
@@ -608,15 +622,16 @@ server locked out by premature deletion is not.
 
 ### 9. Rollback
 
-Rollback re-uses the same deploy pipeline. Automated rollback is
-deliberately not implemented: if `systemctl is-active` fails or `GET /v1/admin/health`
-returns unhealthy after a deploy, the cause is a real problem. Auto-reverting
-masks it. Diagnose first, then deploy forward or manually scp a known-good binary.
+**Automatic rollback.** The deploy self-heals: if `systemctl is-active` fails OR
+`GET /v1/admin/health` does not return `status=ok` after the flip, the workflow
+points `bin/release` back at the `VERSION_ID` it captured before the flip and
+restarts. A failed deploy therefore leaves the last-good version running. The run
+still fails (so you are alerted), and the job log carries the journal for diagnosis.
 
 **Source of truth for "what's running" on the host:**
 
 ```bash
-readlink /opt/vpntunnel/vpntunnel
+readlink /opt/vpntunnel/bin/release        # -> ../artifacts/<VERSION_ID>
 systemctl show vpntunnel --property=ExecMainStartTimestamp,ExecMainPID
 ```
 
@@ -631,24 +646,25 @@ git push origin v1.2.4-rollback
 The workflow re-runs end-to-end: test → build → approval gate → deploy.
 Use a fresh tag — re-pushing an existing tag breaks immutability expectations.
 
-**Fast fallback (no time to wait for a pipeline run):**
-The host retains the **3 most recent versioned binaries** (the active version plus
-2 rollback candidates). The active version is always protected from cleanup
-regardless of its mtime, so rolling back to any of the 3 retained versions is
-always safe. To roll back:
+**Fast manual fallback (no time to wait for a pipeline run):**
+The host retains the **3 newest version dirs** under `artifacts/` (the active
+version plus 2 rollback candidates); a version a channel still points at is never
+pruned, so rolling back to any retained version is always safe. To roll back, flip
+the channel — a relative target resolved from `bin/`:
 
 ```bash
-# list the 3 versioned binaries on the host, newest first
-ssh vpntunnel@<prod-host> 'ls -t /opt/vpntunnel/vpntunnel.v* | head -3'
+# list the retained version dirs on the host, newest first
+ssh github_aide@<prod-host> 'ls -1dt /opt/vpntunnel/artifacts/*/ | head -3'
 
-# roll back to a specific version (replace vX.Y.Z with an actual version from the list above)
-ssh vpntunnel@<prod-host> \
-  'ln -sfn vpntunnel.vX.Y.Z /opt/vpntunnel/vpntunnel && sudo systemctl restart vpntunnel'
+# roll back to a specific version (replace <VID> with one from the list above)
+ssh github_aide@<prod-host> \
+  'ln -sfn ../artifacts/<VID> /opt/vpntunnel/bin/release && sudo systemctl restart vpntunnel'
 ```
 
 This bypasses the approval gate entirely — use it only in genuine production
 emergencies. If the version you need is older than the 3 retained on the host,
-check out the older tag on your workstation, build, and scp it manually.
+check out the older tag on your workstation, build, and seed it into `artifacts/`
+manually (see § 7 step 4).
 
 ### 10. Hardening follow-ups (out of scope for current plans)
 
@@ -667,11 +683,6 @@ None of the items below are implemented. They are tracked here as future work.
 
 - **Tailscale or WireGuard for the SSH channel** — eliminates the
   public-internet SSH attack surface.
-
-- **Version-pinned ExecStart** — the live `/opt/vpntunnel/vpntunnel` path is
-  now a symlink; `readlink` identifies the running version at a glance. The
-  open question is whether `ExecStart=` should reference the versioned filename
-  directly rather than the symlink — a minor ergonomic change, not yet implemented.
 
 </details>
 

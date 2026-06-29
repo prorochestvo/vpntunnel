@@ -199,47 +199,72 @@ not the binary is containerized.
 
 ### Deployment
 
-One static binary (`CGO_ENABLED=0`). Deployed to the production host as a systemd
-unit at `/etc/systemd/system/vpntunnel.service`, with the config tree at
-`$REMOTE_DIR/configs/`. The live `$REMOTE_DIR/vpntunnel` is a symlink pointing at a
-versioned file `vpntunnel.${VERSION}` (e.g. `vpntunnel.v6.0.4`); the release workflow
-scps the new binary to a `.upload` temp name (`vpntunnel.${VERSION}.upload`), verifies
-its SHA256, then promotes it to the versioned name via `mv -Tf` (rename(2) — replaces
-the directory entry without truncating the inode, so redeploying an already-running
-version is `ETXTBSY`-safe and idempotent); if a versioned file with an identical hash
-already exists (same-build redeploy), the temp is discarded and the rename is skipped.
-The symlink is then atomic-swapped via
-`ln -sf … tmp && mv -Tf tmp vpntunnel`, the unit is restarted, and the deploy verifies
-via `systemctl is-active vpntunnel` and `curl -k https://127.0.0.1:8888/v1/admin/health`
-(with an admin token header); the host retains the 3 most recent versions (active always
-protected) for fast rollback. Pre-release tags (`vX.Y.Z-rc1`) deploy identically — there
-is no floating-tag surface to protect.
+One static binary (`CGO_ENABLED=0`), deployed to the production host as a systemd
+unit at `/etc/systemd/system/vpntunnel.service`. The on-host layout follows the
+standard release-layout: an immutable per-version artifact store plus a named
+channel symlink, with the config tree at `$REMOTE_DIR/configs/`.
 
-The release health-check uses the `VPNTUNNEL_ADMIN_TOKEN` GH secret (scoped to the `PRIME`
-environment), renamed from the former `DEPLOY_TOKEN`. The deploy role no longer exists;
-the `PRIME` environment `VPNTUNNEL_ADMIN_TOKEN` secret must be created before the next `v*` tag or
-the post-deploy health-check fails.
+```
+$REMOTE_DIR/                     root:root         base dir, CI cannot create top-level entries
+    vpntunnel.env                root:root 0600    read by systemd, NOT the service; operator-managed
+    configs/                     github_aide       service's own tree (daemon enforces owner==self on tokens)
+    state/  logs/                github_aide       async.db, access.log
+    artifacts/<VERSION_ID>/vpntunnel   github_aide, immutable build store
+    bin/release -> ../artifacts/<VERSION_ID>       relative channel symlink
+```
+
+The daemon enforces at startup that each auth token is mode 0600 **and owned by the
+process UID**, the tunnel-id HMAC key and each `.conf` are 0600, and the TLS cert
+dir is 0700 — so the whole `configs/` tree must be owned by the service user
+(`github_aide`). Only the base dir, `vpntunnel.env`, and the unit stay root-owned.
+
+`VERSION_ID = <YYYYMMDDhhmmss UTC>-r_<version>` (e.g. `20260629140000-r_6.0.4`),
+`<version>` being the git tag with its leading `v` stripped. There is one channel,
+`release`. The release workflow scps the binary straight into a fresh
+`artifacts/$VERSION_ID/` (the timestamped dir is never a live symlink target nor a
+running inode, so no `.upload` temp and no `ETXTBSY` dance), verifies its SHA256
+there (a mismatch removes only that dir, never the live channel), `chmod +x`s it,
+then atomic-swaps `bin/release` to point at it (`ln -sfn ../artifacts/$VERSION_ID
+bin/release.tmp && mv -Tf bin/release.tmp bin/release` — relative target). The unit is restarted and the
+deploy verifies via `systemctl is-active` and `curl -k
+https://127.0.0.1:8888/v1/admin/health` (admin-token header). A failed restart OR
+a failed health check auto-rolls the channel back to the previous `VERSION_ID`
+(captured before the flip) and restarts. Retention is channel-aware: the host keeps
+the 3 newest version dirs and never prunes one a live channel still points at.
+Pre-release tags (`vX.Y.Z-rc1`) deploy identically.
+
+The service is **de-rooted**: the unit runs as `github_aide`, the same user that
+deploys (no dedicated runtime user). userspace WireGuard needs no root and both
+listeners bind loopback ports >1024. The CI deploy user writes **only** under
+`artifacts/` and `bin/` — never the base dir, `vpntunnel.env`, or the unit. The one
+privileged action, `systemctl restart`, is granted by the narrow
+`configs/vpntunnel.sudoers` (install once to `/etc/sudoers.d/vpntunnel-deploy`).
+Trade-off: because the service runs as the deploy user, a leaked deploy key can read
+the service's secrets and run code as `github_aide` — but never as root.
+
+The release health-check uses the `VPNTUNNEL_ADMIN_TOKEN` GH secret (scoped to the
+`PRIME` environment). It must exist before the next `v*` tag or the post-deploy
+health-check fails.
 
 TLS settings are **not** in `proxy.json` — they are CLI flags. The systemd unit
-sources them from `/opt/vpntunnel/vpntunnel.env` (`EnvironmentFile`), which the
-release workflow's "Sync runtime env file" step rewrites from the PRIME GH
-variables (`VPNTUNNEL_CONFIG_PATH`, `VPNTUNNEL_TLS_CERT_DIR`,
-`VPNTUNNEL_TLS_CERT_HOST`) before each restart:
+sources them from `/opt/vpntunnel/vpntunnel.env` (`EnvironmentFile`), which is
+**operator-managed and hand-authored once** — the deploy no longer rewrites it (the
+CI user cannot write the base dir, and the values are stable because `ExecStart`
+points at the fixed `bin/release` symlink, not a per-version path):
 
 ```
 EnvironmentFile=/opt/vpntunnel/vpntunnel.env
-ExecStart=/opt/vpntunnel/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} \
+ExecStart=/opt/vpntunnel/bin/release/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} \
   -tls-cert-dir ${VPNTUNNEL_TLS_CERT_DIR} -tls-hostname ${VPNTUNNEL_TLS_CERT_HOST}
 ```
 
-The deploy writes the env file into `$REMOTE_DIR` (writable by the deploy user,
-so no sudo; `EnvironmentFile` is re-read on each restart, so no `daemon-reload`).
-Each flag falls back to a `$REMOTE_DIR`-relative default if its variable is unset.
-Production's `VPNTUNNEL_TLS_CERT_DIR` is `/opt/vpntunnel/configs/tls/`; the daemon
-generates a self-signed cert there (mode 0700 dir) on first start. The unit file
-(`configs/vpntunnel.service`) and `configs/vpntunnel.env.example` are installed
-once by the operator — the deploy does not touch the unit, only the env file. A
-relative `-tls-cert-dir` resolves against the process cwd.
+`EnvironmentFile` is re-read on each restart, so an env change needs only a restart,
+no `daemon-reload`. Production's `VPNTUNNEL_TLS_CERT_DIR` is
+`/opt/vpntunnel/configs/tls/`; the daemon generates a self-signed cert there on first
+start. The unit (`configs/vpntunnel.service`), `configs/vpntunnel.env.example`, and
+`configs/vpntunnel.sudoers` are installed once by the operator — the deploy touches
+none of them. The one-time host restructure onto this layout is the runbook in
+`configs/RUNBOOK-migrate-release-layout.md`.
 
 `main` and PR pushes run `.github/workflows/ci.main.yml` (lint + test + sanity
 `go build`). The CI workflow does not touch the host.

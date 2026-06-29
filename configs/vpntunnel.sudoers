@@ -1,0 +1,21 @@
+# /etc/sudoers.d/vpntunnel-deploy
+#
+# Narrow, install-once grant for the CI deploy user (github_aide). It lets the
+# release workflow restart the unit, poll its state, and read its journal on a
+# failed deploy — nothing else. Restart is not privilege escalation, so this is
+# safe; never broaden it to `systemctl *` or `NOPASSWD: ALL`.
+#
+# The three commands match the workflow's sudo invocations verbatim, including
+# the /bin/ paths. No wildcards: sudoers forbids '*' in command arguments, and
+# the journalctl invocation uses a fixed argument list (`-n 200 --no-pager`),
+# so it is listed exactly with no glob.
+#
+# Installation (one-time, by the operator, as root):
+#   sudo install -m 0440 /opt/vpntunnel/configs/vpntunnel.sudoers /etc/sudoers.d/vpntunnel-deploy
+#   sudo visudo -c            # must report "parsed OK"
+#
+# Audit and remove any prior broader grant for the deploy user:
+#   sudo grep -rE 'NOPASSWD|github_aide' /etc/sudoers /etc/sudoers.d/
+github_aide ALL=(root) NOPASSWD: /bin/systemctl restart vpntunnel, \
+                                 /bin/systemctl is-active --quiet vpntunnel, \
+                                 /bin/journalctl -u vpntunnel -n 200 --no-pager

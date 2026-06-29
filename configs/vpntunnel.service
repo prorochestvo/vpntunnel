@@ -7,10 +7,12 @@
 #   sudo systemctl enable --now vpntunnel
 #
 # Runtime flags live in /opt/vpntunnel/vpntunnel.env (systemd EnvironmentFile
-# syntax: KEY=value). The release workflow rewrites that file from the PRIME
-# GitHub environment variables on every deploy; for the first manual start, seed
-# it from vpntunnel.env.example. EnvironmentFile is re-read on every restart, so
-# no daemon-reload is needed after a flag change — only after editing this unit.
+# syntax: KEY=value). The file is OPERATOR-MANAGED and edited by hand — the
+# release workflow no longer rewrites it (the CI user cannot write the base dir).
+# EnvironmentFile is re-read on every restart, so a flag change needs only a
+# restart, not a daemon-reload — daemon-reload is required only after editing
+# this unit. The values are stable across deploys because ExecStart points at
+# the fixed bin/release channel symlink, never at a concrete version.
 #
 # Logs:
 #   journalctl -u vpntunnel -f                         # operational log
@@ -22,20 +24,36 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+# de-rooted: runs as the same user that deploys (github_aide). userspace
+# WireGuard needs no root, and both listeners bind loopback ports >1024, so no
+# capabilities are required.
+User=github_aide
+Group=github_aide
 WorkingDirectory=/opt/vpntunnel
-# Flags come from the env file; the deploy keeps it in sync with the GH vars.
-# VPNTUNNEL_TLS_CERT_DIR is REQUIRED in production — an empty value runs the API
-# as plain HTTP. No leading '-' on EnvironmentFile: a missing env file fails the
-# start loudly rather than launching the daemon with blank flags.
+# Flags come from the operator-managed env file. VPNTUNNEL_TLS_CERT_DIR is
+# REQUIRED in production — an empty value runs the API as plain HTTP. No leading
+# '-' on EnvironmentFile: a missing env file fails the start loudly rather than
+# launching the daemon with blank flags.
 EnvironmentFile=/opt/vpntunnel/vpntunnel.env
-ExecStart=/opt/vpntunnel/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} -tls-cert-dir ${VPNTUNNEL_TLS_CERT_DIR} -tls-hostname ${VPNTUNNEL_TLS_CERT_HOST}
+# ExecStart points at the channel symlink, never a concrete VERSION_ID — a deploy
+# is just a flip of bin/release + a restart.
+ExecStart=/opt/vpntunnel/bin/release/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} -tls-cert-dir ${VPNTUNNEL_TLS_CERT_DIR} -tls-hostname ${VPNTUNNEL_TLS_CERT_HOST}
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 # graceful shutdown window before SIGKILL.
 TimeoutStopSec=15s
+# cheap sandboxing. ProtectSystem=strict makes the whole filesystem read-only
+# except ReadWritePaths; the service writes only its state DB, access log, and
+# the self-signed TLS cert dir. The tunnel-id HMAC key and TLS cert must already
+# exist (or configs/auth + configs/tls be temporarily writable) for a cold first
+# start, since strict mode blocks creating them elsewhere.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/vpntunnel/state /opt/vpntunnel/logs /opt/vpntunnel/configs/tls
 
 [Install]
 WantedBy=multi-user.target
