@@ -410,7 +410,7 @@ sudo chmod 0755 /opt/vpntunnel
 ```
 
 The service is de-rooted: it runs as `github_aide` (the same user that deploys).
-The base dir, `vpntunnel.env`, and the unit stay root-owned; the CI/service user
+The base dir, `.env`, and the unit stay root-owned; the CI/service user
 owns `configs/`, `artifacts/`, `bin/`, `state/`, and `logs/`.
 `/opt/vpntunnel/logs/` must stay writable by `github_aide` so lumberjack can rotate
 the access log. The daemon generates `configs/auth/tunnel-id.key` (mode `0600`) on
@@ -449,7 +449,7 @@ this once, as described in step 5.
 **1. Provision the deployment directory.**
 
 The service is de-rooted: the unit runs as `github_aide`, the same user that
-deploys (no separate runtime user). The base dir, `vpntunnel.env`, and the unit
+deploys (no separate runtime user). The base dir, `.env`, and the unit
 stay `root:root`; the CI/service user owns the artifact store, channel symlinks,
 the state/logs/cert dirs, and the `configs/` tree (the daemon requires its secrets
 to be owned by the process UID).

@@ -2,11 +2,11 @@
 #
 # Installation (one-time, by the operator):
 #   sudo cp /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/
-#   sudo cp /opt/vpntunnel/configs/vpntunnel.env.example /opt/vpntunnel/vpntunnel.env  # first time only
+#   sudo cp /opt/vpntunnel/configs/env.example /opt/vpntunnel/.env  # first time only
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now vpntunnel
 #
-# Runtime flags live in /opt/vpntunnel/vpntunnel.env (systemd EnvironmentFile
+# Runtime flags live in /opt/vpntunnel/.env (systemd EnvironmentFile
 # syntax: KEY=value). The file is OPERATOR-MANAGED and edited by hand — the
 # release workflow no longer rewrites it (the CI user cannot write the base dir).
 # EnvironmentFile is re-read on every restart, so a flag change needs only a
@@ -34,7 +34,7 @@ WorkingDirectory=/opt/vpntunnel
 # REQUIRED in production — an empty value runs the API as plain HTTP. No leading
 # '-' on EnvironmentFile: a missing env file fails the start loudly rather than
 # launching the daemon with blank flags.
-EnvironmentFile=/opt/vpntunnel/vpntunnel.env
+EnvironmentFile=/opt/vpntunnel/.env
 # ExecStart points at the channel symlink, never a concrete VERSION_ID — a deploy
 # is just a flip of bin/release + a restart.
 ExecStart=/opt/vpntunnel/bin/release/vpntunnel -config ${VPNTUNNEL_CONFIG_PATH} -tls-cert-dir ${VPNTUNNEL_TLS_CERT_DIR} -tls-hostname ${VPNTUNNEL_TLS_CERT_HOST}

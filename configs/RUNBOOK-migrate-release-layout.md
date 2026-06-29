@@ -79,7 +79,7 @@ the process UID**; `tunnel-id.key` is 0600; each `.conf` is 0600; the TLS cert d
 is exactly 0700. Because the service runs as `github_aide`, every file it reads or
 writes must be `github_aide`-owned — including the entire `configs/` tree. This is
 the direct consequence of running the service as the deploy user (CI == SVC): the
-deploy user owns the service's secrets. Only the base dir, `vpntunnel.env`, and the
+deploy user owns the service's secrets. Only the base dir, `.env`, and the
 unit stay root-owned (the unit lives in `/etc/systemd/system/`).
 
 ```bash
@@ -92,9 +92,9 @@ chmod 0755 "$APP"
 
 # env file: read by systemd (root) BEFORE launching the service, never by the
 # service itself — so it stays root:root 0600. No secrets, only paths.
-cp "$APP/configs/vpntunnel.env.example" "$APP/vpntunnel.env"   # first time only; then edit by hand
-chown root:root "$APP/vpntunnel.env"
-chmod 0600 "$APP/vpntunnel.env"
+cp "$APP/configs/env.example" "$APP/.env"   # first time only; then edit by hand
+chown root:root "$APP/.env"
+chmod 0600 "$APP/.env"
 
 # configs/ is the service's own tree — owned by the service user so the daemon's
 # owner==self token check passes and 0600 secrets are readable.
@@ -107,7 +107,7 @@ chmod 0600 "$APP/configs/tunnels/"*.conf 2>/dev/null || true
 > **Blast radius (CI == SVC == github_aide).** A leaked deploy key can flip
 > `bin/release` to a malicious binary, restart the service (via the narrow
 > sudoers), and read anything `github_aide` can read — the WireGuard `.conf`
-> files, the auth tokens, and `tunnel-id.key`. It **cannot** write `vpntunnel.env`,
+> files, the auth tokens, and `tunnel-id.key`. It **cannot** write `.env`,
 > the unit, or escalate to root (the unit pins `User=github_aide`, and systemd —
 > not the service — reads the root-owned env file). This is the accepted trade-off
 > of not creating a dedicated runtime user; it is strictly better than the prior

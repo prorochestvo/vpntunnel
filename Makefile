@@ -48,8 +48,8 @@ init:
 	# to start the unit. It is operator-managed (the release workflow does NOT
 	# rewrite it) and lives in the root-only base dir, so stage the example in /tmp
 	# (deploy-user-writable) and sudo-install it (mode 0600, root-owned).
-	scp ./configs/vpntunnel.env.example be-happy.kz:/tmp/vpntunnel.env.example
-	ssh -t be-happy.kz 'test -s /opt/vpntunnel/vpntunnel.env || sudo install -m 0600 -o root -g root /tmp/vpntunnel.env.example /opt/vpntunnel/vpntunnel.env'
+	scp ./configs/env.example be-happy.kz:/tmp/env.example
+	ssh -t be-happy.kz 'test -s /opt/vpntunnel/.env || sudo install -m 0600 -o root -g root /tmp/env.example /opt/vpntunnel/.env'
 	# generate the two REQUIRED API tokens and the tunnel-id HMAC key if absent
 	# (mode 0600); never overwrite. The daemon runs as github_aide (the SSH user),
 	# so files created here are already github_aide-owned — no chown needed.
