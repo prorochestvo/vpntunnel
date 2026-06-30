@@ -24,11 +24,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# de-rooted: runs as the same user that deploys (github_aide). userspace
-# WireGuard needs no root, and both listeners bind loopback ports >1024, so no
-# capabilities are required.
-User=github_aide
-Group=github_aide
+# runs as root, matching the rest of the fleet (hive_scout, beacon). Root is not
+# a runtime requirement — userspace WireGuard needs no root and both listeners
+# bind loopback ports >1024 — it exists so the secret tree (configs/auth,
+# configs/tls, configs/tunnels, state, logs) can be root-owned and unreadable to
+# the CI deploy user github_aide. Splitting the run identity from the deploy
+# identity means a leaked deploy key can no longer read any runtime secret.
+User=root
+Group=root
 WorkingDirectory=/opt/vpntunnel
 # Flags come from the operator-managed env file. VPNTUNNEL_TLS_CERT_DIR is
 # REQUIRED in production — an empty value runs the API as plain HTTP. No leading

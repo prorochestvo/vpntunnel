@@ -205,18 +205,22 @@ standard release-layout: an immutable per-version artifact store plus a named
 channel symlink, with the config tree at `$REMOTE_DIR/configs/`.
 
 ```
-$REMOTE_DIR/                     root:root         base dir, CI cannot create top-level entries
+$REMOTE_DIR/                     root:root 0755    base dir, CI cannot create top-level entries
     .env                root:root 0600    read by systemd, NOT the service; operator-managed
-    configs/                     github_aide       service's own tree (daemon enforces owner==self on tokens)
-    state/  logs/                github_aide       async.db, access.log
-    artifacts/<VERSION_ID>/vpntunnel   github_aide, immutable build store
-    bin/release -> ../artifacts/<VERSION_ID>       relative channel symlink
+    configs/                     root:root 0755    service's own tree (auth/tls/tunnels are 0700)
+    state/  logs/                root:root 0750    async.db, access.log (root writes)
+    artifacts/<VERSION_ID>/vpntunnel   github_aide 0755, immutable build store
+    bin/release -> ../artifacts/<VERSION_ID>       github_aide, relative channel symlink
 ```
 
 The daemon enforces at startup that each auth token is mode 0600 **and owned by the
 process UID**, the tunnel-id HMAC key and each `.conf` are 0600, and the TLS cert
-dir is 0700 — so the whole `configs/` tree must be owned by the service user
-(`github_aide`). Only the base dir, `.env`, and the unit stay root-owned.
+dir is 0700. The service runs as root, so the whole secret tree is root-owned and
+the owner==self check passes against UID 0. The base dir stays `0755` (not `0700`)
+so the CI user `github_aide` can traverse into its own `artifacts/` and `bin/`
+(it is not in the `root` group); secret isolation comes from the `0700` root-owned
+`configs/auth`, `configs/tls`, and `configs/tunnels` subdirs, which `github_aide`
+cannot open. Only `artifacts/` and `bin/` are `github_aide`-owned.
 
 `VERSION_ID = <YYYYMMDDhhmmss UTC>-r_<version>` (e.g. `20260629140000-r_6.0.4`),
 `<version>` being the git tag with its leading `v` stripped. There is one channel,
@@ -233,14 +237,27 @@ a failed health check auto-rolls the channel back to the previous `VERSION_ID`
 the 3 newest version dirs and never prunes one a live channel still points at.
 Pre-release tags (`vX.Y.Z-rc1`) deploy identically.
 
-The service is **de-rooted**: the unit runs as `github_aide`, the same user that
-deploys (no dedicated runtime user). userspace WireGuard needs no root and both
-listeners bind loopback ports >1024. The CI deploy user writes **only** under
-`artifacts/` and `bin/` — never the base dir, `.env`, or the unit. The one
-privileged action, `systemctl restart`, is granted by the narrow
-`configs/vpntunnel.sudoers` (install once to `/etc/sudoers.d/vpntunnel-deploy`).
-Trade-off: because the service runs as the deploy user, a leaked deploy key can read
-the service's secrets and run code as `github_aide` — but never as root.
+The service runs as **root**, matching the rest of the fleet (`hive_scout`,
+`beacon`). Root is not a runtime requirement — userspace WireGuard needs no root
+and both listeners bind loopback ports >1024 — it exists so the secret tree is
+root-owned and unreadable to the deploy identity. The CI deploy user `github_aide`
+writes **only** under `artifacts/` and `bin/` and can no longer read any secret
+(the `0700` root-owned `configs/auth|tls|tunnels`, `state/`, and `logs/` are
+closed to it). The one privileged action it needs, `systemctl restart`, is granted
+by the narrow `configs/vpntunnel.sudoers` (install once to
+`/etc/sudoers.d/vpntunnel-deploy`). Trade-off: a remote-code-execution bug in the
+public proxy now yields root rather than `github_aide`; this is accepted per the
+fleet decision and partially offset by `ProtectSystem=strict`, `NoNewPrivileges`,
+and `PrivateTmp`. Residual: the binary in `artifacts/` is `github_aide`-owned and
+executed by root, so a leaked deploy key can still reach root via a binary swap +
+restart — tracked as a follow-up (root-owned binary slot + privileged promote),
+not closed here.
+
+The operator path is `make init`, run as a sudo-capable account (`pi5_aide` with
+password sudo) — **not** the `github_aide` CI key. It stages the repo-managed
+files into `/tmp` and runs `configs/provision-host.sh` under `sudo bash`, which
+provisions the root-owned tree, generates absent secrets without rotating
+existing ones, and does the chown + unit swap + restart atomically.
 
 The release health-check uses the `VPNTUNNEL_ADMIN_TOKEN` GH secret (scoped to the
 `PRIME` environment). It must exist before the next `v*` tag or the post-deploy

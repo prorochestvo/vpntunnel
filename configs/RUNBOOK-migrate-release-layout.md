@@ -5,6 +5,14 @@ One-time operator procedure to move an existing `/opt/vpntunnel` host from the o
 release-layout the deploy workflow now expects. Run it once, as root, on the
 production host. After it, every `v*` tag deploys with no further host changes.
 
+> **Superseded ownership model.** This runbook captures the original migration,
+> when the service ran as `github_aide` and owned its own `configs/` tree. The
+> service now runs as **root** and the whole secret + runtime tree is root-owned;
+> `make init` (which runs `configs/provision-host.sh` under sudo) is the canonical
+> provisioner and applies the current ownership/modes. The artifacts/bin structure
+> and channel mechanics below are still accurate — only the `configs/`/`state/`/
+> `logs/` ownership in steps 3–4 is stale (now `root:root`, not `github_aide`).
+
 Substitutions used below: `APP=/opt/vpntunnel` (the `REMOTE_DIR` PRIME var), and the
 CI/service user `github_aide`. If your current deploy user has a different name,
 rename it to `github_aide` (or adjust every reference here and set the `SSH_USERNAME`

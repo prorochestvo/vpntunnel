@@ -34,32 +34,22 @@ clean:
 generate-vpn-config:
 	CGO_ENABLED=0 go run ./cmd/generatevpnconfig $(ARGS)
 
-# provision/update the host, then restart the live daemon. Seeds proxy.json from
-# the repo example only if the host has none — an existing host proxy.json is
-# never clobbered. Manages the systemd unit, which the release workflow
-# deliberately never touches.
+# provision/update the host, then restart the live daemon. The service runs as
+# root and its secret + runtime tree is root-owned, so this target MUST be run as
+# a sudo-capable operator account (pi5_aide with password sudo) — NOT the
+# github_aide CI key, which has no general sudo and can no longer write configs/.
+# Stage every repo-managed file into the deploy-user-writable /tmp, then hand the
+# whole privileged, idempotent host setup to configs/provision-host.sh under one
+# `sudo bash` (ssh -t allocates the TTY for the password prompt; the script reads
+# from a file path, not stdin, so there is no TTY/heredoc conflict). The script
+# seeds proxy.json/.env only if absent, never rotates an existing token/key, and
+# does the chown + unit swap + restart together so the github_aide -> root
+# transition is atomic. The systemd unit is managed here; the release workflow
+# deliberately never touches it.
 init:
-	ssh be-happy.kz 'test -s /opt/vpntunnel/configs/proxy.json' || scp ./configs/proxy.example.json be-happy.kz:/opt/vpntunnel/configs/proxy.json
-	scp -r ./configs/tunnels/*.conf be-happy.kz:/opt/vpntunnel/configs/tunnels
-	scp ./configs/vpntunnel.service be-happy.kz:/opt/vpntunnel/configs/vpntunnel.service
-	scp ./configs/vpntunnel.sudoers be-happy.kz:/opt/vpntunnel/configs/vpntunnel.sudoers
-	# seed the runtime env file the unit requires, only if absent — its
-	# EnvironmentFile= has no leading '-', so a missing file makes systemd refuse
-	# to start the unit. It is operator-managed (the release workflow does NOT
-	# rewrite it) and lives in the root-only base dir, so stage the example in /tmp
-	# (deploy-user-writable) and sudo-install it (mode 0600, root-owned).
-	scp ./configs/env.example be-happy.kz:/tmp/env.example
-	ssh -t be-happy.kz 'test -s /opt/vpntunnel/.env || sudo install -m 0600 -o root -g root /tmp/env.example /opt/vpntunnel/.env'
-	# generate the two REQUIRED API tokens and the tunnel-id HMAC key if absent
-	# (mode 0600); never overwrite. The daemon runs as github_aide (the SSH user),
-	# so files created here are already github_aide-owned — no chown needed.
-	ssh be-happy.kz 'umask 077; for t in proxy_token admin_token; do f=/opt/vpntunnel/configs/auth/$$t; [ -s "$$f" ] || openssl rand -hex 48 > "$$f"; done; k=/opt/vpntunnel/configs/auth/tunnel-id.key; [ -s "$$k" ] || head -c 64 /dev/urandom > "$$k"'
-	# the daemon (running as github_aide) requires token files at mode 0600 owned by
-	# itself, the tunnel-id key at 0600, and the TLS cert dir at exactly 0700.
-	# normalise modes (no chown — github_aide already owns them), then install the
-	# unit + the deploy sudoers (root-only paths), reload, and restart.
-	ssh be-happy.kz 'chmod 0700 /opt/vpntunnel/configs/auth /opt/vpntunnel/configs/tls && chmod 0600 /opt/vpntunnel/configs/auth/admin_token /opt/vpntunnel/configs/auth/proxy_token /opt/vpntunnel/configs/auth/tunnel-id.key'
-	ssh -t be-happy.kz 'sudo install -m 0644 /opt/vpntunnel/configs/vpntunnel.service /etc/systemd/system/vpntunnel.service && sudo install -m 0440 /opt/vpntunnel/configs/vpntunnel.sudoers /etc/sudoers.d/vpntunnel-deploy && sudo systemctl daemon-reload && sudo systemctl restart vpntunnel'
+	scp ./configs/provision-host.sh ./configs/proxy.example.json ./configs/env.example ./configs/vpntunnel.service ./configs/vpntunnel.sudoers be-happy.kz:/tmp/
+	scp ./configs/tunnels/*.conf be-happy.kz:/tmp/
+	ssh -t be-happy.kz 'sudo bash /tmp/provision-host.sh; rm -f /tmp/provision-host.sh'
 	$(MAKE) deploy-nginx
 
 # install/refresh the public edge vhost (Cloudflare-fronted) and reload nginx.
@@ -71,9 +61,11 @@ init:
 # absent the vhost is staged but nginx is NOT reloaded — placing the cert and
 # rerunning this target completes the install.
 deploy-nginx:
-	ssh be-happy.kz 'mkdir -p /opt/vpntunnel/deploy'
-	scp ./deploy/dev.seilbekskindirov.vpntunnel.conf be-happy.kz:/opt/vpntunnel/deploy/dev.seilbekskindirov.vpntunnel.conf
+	scp ./deploy/dev.seilbekskindirov.vpntunnel.conf be-happy.kz:/tmp/dev.seilbekskindirov.vpntunnel.conf
 	ssh -t be-happy.kz 'set -e; \
+		sudo install -d -o root -g root -m 0755 /opt/vpntunnel/deploy; \
+		sudo install -o root -g root -m 0644 /tmp/dev.seilbekskindirov.vpntunnel.conf /opt/vpntunnel/deploy/dev.seilbekskindirov.vpntunnel.conf; \
+		rm -f /tmp/dev.seilbekskindirov.vpntunnel.conf; \
 		sudo mkdir -p /etc/nginx/certificates/cloudflare; \
 		sudo curl -fsSL https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem -o /etc/nginx/certificates/cloudflare/origin-pull-ca.pem; \
 		sudo install -m 0644 /opt/vpntunnel/deploy/dev.seilbekskindirov.vpntunnel.conf /etc/nginx/sites-available/dev.seilbekskindirov.vpntunnel; \
@@ -86,9 +78,10 @@ deploy-nginx:
 		fi'
 
 # over SSH to the prod host: assert egress leaves through the Mullvad exit and
-# the health plane reports ok.
+# the health plane reports ok. The admin token is now root:root 0600, so reading
+# it needs sudo — run this as the sudo-capable operator (ssh -t for the prompt).
 healthz:
-	@ssh be-happy.kz 'curl -s -x http://127.0.0.1:7788 https://am.i.mullvad.net/json | grep -q "mullvad_exit_ip.:true" && echo "egress  PASS" || echo "egress  FAIL"; curl -sk -H "X-Vpntunnel-Token: $$(cat /opt/vpntunnel/configs/auth/admin_token)" https://127.0.0.1:8888/v1/admin/health | grep -q "status.:.ok" && echo "health  PASS" || echo "health  FAIL"'
+	@ssh -t be-happy.kz 'curl -s -x http://127.0.0.1:7788 https://am.i.mullvad.net/json | grep -q "mullvad_exit_ip.:true" && echo "egress  PASS" || echo "egress  FAIL"; curl -sk -H "X-Vpntunnel-Token: $$(sudo cat /opt/vpntunnel/configs/auth/admin_token)" https://127.0.0.1:8888/v1/admin/health | grep -q "status.:.ok" && echo "health  PASS" || echo "health  FAIL"'
 
 # PASS/FAIL each API route against a daemon already running locally (`make run`):
 # the 401 no-token gate and the two roles (user gets 403 on admin/health).
