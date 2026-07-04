@@ -2,7 +2,7 @@
   "tunnel_id_hmac_key_file": "./auth/tunnel-id.key",
   "vpnstream": {
     "listen": "127.0.0.1:7788",
-    "allowed_countries": ["ch", "se", "us", "gb", "ua", "de"],
+    "allowed_countries": ["ch", "se", "us", "gb", "ua", "de", "nl"],
     "auth": { "token_file": "./auth/token" },
     "reconnect_min": "10m",
     "reconnect_max": "3h",

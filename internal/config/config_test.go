@@ -1380,7 +1380,7 @@ func TestProxyExampleJSON(t *testing.T) {
 	// spot-check a handful of values so a silent zero-value parse failure is caught.
 	assert.Equal(t, "127.0.0.1:7788", cfg.VPNStream.Listen)
 	assert.Equal(t, "/opt/vpntunnel/state/async.db", cfg.API.VPN.Async.StoragePath)
-	assert.Equal(t, []string{"ch", "se", "us", "gb", "ua", "de"}, cfg.VPNStream.AllowedCountries)
+	assert.Equal(t, []string{"ch", "se", "us", "gb", "ua", "de", "nl"}, cfg.VPNStream.AllowedCountries)
 }
 
 func writeJSON(t *testing.T, v any) string {
