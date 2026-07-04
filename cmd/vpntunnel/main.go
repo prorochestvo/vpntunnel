@@ -43,6 +43,7 @@ import (
 	"vpntunnel/internal/asyncjob"
 	"vpntunnel/internal/auth"
 	"vpntunnel/internal/config"
+	"vpntunnel/internal/notify"
 	"vpntunnel/internal/observability"
 	"vpntunnel/internal/service"
 	"vpntunnel/internal/transport/apiserver"
@@ -239,6 +240,31 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	opLog := slog.New(scrubbed)
 	opLog.Info("operational log scrubbing active", slog.String("strategy", "host-port-redact"))
 
+	// build the Telegram tunnel-change notifier from the environment. Absent or
+	// malformed input both leave the proxy running: a bad DSN is auxiliary
+	// telemetry misconfiguration, never a reason to crash-loop the actual
+	// product. tgNotifier is held separately (rather than type-asserting
+	// notifier later) purely for its Close lifecycle at shutdown.
+	var notifier notify.Notifier = notify.Nop{}
+	var tgNotifier *notify.TelegramNotifier
+	if dsn := os.Getenv("VPNTUNNEL_TELEGRAMBOT_DSN"); dsn != "" {
+		tn, err := notify.NewTelegram(dsn, opLog)
+		if err != nil {
+			// NewTelegram returns a redacted error (never the DSN or the bot
+			// token); warn and keep running with notifications disabled.
+			opLog.Warn("telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN",
+				slog.String("err", err.Error()),
+			)
+		} else {
+			// NewTelegram already logs "telegram notifier enabled" with token_len;
+			// do not log a second, redundant line here.
+			notifier = tn
+			tgNotifier = tn
+		}
+	} else {
+		opLog.Info("telegram notifier disabled: VPNTUNNEL_TELEGRAMBOT_DSN not set")
+	}
+
 	// build the access-log sanitizer slice from the compiled patterns in cfg.
 	sanitizers := make([]observability.PathSanitizePattern, 0, len(cfg.API.Log.PathSanitizePatterns))
 	for _, p := range cfg.API.Log.PathSanitizePatterns {
@@ -325,6 +351,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		ReconnectMax:    cfg.VPNStream.ReconnectMax,
 		ConfigDir:       configDir,
 		OpLog:           opLog,
+		Notifier:        notifier,
 	})
 	if err := supervisor.Start(ctx); err != nil {
 		return fmt.Errorf("start streaming supervisor: %w", err)
@@ -339,6 +366,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		IdleTTL:       cfg.API.VPN.Demand.IdleTTL,
 		ConfigDir:     configDir,
 		OpLog:         opLog,
+		Notifier:      notifier,
 	})
 	var schedulerWg sync.WaitGroup
 	schedulerWg.Add(1)
@@ -547,6 +575,14 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 
 	// stop the streaming supervisor.
 	supervisor.Stop()
+
+	// close the Telegram notifier: all event producers (supervisor, scheduler)
+	// have stopped by this point, so no further Notify calls can race the
+	// drain. Close cancels the notifier's internal ctx, which fails any
+	// in-flight probe/send fast, bounding the wait.
+	if tgNotifier != nil {
+		tgNotifier.Close()
+	}
 
 	// join the GC goroutine before closing the store.
 	gcDone := make(chan struct{})

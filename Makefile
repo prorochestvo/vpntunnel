@@ -11,6 +11,10 @@ build: format
 run: build
 	# no -tls-cert-dir: the API serves plain HTTP (loopback-only dev). Pass the
 	# flag to get HTTPS; production sets it on the systemd ExecStart.
+	# source ./.env (a real shell source, so quoted values are handled correctly)
+	# so local dev matches production, where systemd's EnvironmentFile injects the
+	# same vars (e.g. VPNTUNNEL_TELEGRAMBOT_DSN).
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	CGO_ENABLED=0 go run ./cmd/vpntunnel -config ./configs/proxy.json
 
 test: lint

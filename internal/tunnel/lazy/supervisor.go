@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"vpntunnel/internal/notify"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
 )
@@ -60,6 +61,9 @@ type SupervisorOptions struct {
 	ConfigDir string
 	// OpLog is the operational slog logger. When nil, slog.Default() is used.
 	OpLog *slog.Logger
+	// Notifier reports tunnel-change events (startup, reconnect). Optional;
+	// defaults to notify.Nop{} when nil so call sites never need to nil-check.
+	Notifier notify.Notifier
 }
 
 // NewStreamingSupervisor constructs a StreamingSupervisor from opts. It panics
@@ -89,6 +93,10 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 	if clk == nil {
 		clk = NewRealClock()
 	}
+	notifier := opts.Notifier
+	if notifier == nil {
+		notifier = notify.Nop{}
+	}
 
 	pollInterval := opts.PollInterval
 	if pollInterval <= 0 {
@@ -108,6 +116,7 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 		clock:           clk,
 		configDir:       opts.ConfigDir,
 		opLog:           opts.OpLog,
+		notifier:        notifier,
 		// stopCh and loopDone are allocated here (not in Start) so Stop is safe to
 		// call before or without Start — e.g. a deferred cleanup that runs on an early
 		// return. loopDone is closed by the goroutine launched in Start; if Start was
@@ -148,6 +157,7 @@ type StreamingSupervisor struct {
 	clock           Clock
 	configDir       string
 	opLog           *slog.Logger
+	notifier        notify.Notifier
 
 	// mu guards device, deviceID, and reporter.
 	mu       sync.RWMutex
@@ -232,6 +242,7 @@ func (s *StreamingSupervisor) Start(ctx context.Context) error {
 		)
 	} else {
 		s.swapDevice(d, id, rep)
+		s.notifyChange("started", id, d)
 	}
 
 	s.started.Store(true)
@@ -282,6 +293,7 @@ func (s *StreamingSupervisor) loop(ctx context.Context) {
 				continue
 			}
 			s.swapDevice(nd, id, nrep)
+			s.notifyChange("switched tunnel", id, nd)
 			// a fresh build doesn't mean the tunnel is healthy yet (no handshake
 			// has occurred). Only reset the backoff after the first healthy poll.
 			// Leave backoff unchanged until we confirm a healthy handshake.
@@ -411,6 +423,21 @@ func (s *StreamingSupervisor) logger() *slog.Logger {
 		return s.opLog
 	}
 	return slog.Default()
+}
+
+// notifyChange reports a streaming tunnel change (first connect or
+// reconnect) to the configured Notifier. It is called after swapDevice has
+// already made d the live device, with context.Background() rather than the
+// supervisor's run ctx: Notify never blocks, so the send is fire-and-forget
+// and outlives any single call's context.
+func (s *StreamingSupervisor) notifyChange(title, id string, d tunnel.Dialer) {
+	s.notifier.Notify(context.Background(), notify.Event{
+		Source:   notify.SourceStreaming,
+		Title:    title,
+		Country:  strings.ToLower(tunnel.CountryFromID(id)),
+		Filename: id + ".conf",
+		Dialer:   d,
+	})
 }
 
 // growBackoff doubles d up to max.

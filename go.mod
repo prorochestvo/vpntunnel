@@ -3,6 +3,7 @@ module vpntunnel
 go 1.26
 
 require (
+	github.com/prorochestvo/dsninjector v0.0.2
 	github.com/stretchr/testify v1.11.1
 	go.etcd.io/bbolt v1.4.3
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446

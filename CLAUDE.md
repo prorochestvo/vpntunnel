@@ -34,6 +34,7 @@ TLS settings are CLI flags (`-tls-cert-dir`, `-tls-hostname`, `-tls-ip-sans`), n
 | WireGuard | `internal/tunnel/wireguard` | Userspace WireGuard dialer via wireguard-go + gVisor netstack. |
 | wg-quick parser | `internal/tunnel/wireguard/wgconf` | Parses `[Interface]`/`[Peer]` `.conf` files into `ParsedConfig`. |
 | Observability | `internal/observability` | Operational slog logger (stdout) + lumberjack rotating access log (JSONL). |
+| Notifications | `internal/notify` | `Notifier` interface + `Nop` + `TelegramNotifier`; reports tunnel changes to Telegram. |
 | Orchestration | `internal/service` | `ProxyService`: `HandleHTTP`, `HandleCONNECT`, `WaitTunnels`. |
 | Transport | `internal/transport/httpserver` | Thin `*http.Server` wrapper, graceful shutdown. |
 | Health + API | `internal/transport/apiserver`, `internal/transport/apiserver/handlers` | HTTP/HTTPS API listener (plain HTTP when -tls-cert-dir empty; TLS 1.3 when set), request-ID, role-based auth, routing; multi-tunnel `/v1/admin/health` handler. |
@@ -187,6 +188,7 @@ key (mode 0600, never commit to a shared repository).
 | `golang.zx2c4.com/wireguard/wgctrl` | WireGuard key parsing (`wgtypes`). |
 | `golang.org/x/net` | Transitive dep of wireguard-go (not imported directly). |
 | `gopkg.in/natefinch/lumberjack.v2` | Rotating access log file. |
+| `github.com/prorochestvo/dsninjector` | Parses `VPNTUNNEL_TELEGRAMBOT_DSN` (`internal/notify`). |
 | `github.com/stretchr/testify` | Test assertions (test-only). |
 
 Note: `golang.zx2c4.com/wireguard/tun/netstack` is a sub-package of the
@@ -282,6 +284,15 @@ start. The unit (`configs/vpntunnel.service`), `configs/env.example`, and
 `configs/vpntunnel.sudoers` are installed once by the operator — the deploy touches
 none of them. The one-time host restructure onto this layout is the runbook in
 `configs/RUNBOOK-migrate-release-layout.md`.
+
+The same `.env` also carries the second (and so far only other) env-injected
+setting: `VPNTUNNEL_TELEGRAMBOT_DSN`, read directly via `os.Getenv` in
+`cmd/vpntunnel/main.go` (not a CLI flag, not part of `proxy.json`). It is
+optional — unset disables the Telegram tunnel-change notifier entirely, and a
+malformed value only warns and disables, it never blocks startup (the
+notifier is auxiliary telemetry, not a startup precondition). Same
+operator-hand-adds-and-restarts handling as the TLS vars above; see
+`configs/env.example` for the DSN format.
 
 `main` and PR pushes run `.github/workflows/ci.main.yml` (lint + test + sanity
 `go build`). The CI workflow does not touch the host.
@@ -473,6 +484,10 @@ Every controller test that exercises an error branch **must** assert:
   must NEVER appear in any log call, error message, or string format — not as raw bytes, not
   as hex. Startup logs may include the key file basename and `key_len` only. The derived
   hex tunnel ids (output of `HMAC-SHA256(key, basename)`) ARE non-secret and safe to log.
+- **Never log the Telegram bot token, DSN, or admin chat id**: `VPNTUNNEL_TELEGRAMBOT_DSN`
+  and everything parsed out of it are secret material and must NEVER appear in any log call,
+  error message, or string format. Startup/status logs may include only `token_len` and
+  whether the notifier is enabled/disabled.
 - **Forbidden imports**: list any modules that must never appear in `go.mod` (e.g.
   CGO-dependent drivers, code generators the team has rejected). Enforce via the
   lint target once the Makefile exists.

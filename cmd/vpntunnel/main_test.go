@@ -12,15 +12,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -641,6 +644,88 @@ func TestRunWithOpts(t *testing.T) {
 		assert.Contains(t, err.Error(), "streaming tunnel set",
 			"error must identify the streaming tunnel set as the failing component")
 	})
+
+	t.Run("telegram notifier disabled when VPNTUNNEL_TELEGRAMBOT_DSN is unset", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17800 / 18900 and, via
+		// captureStdout, temporarily swaps the process-wide os.Stdout; both
+		// require this subtest to run in isolation from parallel siblings.
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr: "127.0.0.1:17800",
+			apiAddr:   "127.0.0.1:18900",
+			certDir:   certDir,
+		})
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		stdout := captureStdout(t, func() {
+			go func() {
+				done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			}()
+
+			apiReady := waitHTTPS(t, "https://127.0.0.1:18900/v1/admin/health", 10*time.Second)
+			assert.True(t, apiReady, "api listener (127.0.0.1:18900) did not become reachable")
+
+			cancel()
+
+			select {
+			case runErr := <-done:
+				assert.NoError(t, runErr)
+			case <-time.After(15 * time.Second):
+				t.Fatal("runWithOpts did not return within 15s")
+			}
+		})
+
+		assert.Contains(t, stdout, "telegram notifier disabled: VPNTUNNEL_TELEGRAMBOT_DSN not set")
+	})
+
+	t.Run("malformed telegram dsn warns and disables the notifier without aborting startup", func(t *testing.T) {
+		// not t.Parallel() — see the previous subtest's comment; also uses
+		// t.Setenv, which forbids parallel siblings.
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr: "127.0.0.1:17802",
+			apiAddr:   "127.0.0.1:18902",
+			certDir:   certDir,
+		})
+
+		const malformedDSN = "tbot://not-a-valid-dsn"
+		t.Setenv("VPNTUNNEL_TELEGRAMBOT_DSN", malformedDSN)
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		stdout := captureStdout(t, func() {
+			go func() {
+				done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			}()
+
+			apiReady := waitHTTPS(t, "https://127.0.0.1:18902/v1/admin/health", 10*time.Second)
+			assert.True(t, apiReady, "api listener (127.0.0.1:18902) did not become reachable")
+
+			cancel()
+
+			select {
+			case runErr := <-done:
+				// a malformed DSN must never abort the proxy — it is auxiliary
+				// telemetry, not a startup precondition.
+				assert.NoError(t, runErr, "runWithOpts must succeed even with a malformed telegram DSN")
+			case <-time.After(15 * time.Second):
+				t.Fatal("runWithOpts did not return within 15s")
+			}
+		})
+
+		assert.Contains(t, stdout, "telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN")
+		assert.Contains(t, strings.ToUpper(stdout), "WARN")
+		assert.NotContains(t, stdout, malformedDSN, "the raw DSN must never be logged")
+	})
 }
 
 // fixtureConfig holds the paths needed to write a test proxy.json.
@@ -798,4 +883,35 @@ func waitHTTPS(tb testing.TB, url string, timeout time.Duration) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// captureStdout temporarily redirects the process-wide os.Stdout to a pipe,
+// runs fn, restores the original os.Stdout, and returns everything written
+// during fn. A background goroutine drains the pipe continuously so a
+// long-running fn producing more output than the pipe's kernel buffer cannot
+// deadlock. Callers must not run this concurrently with anything else that
+// writes to or depends on os.Stdout (subtests using it must not be
+// t.Parallel()).
+func captureStdout(tb testing.TB, fn func()) string {
+	tb.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(tb, err)
+
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	captured := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		captured <- buf.String()
+	}()
+
+	fn()
+
+	require.NoError(tb, w.Close())
+	out := <-captured
+	require.NoError(tb, r.Close())
+	return out
 }

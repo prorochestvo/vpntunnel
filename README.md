@@ -286,6 +286,16 @@ self-signed cert the daemon manages), `-tls-hostname` (default `localhost`),
 and `-tls-ip-sans` (comma-separated IP SANs). Locally the API is plain HTTP;
 production passes `-tls-cert-dir` and serves HTTPS.
 
+**Optional Telegram notifications.** Set the `VPNTUNNEL_TELEGRAMBOT_DSN`
+environment variable (format `tbot://<adminChatID>:@<botToken>/`) to get a
+message on every tunnel change: streaming startup, streaming reconnect, and
+on-demand zone switches (rate-limited/deduplicated; streaming notifications
+are not). Unset means notifications are disabled; a malformed DSN only warns
+and disables — it never blocks startup. Like the TLS flags above, this is an
+env var read from `/opt/vpntunnel/.env` in production — the operator adds it
+by hand and restarts the service to apply it (see
+[`configs/env.example`](./configs/env.example)).
+
 If you move `access_log.path` outside `/opt/vpntunnel/logs/` (the path
 covered by the unit's `ReadWritePaths`), also edit `vpntunnel.service` to
 add the new path to `ReadWritePaths` and run `systemctl daemon-reload`.

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/notify"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
 )
@@ -918,5 +919,107 @@ func TestNewOnDemandScheduler_panics(t *testing.T) {
 				IdleTTL:     time.Hour,
 			})
 		})
+	})
+}
+
+// TestOnDemandScheduler_Notifier tests that a successful zone bring-up
+// reports exactly one notify.Event derived from the config path (not the
+// opaque zone id), that a bring-up failure reports none, and that a nil
+// Notifier defaults to notify.Nop without panicking.
+func TestOnDemandScheduler_Notifier(t *testing.T) {
+	t.Parallel()
+
+	t.Run("successful bring-up records one on-demand event with the config basename", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := schedulerEligibleSet(t, "se-sto-wg-001")
+		b := newSchedulerDeviceBuilder()
+		notifier := &fakeNotifier{}
+		opts := defaultSchedulerOpts(es, b.builder(epoch), time.Second, time.Second, time.Hour, clk)
+		opts.Notifier = notifier
+		sched := NewOnDemandScheduler(opts)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go sched.Run(ctx)
+
+		routeErrCh := make(chan error, 1)
+		go func() {
+			_, _, rel, err := sched.Route(ctx, "se-sto-wg-001")
+			if rel != nil {
+				rel()
+			}
+			routeErrCh <- err
+		}()
+
+		require.True(t, clk.AwaitTimers(1, 500*time.Millisecond), "settle timer not registered")
+		clk.Advance(time.Second)
+		require.NoError(t, <-routeErrCh)
+
+		awaitNotifierLen(t, notifier, 1, 500*time.Millisecond)
+		ev := notifier.recorded()[0]
+		assert.Equal(t, notify.SourceOnDemand, ev.Source)
+		assert.Equal(t, "se-sto-wg-001.conf", ev.Filename)
+		assert.Equal(t, "se", ev.Country)
+		assert.Equal(t, "on-demand: se", ev.Title)
+	})
+
+	t.Run("bring-up failure records no event", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := schedulerEligibleSet(t, "se-sto-wg-001")
+		b := newSchedulerDeviceBuilder()
+		b.failZone("se-sto-wg-001")
+		notifier := &fakeNotifier{}
+		opts := defaultSchedulerOpts(es, b.builder(epoch), time.Second, time.Second, time.Hour, clk)
+		opts.Notifier = notifier
+		sched := NewOnDemandScheduler(opts)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go sched.Run(ctx)
+
+		routeErrCh := make(chan error, 1)
+		go func() {
+			_, _, _, err := sched.Route(ctx, "se-sto-wg-001")
+			routeErrCh <- err
+		}()
+
+		require.True(t, clk.AwaitTimers(1, 500*time.Millisecond), "settle timer not registered")
+		clk.Advance(time.Second)
+		require.Error(t, <-routeErrCh)
+
+		time.Sleep(20 * time.Millisecond) // let the loop process the failure path
+		assert.Empty(t, notifier.recorded(), "a failed bring-up must not notify")
+	})
+
+	t.Run("nil notifier defaults to Nop and does not panic", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := schedulerEligibleSet(t, "us-nyc-wg-001")
+		b := newSchedulerDeviceBuilder()
+		opts := defaultSchedulerOpts(es, b.builder(epoch), time.Second, time.Second, time.Hour, clk)
+		opts.Notifier = nil
+		sched := NewOnDemandScheduler(opts)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go sched.Run(ctx)
+
+		routeErrCh := make(chan error, 1)
+		go func() {
+			_, _, rel, err := sched.Route(ctx, "us-nyc-wg-001")
+			if rel != nil {
+				rel()
+			}
+			routeErrCh <- err
+		}()
+
+		require.True(t, clk.AwaitTimers(1, 500*time.Millisecond), "settle timer not registered")
+		assert.NotPanics(t, func() { clk.Advance(time.Second) })
+		require.NoError(t, <-routeErrCh)
 	})
 }

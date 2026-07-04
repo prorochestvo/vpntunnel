@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/notify"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -20,6 +21,7 @@ import (
 var _ tunnel.DialerCloser = &stubDevice{}
 var _ tunnel.HealthReporter = &stubDevice{}
 var _ Clock = &fakeClock{}
+var _ notify.Notifier = (*fakeNotifier)(nil)
 
 // stubDevice is a controllable DialerCloser + HealthReporter used in supervisor
 // tests. It records Close calls and exposes a settable LastHandshake.
@@ -151,6 +153,44 @@ func (c *fakeClock) Advance(d time.Duration) {
 		}
 	}
 	c.timers = remaining
+}
+
+// fakeNotifier is a notify.Notifier test double that records every event it
+// receives, guarded by a mutex so concurrent Notify calls (supervisor +
+// scheduler tests share this type) are race-safe.
+type fakeNotifier struct {
+	mu     sync.Mutex
+	events []notify.Event
+}
+
+func (f *fakeNotifier) Notify(_ context.Context, ev notify.Event) {
+	f.mu.Lock()
+	f.events = append(f.events, ev)
+	f.mu.Unlock()
+}
+
+func (f *fakeNotifier) recorded() []notify.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]notify.Event, len(f.events))
+	copy(out, f.events)
+	return out
+}
+
+// awaitNotifierLen blocks until len(f.recorded()) >= n or the real-time
+// deadline elapses.
+func awaitNotifierLen(t *testing.T, f *fakeNotifier, n int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(f.recorded()) >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d notifier event(s); got %d", n, len(f.recorded()))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // stubDeviceBuilderFn returns a DeviceBuilderFn that appends a new *stubDevice
@@ -942,5 +982,73 @@ func TestStreamingSupervisor_LiveHealth(t *testing.T) {
 		assert.Equal(t, hsTime, health.LastHandshake)
 		assert.NoError(t, health.Err)
 		assert.NotEmpty(t, health.ID)
+	})
+}
+
+// TestStreamingSupervisor_Notifier tests that Start and a forced reconnect
+// each report exactly one notify.Event, and that a nil Notifier defaults to
+// notify.Nop (no panic, no send).
+func TestStreamingSupervisor_Notifier(t *testing.T) {
+	t.Parallel()
+
+	t.Run("start records a started event, reconnect records a switched event", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+			return &stubDevice{handshake: epoch.Add(-time.Second)}, nil
+		})
+
+		notifier := &fakeNotifier{}
+		opts := defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk)
+		opts.PollInterval = 5 * time.Minute
+		opts.Notifier = notifier
+
+		sup := NewStreamingSupervisor(opts)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		require.NoError(t, sup.Start(ctx))
+
+		awaitNotifierLen(t, notifier, 1, 500*time.Millisecond)
+		first := notifier.recorded()[0]
+		assert.Equal(t, notify.SourceStreaming, first.Source)
+		assert.Equal(t, "started", first.Title)
+		assert.Equal(t, "se-sto-wg-001.conf", first.Filename)
+
+		// force a reconnect: poll fires, sees a stale handshake (device's
+		// handshake never advances relative to the fake clock), tears down,
+		// then rebuilds after the reconnect backoff.
+		require.True(t, clk.AwaitTimers(1, 500*time.Millisecond), "poll timer not registered")
+		clk.Advance(5*time.Minute + time.Second)
+		require.True(t, clk.AwaitTimers(1, 2*time.Second), "backoff timer not registered")
+		clk.Advance(10 * time.Minute)
+
+		awaitNotifierLen(t, notifier, 2, 2*time.Second)
+		second := notifier.recorded()[1]
+		assert.Equal(t, notify.SourceStreaming, second.Source)
+		assert.Equal(t, "switched tunnel", second.Title)
+		assert.Equal(t, "se-sto-wg-001.conf", second.Filename)
+	})
+
+	t.Run("nil notifier defaults to Nop and does not panic", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var mu sync.Mutex
+		var devices []*stubDevice
+		var buildErr error
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		opts := defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk)
+		opts.Notifier = nil
+		sup := NewStreamingSupervisor(opts)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		assert.NotPanics(t, func() { require.NoError(t, sup.Start(ctx)) })
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
 	})
 }

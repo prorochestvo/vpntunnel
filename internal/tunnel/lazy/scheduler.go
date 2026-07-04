@@ -3,9 +3,12 @@ package lazy
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"vpntunnel/internal/notify"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
 )
@@ -43,6 +46,9 @@ type SchedulerOptions struct {
 	ConfigDir string
 	// OpLog is the operational slog logger. When nil, slog.Default() is used.
 	OpLog *slog.Logger
+	// Notifier reports on-demand zone-switch events. Optional; defaults to
+	// notify.Nop{} when nil so call sites never need to nil-check.
+	Notifier notify.Notifier
 }
 
 // NewOnDemandScheduler constructs an OnDemandScheduler from opts. It panics
@@ -72,6 +78,10 @@ func NewOnDemandScheduler(opts SchedulerOptions) *OnDemandScheduler {
 	if clk == nil {
 		clk = NewRealClock()
 	}
+	notifier := opts.Notifier
+	if notifier == nil {
+		notifier = notify.Nop{}
+	}
 
 	return &OnDemandScheduler{
 		eligible:      opts.Eligible,
@@ -82,6 +92,7 @@ func NewOnDemandScheduler(opts SchedulerOptions) *OnDemandScheduler {
 		clock:         clk,
 		configDir:     opts.ConfigDir,
 		opLog:         opts.OpLog,
+		notifier:      notifier,
 		reqCh:         make(chan routeRequest, schedulerChanBuf),
 		releaseCh:     make(chan struct{}, schedulerChanBuf),
 		done:          make(chan struct{}),
@@ -119,6 +130,7 @@ type OnDemandScheduler struct {
 	clock         Clock
 	configDir     string
 	opLog         *slog.Logger
+	notifier      notify.Notifier
 
 	reqCh     chan routeRequest
 	releaseCh chan struct{}
@@ -390,6 +402,7 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 			slog.String("tunnel_id", tunnelID),
 		)
 		grantAll(batch, d, res)
+		s.notifyChange(configPath, d)
 	}
 
 	for {
@@ -498,6 +511,28 @@ func (s *OnDemandScheduler) logger() *slog.Logger {
 		return s.opLog
 	}
 	return slog.Default()
+}
+
+// notifyChange reports a successful on-demand zone switch to the configured
+// Notifier. The zone id passed around the Run loop is the opaque HMAC id, not
+// the .conf basename, so the filename/country must be derived from
+// configPath instead. It is called only on the success branch of
+// finishSwitch, after the new device is already live.
+func (s *OnDemandScheduler) notifyChange(configPath string, d tunnel.Dialer) {
+	base := filepath.Base(configPath)
+	cc := strings.ToLower(tunnel.CountryFromID(strings.TrimSuffix(base, ".conf")))
+	title := "on-demand: " + cc
+	if cc == "" {
+		title = "on-demand: " + base
+	}
+
+	s.notifier.Notify(context.Background(), notify.Event{
+		Source:   notify.SourceOnDemand,
+		Title:    title,
+		Country:  cc,
+		Filename: base,
+		Dialer:   d,
+	})
 }
 
 // routeRequest is a single Route call enqueued to the Run loop.
