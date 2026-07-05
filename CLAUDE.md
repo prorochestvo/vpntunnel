@@ -16,8 +16,6 @@ provider → drop it into `./configs/tunnels/` — it is auto-discovered on the 
 no change to `configs/proxy.json` is needed → run `./build/vpntunnel -config configs/proxy.json`
 (plain HTTP mode locally; no TLS flags needed for dev). Production passes `-tls-cert-dir`
 explicitly on the systemd `ExecStart` line; see the Deployment section.
-TLS settings are CLI flags (`-tls-cert-dir`, `-tls-hostname`, `-tls-ip-sans`), not part of
-`proxy.json`.
 
 ### Binaries
 
@@ -66,9 +64,8 @@ All other paths return 404 with a JSON error envelope. Every response carries
 `map[country][ids]` JSON object — it is a static catalog, not a live-device report, and
 contains no `healthy` or `handshake_age` fields. An optional `?country=us,se` query parameter
 narrows the result; an unmatched filter returns `{}` with 200. With lazy building enabled,
-`/v1/admin/health` still reports only the currently live devices (1 streaming + 0..1
-on-demand); its `{status, tunnels: [{id, healthy, handshake_age_seconds}]}` shape is
-unchanged.
+`/v1/admin/health` still reports only the currently live devices (1 streaming + 0..1 on-demand);
+its body shape is unchanged (the fixed shape is specified in Constraints).
 
 ### Config schema (v6)
 
@@ -76,39 +73,7 @@ Proxy-egress config lives under `vpnstream`; on-demand VPN proxy config lives un
 `api.vpn`. TLS settings are CLI flags, not part of `proxy.json`. Tunnels are
 auto-discovered from `<configDir>/tunnels/`.
 
-```json
-{
-  "tunnel_id_hmac_key_file": "./auth/tunnel-id.key",
-  "vpnstream": {
-    "listen": "127.0.0.1:7788",
-    "allowed_countries": ["ch", "se", "us", "gb", "ua", "de"],
-    "auth": { "token_file": "./auth/token" },
-    "reconnect_min": "10m",
-    "reconnect_max": "3h",
-    "dial_timeout": "10s",
-    "idle_timeout": "90s",
-    "shutdown_timeout": "15s"
-  },
-  "api": {
-    "listen": "127.0.0.1:8888",
-    "shutdown_timeout": "5s",
-    "auth": {
-      "proxy_token_file": "./auth/proxy_token",
-      "admin_token_file": "./auth/admin_token"
-    },
-    "vpn": {
-      "async": { "storage_path": "/opt/vpntunnel/state/async.db" },
-      "demand": { "grace": "10s", "settle_delay": "15s", "idle_ttl": "168h" },
-      "timeout": "30s",
-      "max_timeout": "5m"
-    },
-    "max_request_body_bytes": 10485760,
-    "log": { "path_sanitize_patterns": [] }
-  },
-  "access_log": { "path": "./logs/access.log", "max_size_mb": 100, "max_age_days": 14, "max_backups": 7, "compress": true },
-  "operational": { "level": "info", "format": "text" }
-}
-```
+The full config shape (every key + default) is the `raw*` struct set in `internal/config/config.go`, mirrored by the committed `configs/proxy.json`. Only the non-obvious semantics are documented below.
 
 `tunnel_id_hmac_key_file` — optional top-level field (default `./auth/tunnel-id.key`), resolved
 relative to the config directory by the binary. Points to a 0600 file holding 64 random bytes.
@@ -147,10 +112,7 @@ Default 15s, minimum 5s.
 job before it is torn down; a request for a different zone tears it down immediately
 regardless. Default 168h.
 
-`api.vpn.async.storage_path` — SQLite path for async job state. Default
-`/opt/vpntunnel/state/async.db`. The async TTL and concurrency knobs
-(`max_concurrent_jobs`, `pending_timeout`, `complete_ttl`, `tombstone_ttl`) are no
-longer configurable — they are built-in constants in `internal/asyncjob`.
+`api.vpn.async.storage_path` — path for async job state (default `/opt/vpntunnel/state/async.db`). The async TTL/concurrency knobs are built-in constants in `internal/asyncjob`, not configurable.
 
 `vpnstream.auth` — optional proxy bearer token (pick one of `token` or `token_file`;
 both set is a config error). Missing means proxy auth disabled.
@@ -158,9 +120,7 @@ both set is a config error). Missing means proxy auth disabled.
 `handshake_max_age` is no longer configurable — it is `lazy.DefaultHandshakeMaxAge = 180s`,
 which is ~3× the 25s persistent keepalive plus a safety margin so quiet tunnels do not flap.
 
-WireGuard options (`PrivateKey`, `Address`, `DNS`, `Endpoint`, `AllowedIPs`,
-`PersistentKeepalive`, `PresharedKey`, `MTU`) are read from the `.conf` file via
-the `wgconf` parser.
+WireGuard parameters are the standard wg-quick `[Interface]`/`[Peer]` fields, read from the `.conf` via the `wgconf` parser.
 
 `api` block is required. All other top-level blocks are optional — missing → defaults
 apply. `api.vpn` absent → all vpn defaults applied. `vpnstream` absent → all vpnstream
@@ -182,22 +142,7 @@ key (mode 0600, never commit to a shared repository).
 
 ### Dependencies
 
-| Module | Use |
-|--------|-----|
-| `golang.zx2c4.com/wireguard` | Userspace WireGuard device + gVisor netstack TUN. |
-| `golang.zx2c4.com/wireguard/wgctrl` | WireGuard key parsing (`wgtypes`). |
-| `golang.org/x/net` | Transitive dep of wireguard-go (not imported directly). |
-| `gopkg.in/natefinch/lumberjack.v2` | Rotating access log file. |
-| `github.com/prorochestvo/dsninjector` | Parses `VPNTUNNEL_TELEGRAMBOT_DSN` (`internal/notify`). |
-| `github.com/stretchr/testify` | Test assertions (test-only). |
-
-Note: `golang.zx2c4.com/wireguard/tun/netstack` is a sub-package of the
-`wireguard` module (not a separate module). gVisor (`gvisor.dev/gvisor`) is
-a transitive dep of netstack — adds ~20MB to the binary and ~10-50MB RSS.
-Pin `gvisor.dev/gvisor` in `go.mod` to `v0.0.0-20250503011706-39ed1f5ac29c`;
-newer revisions have a "two packages in same dir" build error. gVisor is a
-transitive dep of `wireguard-go`'s `tun/netstack`; we depend on it whether or
-not the binary is containerized.
+Third-party modules live in `go.mod`. The only non-obvious pin: `gvisor.dev/gvisor` must stay at `v0.0.0-20250503011706-39ed1f5ac29c` — it is a transitive dep of wireguard-go's `tun/netstack` (pulled in whether or not the binary is containerized; adds ~20MB to the binary and ~10-50MB RSS), and newer revisions hit a "two packages in same dir" build error.
 
 ### Deployment
 
@@ -224,20 +169,7 @@ so the CI user `github_aide` can traverse into its own `artifacts/` and `bin/`
 `configs/auth`, `configs/tls`, and `configs/tunnels` subdirs, which `github_aide`
 cannot open. Only `artifacts/` and `bin/` are `github_aide`-owned.
 
-`VERSION_ID = <YYYYMMDDhhmmss UTC>-r_<version>` (e.g. `20260629140000-r_6.0.4`),
-`<version>` being the git tag with its leading `v` stripped. There is one channel,
-`release`. The release workflow scps the binary straight into a fresh
-`artifacts/$VERSION_ID/` (the timestamped dir is never a live symlink target nor a
-running inode, so no `.upload` temp and no `ETXTBSY` dance), verifies its SHA256
-there (a mismatch removes only that dir, never the live channel), `chmod +x`s it,
-then atomic-swaps `bin/release` to point at it (`ln -sfn ../artifacts/$VERSION_ID
-bin/release.tmp && mv -Tf bin/release.tmp bin/release` — relative target). The unit is restarted and the
-deploy verifies via `systemctl is-active` and `curl -k
-https://127.0.0.1:8888/v1/admin/health` (admin-token header). A failed restart OR
-a failed health check auto-rolls the channel back to the previous `VERSION_ID`
-(captured before the flip) and restarts. Retention is channel-aware: the host keeps
-the 3 newest version dirs and never prunes one a live channel still points at.
-Pre-release tags (`vX.Y.Z-rc1`) deploy identically.
+`VERSION_ID = <YYYYMMDDhhmmss UTC>-r_<version>` (tag with leading `v` stripped). One channel, `release`. The workflow scps the binary into a fresh `artifacts/$VERSION_ID/`, verifies its SHA256 there (a mismatch removes only that dir), then atomic-swaps the relative `bin/release` symlink. A failed `systemctl` restart OR post-deploy `/v1/admin/health` check auto-rolls the channel back to the previous `VERSION_ID` and restarts. Retention keeps the 3 newest dirs and never prunes a live channel's target. Pre-release tags deploy identically.
 
 The service runs as **root**, matching the rest of the fleet (`hive_scout`,
 `beacon`). Root is not a runtime requirement — userspace WireGuard needs no root
@@ -312,35 +244,7 @@ make run              # go run ./cmd/vpntunnel -config ./configs/proxy.json
 make clean            # rm -rf ./build ./tmp/*.tmp
 ```
 
-Use the Go toolchain directly for one-off commands. Build with `CGO_ENABLED=0`
-unless the project is intentionally changed to need CGO.
-
-```bash
-# Format + vet + race tests for the whole module
-CGO_ENABLED=1 go test -race ./...
-
-# Single top-level test
-CGO_ENABLED=1 go test -race -run TestFunctionName ./<package>/
-
-# Single subtest
-CGO_ENABLED=1 go test -race -run 'TestFunctionName/subtest_name' ./<package>/
-
-# Verbose output (see every subtest pass/fail)
-CGO_ENABLED=1 go test -race -v ./<package>/
-
-# Benchmarks
-CGO_ENABLED=0 go test -bench=. -benchmem -run=^$ ./<package>/
-
-# Coverage
-CGO_ENABLED=1 go test -race -coverprofile=cover.out ./... && go tool cover -html=cover.out
-
-# Build a binary (always into ./build/, never the repo root — see Constraints)
-CGO_ENABLED=0 go build -o ./build/<name> ./cmd/<name>/
-```
-
-Once a `Makefile` exists, the standard targets are expected to be: `make build`,
-`make run`, `make test` (fmt + vet + race), `make lint` (vet + forbidden-imports check),
-`make format`, `make clean`. Document them here at that point.
+Run one-off tests with the standard `go test -race -run 'TestName/subtest' ./<pkg>/` forms. Pin `CGO_ENABLED=0` for `go build`/`go vet` and always pass `-o ./build/<name>`; leave `CGO_ENABLED` unset for `-race` (see Constraints).
 
 ## Code Organization Principles
 
@@ -356,13 +260,7 @@ something to flag, not silently accept.
 - Prefer the private location (`internal/`) over a public one (`pkg/`) unless there
   is a **real external (out-of-module) consumer**. Don't promise a public API
   surface the project doesn't actually provide.
-- **Why:** the shared tree is for the genuinely shared layers of one app. Putting
-  single-consumer code (or a separate app) there bloats it and implies a contract
-  that doesn't exist; a `pkg/` package nobody outside the module imports is dead
-  weight. Before placing or keeping a package in the shared or public tree, check
-  who actually imports it — one consumer means co-locate, no external module means
-  keep it private. Never keep something in the shared tree just because it's
-  "reusable in principle"; treat such a move as its own deliberate refactor.
+- **Why:** the shared tree is for genuinely shared layers; one consumer means co-locate, no external importer means keep it private.
 
 ### Deduplication is not a goal in itself
 
@@ -379,10 +277,7 @@ something to flag, not silently accept.
   abstraction can re-introduce the very complexity it pretends to hide (e.g. a
   returning constructor needs error-cleanup that an inline fatal-and-exit path
   simply doesn't).
-- **Why:** premature extraction imposes a contract where code should diverge. Dedup
-  earns its place only when it names a non-obvious invariant, removes a real
-  divergence risk, or cuts genuine cognitive load — not because two snippets look
-  alike.
+- **Why:** premature extraction imposes a contract where code should be free to diverge; centralize only for a named invariant or real divergence risk.
 
 ### Business logic is organized by concern, not by launcher
 
@@ -391,8 +286,7 @@ something to flag, not silently accept.
   package's concern"). Keep a flat, per-concern split.
 - Do **not** reorganize business logic by runtime-vs-operator, by deployment, or by
   consuming binary.
-- **Why:** grouping by launcher couples organization to deployment, which changes;
-  cohesion by concern is stabler. Isolation + simplicity is the real quality bar.
+- **Why:** grouping by launcher couples code to deployment (which changes); cohesion by concern is stabler.
 
 ## File Declaration Order
 
@@ -445,27 +339,9 @@ return internal.NewPublicError("Invalid input. <specific guidance>")
 return fmt.Errorf("db query failed: %w", err)
 ```
 
-#### Error handling in the controller
-
-The controller catches all errors from sub-handlers and sends the appropriate message.
-
-```go
-const errFallbackMessage = "Something went wrong. Try again later."
-```
-
-| Situation | What service returns | What user sees |
-|-----------|---------------------|----------------|
-| Expected business failure (validation, state) | `internal.NewPublicError("...")` | The exact message from `PublicError.Details()` |
-| Unexpected / infrastructure failure | plain `error` | The fallback message |
-| No error | `nil` | Normal happy-path response |
-
 ### Testing the error path
 
-Every controller test that exercises an error branch **must** assert:
-
-1. That a response was actually sent (the user is not left in silence).
-2. That the sent text equals `PublicError.Details()` when the error is a `PublicError`.
-3. That the sent text equals the fallback constant when the error is a plain error.
+Every controller error-branch test must assert a response was actually sent, equal to `PublicError.Details()` when the error is a `PublicError`, else equal to the fallback constant.
 
 ## Constraints
 
@@ -488,17 +364,8 @@ Every controller test that exercises an error branch **must** assert:
   and everything parsed out of it are secret material and must NEVER appear in any log call,
   error message, or string format. Startup/status logs may include only `token_len` and
   whether the notifier is enabled/disabled.
-- **Forbidden imports**: list any modules that must never appear in `go.mod` (e.g.
-  CGO-dependent drivers, code generators the team has rejected). Enforce via the
-  lint target once the Makefile exists.
-- **Testing**: Use `github.com/stretchr/testify`; run tests with `-race`;
-  parallel subtests preferred where there's no shared mutable state. The
-  race step in `make test` does NOT pin `CGO_ENABLED` — Go 1.26's race
-  detector on Linux links libtsan via cgo and refuses to run with
-  `CGO_ENABLED=0`. Letting the env default through means runner picks
-  cgo (Linux has it available), darwin uses its built-in race-detector,
-  and we never explicitly enable cgo for production builds (those keep
-  `CGO_ENABLED=0`).
+- **Forbidden imports**: enforced by `make lint`; nothing is currently banned. Add a module here (and to the lint check) only when the team rejects one.
+- **Testing**: use `github.com/stretchr/testify`; run with `-race`; prefer parallel subtests where there's no shared mutable state. `make test`'s `-race` step deliberately does NOT pin `CGO_ENABLED` — Go 1.26's race detector links libtsan via cgo and refuses under `CGO_ENABLED=0`, so the runner default is let through (Linux picks cgo, darwin uses its built-in detector).
 - **One `Test*` per method, scenarios as subtests**: each tested method/function gets
   exactly one top-level test function named after it (e.g. `TestEncode` for `Encode`),
   and every scenario for that method lives as a `t.Run("descriptive name", ...)`
@@ -506,32 +373,7 @@ Every controller test that exercises an error branch **must** assert:
   `TestEncode_EmptyInput`, `TestEncode_Unicode`, `TestEncode_Error` — these belong
   as subtests of a single `TestEncode`. Methods on a type follow the same rule with
   the standard `TestType_Method` form (e.g. `TestUser_Validate`).
-  ```go
-  func TestEncode(t *testing.T) {
-      t.Parallel()
-
-      t.Run("empty input returns empty string", func(t *testing.T) {
-          t.Parallel()
-          // ...
-      })
-
-      t.Run("unicode is preserved", func(t *testing.T) {
-          t.Parallel()
-          // ...
-      })
-
-      t.Run("returns error on invalid byte", func(t *testing.T) {
-          t.Parallel()
-          // ...
-      })
-  }
-  ```
-- **No CGO in production**: Build with `CGO_ENABLED=0` (static binary,
-  no glibc/musl link). `go test -race` does NOT pin the env — it lets
-  Go pick the default per-platform (cgo on Linux, built-in on darwin)
-  so the race detector works without us forcing `CGO_ENABLED=1`. See
-  the Testing entry above. `go build` and `go vet` always pin
-  `CGO_ENABLED=0`.
+- **No CGO in production**: `go build`/`go vet` always pin `CGO_ENABLED=0` (static binary, no libc link); we never force `CGO_ENABLED=1` for production — the `-race` exception is in the Testing entry above.
 - **Compile-time interface checks**: Every mock/stub struct in test files must have a
   `var _ interfaceName = &mockStruct{}` assertion at the top of the file.
 - **No section-divider comments**: Do not use `// --- section ---` or `// ----` style
@@ -540,19 +382,8 @@ Every controller test that exercises an error branch **must** assert:
   test code. Always capture the error and assert/check it. The only exceptions are
   `fmt.Fprint*` writes to loggers, `Rollback()` calls in error-recovery paths, and
   resource `.Close()` in `t.Cleanup` / `defer`.
-- **Comments**: all comments are in English and start with a lowercase first word
-  (e.g. `// wrap the driver error so callers can match on it`).
-- **Godoc on exported identifiers**: Every exported identifier (Type, Func, Method,
-  Var, Const) gets a doc comment that starts with the identifier name and ends with
-  a period — e.g. `// Encode returns the base64-encoded form of v.` Each package
-  has exactly one `// Package <name> ...` declaration; `cmd/*` entry points use
-  `// Command <name> ...` instead. Skip the comment entirely if it would only
-  restate the signature — no `// Foo is a Foo.` fluff. Document concurrency
-  guarantees, which methods return `PublicError` vs plain errors, constructor
-  lifecycle contracts ("caller must Close"), and error sentinel conditions.
-  Preserve existing WHY-comments verbatim; do not overwrite a substantive comment
-  with a generic restatement. Unexported symbols only get comments when intent is
-  non-obvious — do not bulk-add comments to private helpers.
+- **Comments**: lowercase first word (e.g. `// wrap the driver error so callers can match on it`).
+- **Godoc**: every exported identifier gets a doc comment starting with its name and ending with a period; skip it if it would only restate the signature. One `// Package <name>` per package (`cmd/*` uses `// Command <name>`). Document the non-obvious: concurrency guarantees, which methods return `PublicError` vs plain errors, lifecycle contracts ("caller must Close"), and error-sentinel conditions. Never overwrite a substantive WHY-comment with a generic restatement; don't bulk-comment private helpers.
 - **Build outputs live in `./build/`, scratch in `./tmp/`, logs in `./logs/`**:
   Never run `go build` without `-o ./build/<name>` — bare `go build ./cmd/<binary>`
   drops a binary in the project root, which is **not** in `.gitignore` and
@@ -603,33 +434,14 @@ plans/
    naming convention described above.
 2. **Implement** — work through the tasks defined in the plan. The plan file stays in
    `plans/` while work is in progress.
-3. **Complete** — once every acceptance criterion is met and the test suite passes, rename
-   and move the file to `plans/completed/` using the date-based convention:
-   ```bash
-   mv plans/001-fix-auth.md plans/completed/260422.0001.fix-auth.md
-   ```
+3. **Complete** — once every acceptance criterion is met and the test suite passes, move
+   the file to `plans/completed/` using the date-based naming above.
 4. **Archive** — if a plan is abandoned or superseded without being fully implemented or
    if we need to save intermediate data or task execution logs, move it to `plans/history/` instead.
 
 ### Plan file format
 
-Every plan file follows this structure:
-
-```markdown
-# Task Breakdown
-
-## Overview
-## Assumptions
-## Tasks
-### Task N: <Title>
-- Description:
-- Acceptance Criteria:
-- Pitfalls & edge cases:
-- Complexity: Easy / Medium / Hard
-## Execution Order
-## Risks
-## Trade-offs
-```
+One line: Overview; Assumptions; Tasks (Description / Acceptance Criteria / Pitfalls / Complexity); Execution Order; Risks; Trade-offs.
 
 ### Rules
 
@@ -643,72 +455,13 @@ Every plan file follows this structure:
 
 ## Agent Pipeline
 
-All non-trivial tasks follow a three-stage pipeline using specialized agents. The
-review stage fans out to **three `gocode-reviewer` instances running in parallel**,
-each with a distinct lens. A separate `gocode-testdoctor` agent is invoked
-on-demand whenever tests fail, at any stage.
+Every non-trivial task runs a three-stage pipeline; `gocode-testdoctor` is invoked on-demand whenever tests fail at any stage.
 
-```
-User describes task
-    ↓
-1. gocode-architect
-    → Creates plan file at plans/NNN-slug.md (see Planning Workflow)
-    ↓
-2. gocode-engineer
-    → Implements the tasks defined in the plan
-    ↓
-3. gocode-reviewer × 3 (run in parallel — single message, three tool calls)
-    Lens A: correctness & tests — bugs, races, edge cases, error paths,
-            context propagation, resource cleanup, test coverage,
-            test structure (one Test* per method with subtests),
-            scenario completeness, fixtures
-    Lens B: security & operations — input validation, auth boundaries,
-            secrets handling, injection (SQL, command, template),
-            observability (logs, metrics, traces), log volume,
-            operator/runbook UX
-    Lens C: performance & architecture — allocations, blocking I/O,
-            goroutine/resource leaks, layer boundaries, dependency
-            direction, API contracts (breaking changes, exported
-            surface stability), interface scope, future-proofing
-    ↓
-   Orchestrator synthesises all three reports, deduplicates findings,
-   resolves conflicts (e.g. one reviewer flags as P0 what another
-   accepts as a trade-off), and presents the merged punch list to the user.
-    ↓
-  ❌ P0/P1 found?  → Back to gocode-engineer with the consolidated findings.
-                             After fix, run ONE targeted reviewer pass on the changed
-                             lines (not all 3 again) before re-approval.
-  ⚠️  Tests failing?        → gocode-testdoctor diagnoses and patches, then rerun the
-                             targeted reviewer pass.
-  ✅ All three approve?     → Orchestrator moves the plan: mv plans/NNN-slug.md
-                             plans/completed/YYMMDD.NNNN.slug.md
-```
+1. **gocode-architect** — creates the plan file at `plans/NNN-slug.md` (see Planning Workflow) before any code is written; update an existing plan rather than adding one.
+2. **gocode-engineer** — implements the plan's tasks plus tests for new code.
+3. **gocode-reviewer x3, in parallel (one message, three tool calls)** — each prompt self-contained (lens name, focus, what to SKIP, file list, deliverable `file:line` + patch sketch + word cap, priorities P0-P3):
+   - **A correctness & tests** — bugs, races, edge/error paths, context propagation, resource cleanup, coverage + test structure (one `Test*` per method with subtests).
+   - **B security & operations** — input validation, auth boundaries, secrets handling, injection, observability, log volume, operator/runbook UX.
+   - **C performance & architecture** — allocations, blocking I/O, goroutine/resource leaks, layer boundaries, dependency direction, API-contract/exported-surface stability.
 
-### Agent responsibilities
-
-| Agent | Owns | Output |
-|-------|------|--------|
-| `gocode-architect` | Planning, decomposition, trade-offs | New plan file in `plans/` |
-| `gocode-engineer` | Implementation, tests for new code | Code + tests in the repo |
-| `gocode-reviewer` (×3, parallel) | Lens-specific verdicts, priority-ranked findings, patch sketches | Three independent review reports |
-| `gocode-testdoctor` | Triage of failing tests, minimal patches | Code/test fixes, re-run of the test suite |
-
-The orchestrating agent (the main Claude session driving the pipeline) owns
-synthesis: merging the three reports, resolving conflicting verdicts, deciding
-which findings to act on, and moving the plan to `completed/` once everyone
-signs off.
-
-Priority scale used by reviewers: **P0 / P1 / P2 / P3**.
-
-### Rules
-
-- **No skipping stages.** Every task starts with the architect and ends with the three-reviewer fan-out.
-- **Plan file first.** The architect MUST produce a plan file before any code is written. If a plan already exists for the task, update it rather than creating a new one.
-- **Three reviewers, three lenses, one message.** All three `gocode-reviewer` agents are launched in a single tool-call batch (multiple `Agent` blocks in one message) so they run in parallel. Each prompt names the lens explicitly and tells the agent what to SKIP (the other lenses) to avoid duplicated work.
-- **No solo reviewer pass on first review.** Even for small changes the full three-lens fan-out is required, because the lenses catch genuinely different classes of issue (Lens A won't see ops/log-volume problems; Lens C won't see test gaps). Skipping lenses is what the orchestrator does AFTER a P0/P1 fix, not BEFORE the first verdict.
-- **Lens prompts are self-contained.** Each reviewer's prompt must include: (1) the lens name, (2) what to focus on, (3) what to SKIP (so it doesn't restate other lenses), (4) the file list, (5) the deliverable shape (P0 / P1 / P2 / P3 with `file:line` + patch sketch), (6) the word cap (typically 600 words).
-- **Re-review after fixes is single-pass.** Once an engineer addresses P0/P1 findings, the orchestrator runs ONE reviewer pass scoped to the changed lines, not the full fan-out. Re-running all three each iteration is expensive and rediscovers nothing.
-- **Conflict resolution is explicit.** When reviewers disagree (one says P0, another says trade-off), the orchestrator chooses, names the rejected suggestion, and explains the reasoning to the user before moving on. The user has final say.
-- **Orchestrator gates completion.** The plan moves to `plans/completed/` only after every reviewer's P0 and P1 findings are addressed (either fixed, or explicitly accepted with rationale). The rename uses the standard `YYMMDD.NNNN.slug.md` format.
-- **Test suite must pass** before review begins. If it fails, hand the logs to `gocode-testdoctor` first — reviewers should not waste time on a red tree.
-- **Testdoctor is scoped.** It patches tests or the minimal production code needed to make the failure go away. It does not redesign or refactor.
+The orchestrator (main session) merges the three reports, dedupes, and resolves conflicting verdicts explicitly (it chooses, names the rejected suggestion, explains — user has final say). Tests must be green before review; a red tree goes to `gocode-testdoctor` first (minimal fix, no redesign). The full three-lens fan-out is mandatory on the FIRST review; after a P0/P1 fix the orchestrator runs ONE pass scoped to the changed lines. The plan moves to `plans/completed/` only once every P0/P1 is fixed or explicitly accepted with rationale.
