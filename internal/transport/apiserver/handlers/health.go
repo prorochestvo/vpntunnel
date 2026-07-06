@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"vpntunnel/internal/asyncjob"
+	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/tunnel"
 )
 

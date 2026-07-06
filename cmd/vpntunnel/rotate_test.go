@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/service"
 	"vpntunnel/internal/transport/apiserver"
 	"vpntunnel/internal/tunnel"
-	lazy "vpntunnel/internal/tunnel/lazy"
 )
 
 var _ tunnel.Dialer = (*blockingDialer)(nil)

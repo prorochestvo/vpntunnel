@@ -31,7 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"vpntunnel/internal/asyncjob"
+	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/tunnel"
 )

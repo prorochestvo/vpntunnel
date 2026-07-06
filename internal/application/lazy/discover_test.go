@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel/lazy"
 )
 
 func TestDiscoverConfigs(t *testing.T) {

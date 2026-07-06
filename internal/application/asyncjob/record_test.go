@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/asyncjob"
+	"vpntunnel/internal/application/asyncjob"
 )
 
 // sec returns t truncated to second precision (the wire format stores Unix

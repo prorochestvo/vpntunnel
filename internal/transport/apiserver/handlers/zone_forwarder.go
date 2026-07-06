@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
-	"vpntunnel/internal/asyncjob"
+	"vpntunnel/internal/application/asyncjob"
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
-	"vpntunnel/internal/tunnel/lazy"
 )
 
 // NewZoneRoutingForwarder returns a ZoneRoutingForwarder that reads the tunnel

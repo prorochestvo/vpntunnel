@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"vpntunnel/internal/asyncjob"
+	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/transport/apiserver/handlers"

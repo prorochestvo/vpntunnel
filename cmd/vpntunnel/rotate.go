@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 
+	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/service"
 	"vpntunnel/internal/transport/apiserver"
-	lazy "vpntunnel/internal/tunnel/lazy"
 )
 
 // compile-time assertion: rotateAdapter must satisfy apiserver.Rotator.

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"vpntunnel/internal/tunnel/lazy"
+	"vpntunnel/internal/application/lazy"
 )
 
 // TunnelCatalog is the exported type alias for the tunnelCatalog interface so

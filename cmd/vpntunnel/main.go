@@ -40,7 +40,8 @@ import (
 	"syscall"
 	"time"
 
-	"vpntunnel/internal/asyncjob"
+	"vpntunnel/internal/application/asyncjob"
+	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/notify"
@@ -50,7 +51,6 @@ import (
 	"vpntunnel/internal/transport/apiserver/apitls"
 	"vpntunnel/internal/transport/apiserver/handlers"
 	"vpntunnel/internal/transport/httpserver"
-	lazy "vpntunnel/internal/tunnel/lazy"
 )
 
 // runOpt is a functional option for runWithOpts, used to override internals in

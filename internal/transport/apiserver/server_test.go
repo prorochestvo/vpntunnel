@@ -21,12 +21,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/transport/apiserver"
 	"vpntunnel/internal/transport/apiserver/apitls"
 	"vpntunnel/internal/transport/apiserver/handlers"
 	"vpntunnel/internal/tunnel"
-	"vpntunnel/internal/tunnel/lazy"
 )
 
 // compile-time assertions: test doubles must satisfy the interfaces they implement.

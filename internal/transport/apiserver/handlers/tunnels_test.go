@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/tunnel/lazy"
+	"vpntunnel/internal/application/lazy"
 )
 
 // fakeCatalog is a test double for tunnelCatalog.
