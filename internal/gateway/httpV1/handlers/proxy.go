@@ -17,7 +17,7 @@ import (
 )
 
 // NewProxyHandler returns an http.Handler that validates, normalises, and
-// forwards proxy requests through the selected domain.
+// forwards proxy requests through the selected tunnel.
 //
 // maxBodyBytes caps the request body via http.MaxBytesReader. upstreamTimeout
 // is the default per-request deadline; clients may override it per-request via

@@ -13,7 +13,7 @@ var _ router.Rotator = rotateAdapter{}
 
 // rotateAdapter bridges *lazy.StreamingSupervisor.RotateIfIdle and
 // *application.ProxyService.ActiveSessions to the transport-local
-// router.Rotator interface, so the apiserver package never imports lazy
+// router.Rotator interface, so the router package never imports lazy
 // (mirroring how the handlers package keeps lazy out via Router/ZoneChecker/
 // TunnelCatalog). It has exactly one consumer — this binary — so it lives
 // under cmd/ rather than internal/, per the project's package-placement rule.

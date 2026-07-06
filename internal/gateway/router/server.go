@@ -147,7 +147,7 @@ type Server struct {
 func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.opts.Addr)
 	if err != nil {
-		return fmt.Errorf("apiserver: listen %s: %w", s.opts.Addr, err)
+		return fmt.Errorf("router: listen %s: %w", s.opts.Addr, err)
 	}
 	return s.StartOn(ln)
 }

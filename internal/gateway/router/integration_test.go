@@ -235,7 +235,7 @@ func modeName(httpMode bool) string {
 	return "https"
 }
 
-// integrationDaemon holds a running apiserver with a real async pool and store.
+// integrationDaemon holds a running API server with a real async pool and store.
 type integrationDaemon struct {
 	baseURL   string
 	userToken string
@@ -281,7 +281,7 @@ type integrationDaemonOpts struct {
 	proxyFwd handlers.Forwarder
 }
 
-// startIntegrationDaemon boots a full apiserver with a real bbolt store, a real
+// startIntegrationDaemon boots a full API server with a real bbolt store, a real
 // asyncjob.Pool, and directSyncForwarder injected as ProxyForwarder so loopback
 // upstreams are reachable without WireGuard. The pool uses a fakeFullDialer with
 // a fresh handshake so the health gate passes. The returned shutdown function
@@ -406,7 +406,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 			}
 			_ = conn.Close()
 			return true
-		}, 3*time.Second, 10*time.Millisecond, "apiserver never accepted plain-TCP connections (HTTP mode)")
+		}, 3*time.Second, 10*time.Millisecond, "API server never accepted plain-TCP connections (HTTP mode)")
 	} else {
 		require.Eventually(t, func() bool {
 			c, dialErr := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec
@@ -415,7 +415,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 			}
 			_ = c.Close()
 			return true
-		}, 3*time.Second, 10*time.Millisecond, "apiserver never accepted TLS connections")
+		}, 3*time.Second, 10*time.Millisecond, "API server never accepted TLS connections")
 	}
 
 	// derive the base URL scheme from the mode so intProxyReq and d.client()
@@ -446,7 +446,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 			case e := <-errCh:
 				assert.NoError(t, e)
 			case <-time.After(5 * time.Second):
-				t.Error("apiserver goroutine did not exit within timeout")
+				t.Error("API server goroutine did not exit within timeout")
 			}
 		})
 	}
@@ -869,7 +869,7 @@ func TestProxyAsyncTagIdempotencyAcrossRestart(t *testing.T) {
 // TestAccessLogSanitiserStripsToken configures a Telegram-style sanitise
 // pattern, sends a request with a bot token in the URL path, and asserts that
 // the written access-log JSONL line contains <REDACTED> instead of the raw
-// token. Relies on apiserver's withAccessLog middleware (wired when
+// token. Relies on the router's withAccessLog middleware (wired when
 // opts.Access is non-nil).
 func TestAccessLogSanitiserStripsToken(t *testing.T) {
 	t.Parallel()

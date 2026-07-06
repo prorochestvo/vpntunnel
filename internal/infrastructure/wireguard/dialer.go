@@ -94,7 +94,7 @@ type Options struct {
 	PrivateKey string
 	// LocalAddresses are the tunnel-side IP addresses for this end.
 	LocalAddresses []netip.Addr
-	// DNSServers are the DNS resolver IPs accessible inside the domain.
+	// DNSServers are the DNS resolver IPs accessible inside the tunnel.
 	// Must be covered by AllowedIPs or DNS resolution inside the tunnel will fail.
 	DNSServers []netip.Addr
 	// MTU is the tunnel MTU, typically 1420.
@@ -104,7 +104,7 @@ type Options struct {
 	// PeerEndpoint is the peer's UDP endpoint in "host:port" form.
 	// The hostname is resolved once at NewDialer time via system DNS.
 	PeerEndpoint string
-	// AllowedIPs is the list of IP prefixes routed through the domain.
+	// AllowedIPs is the list of IP prefixes routed through the tunnel.
 	AllowedIPs []netip.Prefix
 	// PersistentKeepaliveSeconds is the keepalive interval in seconds. 0 disables.
 	PersistentKeepaliveSeconds int

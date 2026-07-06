@@ -154,7 +154,7 @@ func (f *tunnelForwarder) classifyRawError(err error) error {
 
 // transportFor returns the cached *http.Transport for tunnelID, building and
 // storing one on first access. The transport's DialContext enforces the IP
-// deny-list before dialing through the domain.
+// deny-list before dialing through the tunnel.
 func (f *tunnelForwarder) transportFor(id string, dialer domain.Dialer, resolver domain.Resolver) *http.Transport {
 	if existing, ok := f.transports.Load(id); ok {
 		return existing.(*http.Transport)

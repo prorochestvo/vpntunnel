@@ -369,7 +369,7 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 
 	// finishSwitch builds the settling tunnel's device (settleTimer has fired). On
 	// success it grants the whole batch; on bring-up failure it fails the whole
-	// batch with a publicerror and advances to the next pending domain.
+	// batch with a publicerror and advances to the next pending tunnel.
 	finishSwitch := func() {
 		settling = false
 		settleTimer = nil
