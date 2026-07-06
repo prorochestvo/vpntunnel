@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"vpntunnel/internal/config"
+	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/publicerror"
 )
 

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"vpntunnel/internal/security/ipdeny"
+	"vpntunnel/internal/infrastructure/ipdeny"
 )
 
 func TestContains(t *testing.T) {

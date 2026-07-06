@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"vpntunnel/internal/infrastructure/wireguard"
+	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 	"vpntunnel/internal/tunnel"
-	"vpntunnel/internal/tunnel/wireguard"
-	"vpntunnel/internal/tunnel/wireguard/wgconf"
 )
 
 // BuilderFn constructs one live dialer from a parsed config. The production

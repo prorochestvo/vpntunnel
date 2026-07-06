@@ -13,7 +13,7 @@ import (
 
 	"vpntunnel/internal/asyncjob"
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/observability"
+	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/transport/apiserver/handlers"
 )
 

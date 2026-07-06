@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/observability"
+	"vpntunnel/internal/infrastructure/observability"
 )
 
 // decodeRecord decodes a single JSON log line emitted by slog.JSONHandler into

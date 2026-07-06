@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/config"
+	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/publicerror"
 )
 
@@ -1374,7 +1374,7 @@ func TestLoad(t *testing.T) {
 func TestProxyExampleJSON(t *testing.T) {
 	t.Parallel()
 	// test package cwd is internal/config; the example is two dirs up.
-	examplePath := filepath.Join("..", "..", "configs", "proxy.example.json")
+	examplePath := filepath.Join("..", "..", "..", "configs", "proxy.example.json")
 	cfg, err := config.Load(examplePath)
 	require.NoError(t, err, "configs/proxy.example.json failed to load — schema drift detected")
 	// spot-check a handful of values so a silent zero-value parse failure is caught.

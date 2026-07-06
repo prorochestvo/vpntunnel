@@ -21,9 +21,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/auth"
-	"vpntunnel/internal/config"
-	"vpntunnel/internal/observability"
+	"vpntunnel/internal/infrastructure/auth"
+	"vpntunnel/internal/infrastructure/config"
+	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/service"
 	"vpntunnel/internal/tunnel"
 )

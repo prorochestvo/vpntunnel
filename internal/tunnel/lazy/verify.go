@@ -9,8 +9,8 @@ import (
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel/wireguard/wgconf"
 )
 
 // VerifySingleKey parses each config in configPaths (resolved against configDir

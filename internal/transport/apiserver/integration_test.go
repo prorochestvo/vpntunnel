@@ -25,8 +25,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/asyncjob"
-	"vpntunnel/internal/config"
-	"vpntunnel/internal/observability"
+	"vpntunnel/internal/infrastructure/config"
+	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/transport/apiserver"
 	"vpntunnel/internal/transport/apiserver/apitls"
 	"vpntunnel/internal/transport/apiserver/handlers"

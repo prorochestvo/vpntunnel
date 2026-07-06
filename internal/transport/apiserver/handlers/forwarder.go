@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/asyncjob"
-	"vpntunnel/internal/security/ipdeny"
+	"vpntunnel/internal/infrastructure/ipdeny"
 	"vpntunnel/internal/tunnel"
 )
 

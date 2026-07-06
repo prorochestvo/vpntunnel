@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/config"
+	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/publicerror"
 )
 

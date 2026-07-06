@@ -22,9 +22,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"vpntunnel/internal/auth"
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/observability"
+	"vpntunnel/internal/infrastructure/auth"
+	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
 )

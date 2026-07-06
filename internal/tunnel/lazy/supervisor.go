@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"vpntunnel/internal/notify"
+	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
 )

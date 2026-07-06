@@ -12,8 +12,8 @@ import (
 
 	"gopkg.in/natefinch/lumberjack.v2"
 
-	"vpntunnel/internal/config"
 	"vpntunnel/internal/domain"
+	"vpntunnel/internal/infrastructure/config"
 )
 
 // PathSanitizePattern is one regex-replacement pair applied to the request

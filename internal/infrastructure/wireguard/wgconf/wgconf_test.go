@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"vpntunnel/internal/tunnel/wireguard/wgconf"
+	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 )
 
 // genKey generates a fresh WireGuard private key and returns its base64 string.

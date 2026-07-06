@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"vpntunnel/internal/notify"
+	"vpntunnel/internal/infrastructure/notify"
 )
 
 func TestNop_Notify(t *testing.T) {

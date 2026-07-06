@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tunnel"
-	"vpntunnel/internal/tunnel/wireguard/wgconf"
 )
 
 // compile-time assertion: fakeDialer must satisfy tunnel.DialerCloser.

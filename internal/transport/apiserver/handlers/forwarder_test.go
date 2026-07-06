@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/observability"
+	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/transport/apiserver/handlers"
 	"vpntunnel/internal/tunnel"
 )
