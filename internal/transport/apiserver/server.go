@@ -76,6 +76,11 @@ type Options struct {
 	// in cmd/vpntunnel/main.go must NEVER set this field. A WARN log fires at
 	// startup when this is non-nil so the misconfiguration is loud.
 	ProxyForwarder handlers.Forwarder
+	// Rotator triggers a graceful streaming-tunnel rotation for
+	// POST /v1/admin/rotate. Optional — when nil, a noopRotator is used so
+	// the endpoint answers with a clean 503 "unavailable" instead of a
+	// nil-pointer panic.
+	Rotator Rotator
 }
 
 // New constructs a Server from opts and log. Server is safe for concurrent
@@ -212,6 +217,14 @@ func (s *Server) buildMux() http.Handler {
 	// GET /v1/admin/health — admin only.
 	mux.HandleFunc("GET /v1/admin/health",
 		s.requireRole(RoleAdmin)(s.handleHealth))
+
+	// /v1/admin/rotate — admin only. Registered methodless (not
+	// "POST /v1/admin/rotate") because the "/" catch-all defeats Go's
+	// automatic 405 for method-scoped patterns (a non-POST would otherwise
+	// fall through to the catch-all's 404); handleRotate checks the method
+	// itself and replies 405 with Allow: POST.
+	mux.HandleFunc("/v1/admin/rotate",
+		s.requireRole(RoleAdmin)(s.handleRotate))
 
 	// /v1/tunnels/{id}/proxy/{scheme}/{rest...} — user or admin. Access logging wraps
 	// the route when opts.Access is configured; the sanitiser patterns are applied

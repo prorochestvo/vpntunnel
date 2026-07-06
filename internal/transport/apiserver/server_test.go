@@ -82,8 +82,10 @@ type serverFixture struct {
 // startServerMode builds a complete server fixture. When tlsEnabled is true the
 // server runs HTTPS (TLS 1.3) with a self-signed cert; when false it runs plain
 // HTTP with Cert: nil. startServer is a thin wrapper that always enables TLS so
-// existing tests compile unchanged.
-func startServerMode(t *testing.T, tlsEnabled bool) *serverFixture {
+// existing tests compile unchanged. mutate, if given, is applied to the
+// constructed apiserver.Options before New is called — e.g. to inject a
+// Rotator — so one-off fields don't need a dedicated fixture function.
+func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*apiserver.Options)) *serverFixture {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -147,6 +149,9 @@ func startServerMode(t *testing.T, tlsEnabled bool) *serverFixture {
 		UpstreamTimeout:     30 * time.Second,
 		MaxUpstreamTimeout:  5 * time.Minute,
 		HealthMaxAge:        180 * time.Second,
+	}
+	for _, m := range mutate {
+		m(&opts)
 	}
 	srv := apiserver.New(opts, slog.New(slog.DiscardHandler))
 
@@ -228,6 +233,20 @@ func startServer(t *testing.T) *serverFixture {
 func (f *serverFixture) get(t *testing.T, path, token string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, f.baseURL+path, nil)
+	require.NoError(t, err)
+	if token != "" {
+		req.Header.Set("X-Vpntunnel-Token", token)
+	}
+	resp, err := f.client.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
+// post is a helper that issues a POST request with an optional token header
+// and no body.
+func (f *serverFixture) post(t *testing.T, path, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, f.baseURL+path, nil)
 	require.NoError(t, err)
 	if token != "" {
 		req.Header.Set("X-Vpntunnel-Token", token)

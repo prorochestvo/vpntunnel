@@ -38,6 +38,34 @@ func DefaultDeviceBuilder(ctx context.Context, configPath, configDir string, opL
 // keepalive plus a safety margin so quiet tunnels don't flap.
 const DefaultHandshakeMaxAge = 180 * time.Second
 
+// RotateOutcome enumerates the possible results of a RotateIfIdle call.
+type RotateOutcome int
+
+const (
+	// RotateRotated means the streaming device was torn down and rebuilt
+	// against a fresh random exit; RotateResult.Country is set.
+	RotateRotated RotateOutcome = iota
+	// RotateSkippedActive means the rotation was gated because active
+	// streaming sessions were in flight and force was false — nothing changed.
+	RotateSkippedActive
+	// RotateUnavailable covers four cases: RotateIfIdle was called before
+	// Start (no loop goroutine to service it yet), no device was live to
+	// rotate (mid-backoff), the post-teardown build failed, or loopCtx was
+	// cancelled during the settle wait. In the latter three the device is left
+	// nil and the loop's existing backoff/reconnect logic self-heals on its
+	// own schedule.
+	RotateUnavailable
+)
+
+// RotateResult is the outcome of a RotateIfIdle call.
+type RotateResult struct {
+	// Outcome selects which of the other fields (if any) is meaningful.
+	Outcome RotateOutcome
+	// Country is the lowercase two-letter country code of the newly built
+	// exit. Set only when Outcome == RotateRotated.
+	Country string
+}
+
 // SupervisorOptions holds all dependencies for NewStreamingSupervisor.
 type SupervisorOptions struct {
 	// Eligible is the country-filtered pool the supervisor picks from. Required.
@@ -55,6 +83,13 @@ type SupervisorOptions struct {
 	// PollInterval is how often the supervisor checks the handshake age. When zero,
 	// defaults to HandshakeMaxAge / 3 (at least 10s). Inject a short interval in tests.
 	PollInterval time.Duration
+	// RotateSettle is the mandatory pause between tearing the old streaming
+	// device down and building the new one during RotateIfIdle — the
+	// streaming-role twin of the on-demand scheduler's settleDelay, sized the
+	// same (~15s) so the provider frees the old session before the new
+	// handshake. Required > 0; production wires it from
+	// cfg.API.VPN.Demand.SettleDelay.
+	RotateSettle time.Duration
 	// Clock abstracts time operations for tests. When nil, NewRealClock() is used.
 	Clock Clock
 	// ConfigDir is used to resolve relative config paths via DeviceBuilder. Required.
@@ -80,6 +115,9 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 	}
 	if opts.ReconnectMax < opts.ReconnectMin {
 		panic("lazy: StreamingSupervisor requires ReconnectMax >= ReconnectMin")
+	}
+	if opts.RotateSettle <= 0 {
+		panic("lazy: StreamingSupervisor requires RotateSettle > 0")
 	}
 	if opts.ConfigDir == "" {
 		panic("lazy: StreamingSupervisor requires non-empty ConfigDir")
@@ -113,6 +151,7 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 		reconnectMin:    opts.ReconnectMin,
 		reconnectMax:    opts.ReconnectMax,
 		pollInterval:    pollInterval,
+		rotateSettle:    opts.RotateSettle,
 		clock:           clk,
 		configDir:       opts.ConfigDir,
 		opLog:           opts.OpLog,
@@ -123,6 +162,11 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 		// never called Stop simply skips the join (started == false).
 		stopCh:   make(chan struct{}),
 		loopDone: make(chan struct{}),
+		// rotateCh is unbuffered — a nil channel would block RotateIfIdle
+		// forever; unbuffered is correct because the loop goroutine is the
+		// only reader and RotateIfIdle already guards the send against a
+		// stopped loop via loopDone.
+		rotateCh: make(chan rotateReq),
 	}
 }
 
@@ -147,6 +191,11 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 // LiveHealth returns a snapshot of the current device's health for use by the
 // /v1/admin/health endpoint (Task 9). It returns ok=false when no device is
 // currently live.
+//
+// RotateIfIdle asks the loop goroutine to perform a graceful break-before-make
+// + settle rotation to a fresh random exit. It is routed through rotateCh so
+// s.device is only ever mutated on the loop goroutine, never concurrently
+// with the health-poll/reconnect logic.
 type StreamingSupervisor struct {
 	eligible        *EligibleSet
 	deviceBuilder   DeviceBuilderFn
@@ -154,6 +203,7 @@ type StreamingSupervisor struct {
 	reconnectMin    time.Duration
 	reconnectMax    time.Duration
 	pollInterval    time.Duration
+	rotateSettle    time.Duration
 	clock           Clock
 	configDir       string
 	opLog           *slog.Logger
@@ -174,6 +224,10 @@ type StreamingSupervisor struct {
 	// race. Stop waits on loopDone only when started is true.
 	loopDone chan struct{}
 	started  atomic.Bool
+
+	// rotateCh carries RotateIfIdle requests to the loop goroutine, the sole
+	// writer of device/deviceID/reporter. Unbuffered — see NewStreamingSupervisor.
+	rotateCh chan rotateReq
 }
 
 // DialContext implements tunnel.Dialer. It delegates to the current live device
@@ -224,6 +278,60 @@ func (s *StreamingSupervisor) LiveHealth() (tunnel.TunnelHealth, bool) {
 	}
 	hs, err := rep.LastHandshake()
 	return tunnel.TunnelHealth{ID: id, LastHandshake: hs, Err: err}, true
+}
+
+// RotateIfIdle asks the loop goroutine to perform a graceful streaming
+// rotation: break-before-make + settle (tear the current device down, wait
+// RotateSettle so the provider frees the session, then build a fresh
+// random-pick device) — never make-before-break, which would transiently
+// hold two streaming sessions and risk exceeding the host's session budget.
+//
+// When force is false, busy is consulted twice — a cheap pre-check, then an
+// authoritative re-check under the write lock — and a true result skips the
+// rotation entirely (RotateSkippedActive), touching nothing. When force is
+// true, both busy checks are skipped, but break-before-make + settle still
+// runs: force means "drop my active connections and rotate," never "run a
+// second concurrent streaming session."
+//
+// The rotation always executes on the loop goroutine (the sole writer of
+// s.device), so it never races the health-poll/reconnect logic.
+//
+// If Start has not yet been called, RotateIfIdle returns RotateUnavailable
+// immediately rather than blocking on a loop goroutine that will never read
+// rotateCh.
+//
+// The returned error is non-nil ONLY when ctx is cancelled before the loop
+// replies (e.g. the HTTP caller disconnected) — it is always a plain error
+// (ctx.Err()), never a *publicerror.Error. A caller ctx-cancel does not abort
+// an in-flight rotation: the loop finishes it on its own loopCtx regardless;
+// the reply simply lands unread in the cap-1 buffered reply channel.
+func (s *StreamingSupervisor) RotateIfIdle(ctx context.Context, force bool, busy func() bool) (RotateResult, error) {
+	if !s.started.Load() {
+		// the loop goroutine that reads rotateCh has not been launched (Start
+		// not called), so a send would block until ctx expires; report
+		// unavailable immediately instead of hanging on the caller's deadline.
+		return RotateResult{Outcome: RotateUnavailable}, nil
+	}
+
+	reply := make(chan rotateReply, 1)
+	req := rotateReq{force: force, busy: busy, reply: reply}
+
+	select {
+	case s.rotateCh <- req:
+	case <-ctx.Done():
+		return RotateResult{}, ctx.Err()
+	case <-s.loopDone:
+		// the loop has already exited (post-Stop) — do not hang waiting on a
+		// goroutine that will never read rotateCh.
+		return RotateResult{Outcome: RotateUnavailable}, nil
+	}
+
+	select {
+	case r := <-reply:
+		return r.result, nil
+	case <-ctx.Done():
+		return RotateResult{}, ctx.Err()
+	}
 }
 
 // Start picks a random eligible config, attempts to build the device, and
@@ -278,6 +386,12 @@ func (s *StreamingSupervisor) loop(ctx context.Context) {
 			case <-s.stopCh:
 				s.shutdown()
 				return
+			case req := <-s.rotateCh:
+				// serviced here too so a rotate during backoff is answered
+				// promptly (RotateUnavailable) instead of waiting out the
+				// backoff timer; this iteration's backoff timer is abandoned.
+				s.handleRotate(ctx, req)
+				continue
 			case <-s.clock.After(backoff):
 			}
 
@@ -308,6 +422,11 @@ func (s *StreamingSupervisor) loop(ctx context.Context) {
 		case <-s.stopCh:
 			s.shutdown()
 			return
+		case req := <-s.rotateCh:
+			// this iteration's poll timer is abandoned; the next loop
+			// iteration re-reads s.device and re-arms a fresh poll wait.
+			s.handleRotate(ctx, req)
+			continue
 		case <-s.clock.After(s.pollInterval):
 		}
 
@@ -334,6 +453,90 @@ func (s *StreamingSupervisor) loop(ctx context.Context) {
 		)
 		s.teardown()
 	}
+}
+
+// handleRotate performs one graceful rotation attempt. It runs exclusively on
+// the loop goroutine, so it never races loop's own device mutations.
+//
+// It implements break-before-make + settle: tear the live device down (under
+// s.mu.Lock, so a racing DialContext sees nil and gets the standard
+// "temporarily unavailable" publicerror instead of ever touching a closed
+// device), wait rotateSettle with NO lock held (so DialContext is never
+// blocked for the multi-second settle+build), then build a fresh random-pick
+// device and swap it in.
+//
+// Race-freedom argument: every proxy handler path increments activeSessions
+// strictly before its DialContext call (the ProxyService.ActiveSessions
+// invariant), so activeSessions==0 observed under s.mu's write lock implies no
+// open connection to the device about to be torn down — tearing it down drops
+// nothing live. Any DialContext racing this call blocks on the RWMutex's read
+// lock until this method releases it; by then s.device is nil, so the racing
+// dial gets the unavailable error and the caller retries — it can never reach
+// the torn-down old device. The final swap-in needs no re-check because it
+// only adds a device, never removes one.
+func (s *StreamingSupervisor) handleRotate(loopCtx context.Context, req rotateReq) {
+	if !req.force && req.busy() { // cheap pre-check, no lock held
+		req.reply <- rotateReply{result: RotateResult{Outcome: RotateSkippedActive}}
+		return
+	}
+
+	s.mu.Lock()
+	if !req.force && req.busy() { // authoritative re-check UNDER the write lock
+		s.mu.Unlock()
+		req.reply <- rotateReply{result: RotateResult{Outcome: RotateSkippedActive}}
+		return
+	}
+	if s.device == nil { // mid-backoff: nothing live to rotate
+		s.mu.Unlock()
+		req.reply <- rotateReply{result: RotateResult{Outcome: RotateUnavailable}}
+		return
+	}
+	old := s.device
+	oldID := s.deviceID
+	s.device, s.deviceID, s.reporter = nil, "", nil // TEARDOWN under lock: new dials now see nil → unavailable
+	s.mu.Unlock()
+
+	if cerr := old.Close(); cerr != nil {
+		s.logger().Warn("streaming supervisor: rotate old-device close failed", slog.String("err", cerr.Error()))
+	}
+
+	// settle so the provider frees the old session before the new handshake —
+	// upholds the host's session ceiling. No lock held during the wait.
+	select {
+	case <-loopCtx.Done():
+		// shutdown mid-rotate; device stays nil, the loop exits on its next check.
+		req.reply <- rotateReply{result: RotateResult{Outcome: RotateUnavailable}}
+		return
+	case <-s.clock.After(s.rotateSettle):
+	}
+
+	configPath := s.eligible.RandomPath()
+	newDev, id, rep, err := s.build(loopCtx, configPath)
+	if err != nil {
+		// the old device is already torn down, so a failed rebuild leaves
+		// streaming genuinely down until the loop's d==nil backoff branch
+		// reconnects — log it (matching the "first connect"/"reconnect" build
+		// failures, tunnel_id included) so a resulting 503 is diagnosable.
+		s.logger().Warn("streaming supervisor: rotate rebuild failed; streaming down until reconnect",
+			slog.String("tunnel_id", tunnelIDFromPath(configPath)),
+			slog.String("err", err.Error()),
+		)
+		req.reply <- rotateReply{result: RotateResult{Outcome: RotateUnavailable}}
+		return
+	}
+
+	s.mu.Lock()
+	s.device, s.deviceID, s.reporter = newDev, id, rep // swap in — no re-check (adding, not tearing down)
+	s.mu.Unlock()
+
+	newCountry := strings.ToLower(tunnel.CountryFromID(id))
+	s.logger().Info("streaming supervisor: rotated tunnel",
+		slog.String("old_country", strings.ToLower(tunnel.CountryFromID(oldID))),
+		slog.String("new_country", newCountry),
+		slog.String("new_tunnel_id", id),
+	)
+	s.notifyChange("rotated", id, newDev) // reuse the existing SourceStreaming notify path
+	req.reply <- rotateReply{result: RotateResult{Outcome: RotateRotated, Country: newCountry}}
 }
 
 // build calls s.deviceBuilder to create a live DialerCloser and casts the
@@ -438,6 +641,21 @@ func (s *StreamingSupervisor) notifyChange(title, id string, d tunnel.Dialer) {
 		Filename: id + ".conf",
 		Dialer:   d,
 	})
+}
+
+// rotateReq is a single RotateIfIdle call enqueued to the loop goroutine via
+// rotateCh. reply is per-call and MUST be buffered cap 1 (see rotateReply)
+// so the loop never blocks replying to a caller that has already given up on
+// ctx-cancel.
+type rotateReq struct {
+	force bool
+	busy  func() bool
+	reply chan rotateReply
+}
+
+// rotateReply is the loop goroutine's response to a rotateReq.
+type rotateReply struct {
+	result RotateResult
 }
 
 // growBackoff doubles d up to max.

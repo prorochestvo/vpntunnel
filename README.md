@@ -448,6 +448,64 @@ curl -k -sS -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token
   https://127.0.0.1:8888/v1/admin/health
 ```
 
+### Rotating the exit (cron)
+
+`POST /v1/admin/rotate` asks the always-on streaming supervisor to swap its
+current WireGuard exit for a fresh random one, without a `systemctl restart`.
+The default (gated) form only rotates once no streaming client sessions are in
+flight, so it never drops an active connection; `?force=true` rotates
+immediately instead, at the cost of dropping whatever is in flight. No systemd
+unit change is needed — the trigger is a plain HTTPS call against the existing
+API listener, so `ExecReload` is not involved.
+
+```bash
+ADMIN="$(cat /opt/vpntunnel/configs/auth/admin_token)"
+
+# gated: rotates only when no streaming client sessions are in flight.
+curl -k -X POST -H "X-Vpntunnel-Token: $ADMIN" \
+  https://127.0.0.1:8888/v1/admin/rotate
+
+# forced: rotates immediately, dropping any in-flight streaming connections.
+curl -k -X POST -H "X-Vpntunnel-Token: $ADMIN" \
+  "https://127.0.0.1:8888/v1/admin/rotate?force=true"
+```
+
+The three possible response bodies:
+
+```json
+{"status": "rotated", "country": "se"}
+{"status": "skipped_active", "active_sessions": 2}
+{"status": "unavailable"}
+```
+
+`rotated` — the exit was swapped and `country` is the new exit's 2-letter
+code. `skipped_active` — the gate refused because `active_sessions` streaming
+sessions are in flight; retry later or pass `?force=true`. `unavailable` — no
+streaming device was live to rotate (mid-reconnect), the new exit failed to
+come up, or the daemon was shutting down; the existing reconnect/backoff logic
+self-heals independently.
+
+A sample cron line for a gated rotation every 30 minutes:
+
+```cron
+*/30 * * * * curl -k -X POST -H "X-Vpntunnel-Token: $(cat /opt/vpntunnel/configs/auth/admin_token)" https://127.0.0.1:8888/v1/admin/rotate >/dev/null 2>&1
+```
+
+The HTTP call returns only after the new exit is fully up — a synchronous
+break-before-make-plus-settle sequence that takes roughly 15-20 seconds. During
+that window, **new** streaming connections briefly see "temporarily
+unavailable" while any **active** connections present at the time of the call
+were already excluded by the gate (or, under `?force=true`, are dropped when
+the old exit is torn down). This gap is the deliberate, budget-safe cost of
+never running two streaming WireGuard sessions at once.
+
+Because each call runs a full teardown→settle→rebuild and the endpoint has no
+built-in cooldown, do **not** schedule it more often than about once a minute:
+rapid or overlapping calls queue on the supervisor and keep the exit churning.
+Gated calls during active traffic are still no-ops, but forced calls — or gated
+calls during idle windows — will thrash a healthy exit. The 30-minute example
+above is a sane default.
+
 ### 7. Server-side prerequisites (do this once on the production host)
 
 The deploy pipeline ships to a single host. The steps below configure it

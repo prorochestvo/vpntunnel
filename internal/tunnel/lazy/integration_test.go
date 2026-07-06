@@ -222,6 +222,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 			ReconnectMax:    3 * time.Hour,
 			// large poll interval so the poll loop never fires during the test.
 			PollInterval: 24 * time.Hour,
+			RotateSettle: testRotateSettle,
 			Clock:        clk,
 			ConfigDir:    "/fakedir",
 			OpLog:        slog.New(slog.DiscardHandler),
@@ -288,6 +289,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 			ReconnectMin:    reconnMin,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    24 * time.Hour,
+			RotateSettle:    testRotateSettle,
 			// the supervisor gets its own clock: its 24h poll timer must not pollute
 			// the scheduler's fake clock (otherwise AwaitTimers can't isolate the
 			// scheduler's settle/grace timers). This clock is never advanced — the
@@ -417,6 +419,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 			ReconnectMin:    10 * time.Minute,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    24 * time.Hour,
+			RotateSettle:    testRotateSettle,
 			// the supervisor gets its own clock: its 24h poll timer must not pollute
 			// the scheduler's fake clock (otherwise AwaitTimers can't isolate the
 			// scheduler's settle/grace timers). This clock is never advanced — the
@@ -511,6 +514,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 			ReconnectMin:    10 * time.Minute,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    24 * time.Hour,
+			RotateSettle:    testRotateSettle,
 			// the supervisor gets its own clock: its 24h poll timer must not pollute
 			// the scheduler's fake clock (otherwise AwaitTimers can't isolate the
 			// scheduler's settle/grace timers). This clock is never advanced — the
@@ -657,6 +661,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 			ReconnectMin:    10 * time.Minute,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    24 * time.Hour,
+			RotateSettle:    testRotateSettle,
 			Clock:           newFakeClock(epoch),
 			ConfigDir:       configDir,
 			OpLog:           slog.New(slog.DiscardHandler),

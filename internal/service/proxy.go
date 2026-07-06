@@ -100,6 +100,30 @@ type ProxyService struct {
 	tunnelCount  atomic.Int64
 	tunnelMu     sync.Mutex // guards tunnelNotify replacement
 	tunnelNotify chan struct{}
+
+	// activeSessions is a live gauge of in-flight streaming sessions (CONNECT
+	// tunnels plus in-flight plain-HTTP forwards), independent of tunnelCount
+	// and unaffected by WaitTunnels' CONNECT-only shutdown drain. See
+	// ActiveSessions for the increment/decrement contract.
+	activeSessions atomic.Int64
+}
+
+// ActiveSessions returns the current count of in-flight streaming sessions:
+// CONNECT tunnels plus in-flight plain-HTTP forwards. It is a live gauge, not
+// a cumulative counter — it returns to 0 once every in-flight session has
+// finished.
+//
+// Concurrency contract: on every handler path, activeSessions.Add(1) strictly
+// precedes the DialContext/httpClient.Do call that follows it. The matching
+// Add(-1) runs on handler return for HandleHTTP; for HandleCONNECT it runs
+// only after BOTH the client and upstream connections have been Closed —
+// inside the existing tunnel goroutine's defer, guarded by a sessionHandedOff
+// flag so every pre-handoff early return decrements exactly once and the
+// happy path never double-decrements on handler return. This gauge is
+// intentionally separate from tunnelCount/WaitTunnels, which retain their
+// CONNECT-only shutdown-drain semantics unchanged.
+func (s *ProxyService) ActiveSessions() int64 {
+	return s.activeSessions.Load()
 }
 
 // HandleHTTP processes a plain forward-HTTP request (GET, POST, etc.).
@@ -150,6 +174,8 @@ func (s *ProxyService) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	stripHopByHop(outReq.Header, r.Header)
 	outReq.Host = r.URL.Host
 
+	s.activeSessions.Add(1)
+	defer s.activeSessions.Add(-1)
 	resp, err := s.httpClient.Do(outReq)
 	if err != nil {
 		s.logger().Error("upstream request failed",
@@ -211,6 +237,14 @@ func (s *ProxyService) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 
 	dialCtx, dialCancel := context.WithTimeout(r.Context(), s.dialTimeout)
 	defer dialCancel()
+
+	s.activeSessions.Add(1)
+	sessionHandedOff := false
+	defer func() {
+		if !sessionHandedOff {
+			s.activeSessions.Add(-1) // every pre-handoff early return lands here
+		}
+	}()
 
 	upstreamConn, err := s.dialer.DialContext(dialCtx, "tcp", target)
 	if err != nil {
@@ -279,9 +313,11 @@ func (s *ProxyService) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	tunnelClient := summary.ClientAddr
 	tunnelStart := start
 
+	sessionHandedOff = true
 	s.tunnelCount.Add(1)
 	go func() {
 		defer func() {
+			s.activeSessions.Add(-1) // only after both conns are Closed, below
 			if s.tunnelCount.Add(-1) == 0 {
 				s.tunnelMu.Lock()
 				close(s.tunnelNotify)

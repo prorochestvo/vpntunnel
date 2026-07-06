@@ -30,6 +30,10 @@ import (
 
 var _ tunnel.Dialer = (*mockDialer)(nil)
 var _ auth.Verifier = (*mockVerifier)(nil)
+var _ net.Conn = fakeConn{}
+var _ net.Addr = fakeAddr{}
+var _ http.ResponseWriter = (*fakeHijackWriter)(nil)
+var _ http.Hijacker = (*fakeHijackWriter)(nil)
 
 // mockVerifier is a test double for auth.Verifier.
 type mockVerifier struct {
@@ -1199,6 +1203,281 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 
 		assert.Equal(t, http.StatusProxyAuthRequired, resp.StatusCode)
 		assert.Equal(t, `Bearer realm="vpntunnel"`, resp.Header.Get("Proxy-Authenticate"))
+	})
+}
+
+// fakeConn is a minimal net.Conn double used by the CONNECT error-path
+// ActiveSessions tests. Read always returns io.EOF; Write returns writeErr
+// (nil unless configured). It serves two roles: as an upstream dial result
+// (writeErr unset — only Close is ever called on it) and as the hijacked
+// client conn for the post-hijack write/flush failure branches (writeErr set).
+type fakeConn struct {
+	writeErr error
+}
+
+func (fakeConn) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (c fakeConn) Write(b []byte) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	return len(b), nil
+}
+
+func (fakeConn) Close() error                     { return nil }
+func (fakeConn) LocalAddr() net.Addr              { return fakeAddr{} }
+func (fakeConn) RemoteAddr() net.Addr             { return fakeAddr{} }
+func (fakeConn) SetDeadline(time.Time) error      { return nil }
+func (fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (fakeConn) SetWriteDeadline(time.Time) error { return nil }
+
+// fakeAddr is a minimal net.Addr double for fakeConn.
+type fakeAddr struct{}
+
+func (fakeAddr) Network() string { return "tcp" }
+func (fakeAddr) String() string  { return "fake:0" }
+
+// fakeHijackWriter is a minimal http.ResponseWriter + http.Hijacker double
+// that drives the CONNECT hijack/write/flush failure branches deterministically,
+// without a real TCP listener. Header/Write/WriteHeader satisfy
+// http.ResponseWriter but are never exercised once Hijack is called — the
+// production code never touches w again after a successful hijack.
+type fakeHijackWriter struct {
+	header   http.Header
+	hijackFn func() (net.Conn, *bufio.ReadWriter, error)
+}
+
+func newFakeHijackWriter(hijackFn func() (net.Conn, *bufio.ReadWriter, error)) *fakeHijackWriter {
+	return &fakeHijackWriter{header: make(http.Header), hijackFn: hijackFn}
+}
+
+func (f *fakeHijackWriter) Header() http.Header         { return f.header }
+func (f *fakeHijackWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (f *fakeHijackWriter) WriteHeader(int)             {}
+
+func (f *fakeHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return f.hijackFn()
+}
+
+// dialToFakeConn returns a mockDialer whose DialContext always succeeds with
+// a fakeConn, for CONNECT branches that need a successful dial before failing
+// later (no hijacker, hijack failure, write/flush failure).
+func dialToFakeConn() *mockDialer {
+	return &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
+		return fakeConn{}, nil
+	}}
+}
+
+// TestProxyService_ActiveSessions drives every HandleHTTP/HandleCONNECT path
+// (success, each error branch, and a mid-flight snapshot) and asserts the
+// gauge contract documented on ActiveSessions: it is 1 while a session is in
+// flight and returns to exactly 0 on every path, including every CONNECT
+// error branch between the increment and the tunnel-goroutine handoff.
+func TestProxyService_ActiveSessions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("HTTP success returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, "ok")
+		}))
+		t.Cleanup(upstream.Close)
+
+		svc := newTestService(t, directDialer())
+		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("HTTP non-absolute-URI early return never moves the gauge", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, directDialer())
+		req := httptest.NewRequest(http.MethodGet, "/relative/path", nil)
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("HTTP upstream error returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		failDialer := &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errors.New("nope")
+		}}
+		svc := newTestService(t, failDialer)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
+
+		require.Equal(t, http.StatusBadGateway, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("HTTP mid-flight gauge reads 1 while dial is blocked", func(t *testing.T) {
+		t.Parallel()
+		release := make(chan struct{})
+		blockDialer := &mockDialer{dialFn: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil, errors.New("released")
+		}}
+		svc := newTestService(t, blockDialer)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		rr := httptest.NewRecorder()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			svc.HandleHTTP(rr, req)
+		}()
+
+		require.Eventually(t, func() bool { return svc.ActiveSessions() == 1 }, time.Second, time.Millisecond,
+			"gauge must read 1 while the dial is blocked")
+		close(release)
+		<-done
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT happy path returns gauge to 0 only after the tunnel goroutine finishes", func(t *testing.T) {
+		t.Parallel()
+		echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = echoLn.Close() })
+		go func() {
+			for {
+				conn, err := echoLn.Accept()
+				if err != nil {
+					return
+				}
+				go func(c net.Conn) {
+					defer func() { _ = c.Close() }()
+					_, _ = io.Copy(c, c)
+				}(conn)
+			}
+		}()
+
+		svc := newTestService(t, directDialer())
+		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			svc.HandleCONNECT(w, r)
+		}))
+		t.Cleanup(proxyServer.Close)
+
+		conn, err := net.Dial("tcp", proxyServer.Listener.Addr().String())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		target := echoLn.Addr().String()
+		_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		require.NoError(t, err)
+
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		_ = resp.Body.Close()
+
+		// the handler has already returned (200 written) but the tunnel
+		// goroutine still owns the session — the gauge must still read 1.
+		assert.Equal(t, int64(1), svc.ActiveSessions(),
+			"gauge must stay 1 while the tunnel goroutine is still copying")
+
+		require.NoError(t, conn.(*net.TCPConn).CloseWrite())
+		_, _ = io.ReadAll(conn)
+		_ = conn.Close()
+
+		require.Eventually(t, func() bool { return svc.ActiveSessions() == 0 }, 2*time.Second, 5*time.Millisecond,
+			"gauge must return to 0 once both conns are closed by the tunnel goroutine")
+	})
+
+	t.Run("CONNECT dial failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		failDialer := &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errors.New("dial refused")
+		}}
+		svc := newTestService(t, failDialer)
+		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			svc.HandleCONNECT(w, r)
+		}))
+		t.Cleanup(proxyServer.Close)
+
+		req, err := http.NewRequest(http.MethodConnect, proxyServer.URL, nil)
+		require.NoError(t, err)
+		req.Host = "example.com:443"
+
+		resp, err := proxyServer.Client().Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT no hijacker support returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		rr := httptest.NewRecorder() // *httptest.ResponseRecorder does not implement http.Hijacker
+
+		svc.HandleCONNECT(rr, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT hijack failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
+			return nil, nil, errors.New("hijack refused")
+		})
+
+		svc.HandleCONNECT(w, req)
+
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT post-hijack write failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		client := fakeConn{writeErr: errors.New("write refused")}
+		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
+			// a 1-byte write buffer forces the 200-response write to reach the
+			// underlying (failing) conn immediately, inside fmt.Fprint itself.
+			bw := bufio.NewWriterSize(client, 1)
+			return client, bufio.NewReadWriter(bufio.NewReader(client), bw), nil
+		})
+
+		svc.HandleCONNECT(w, req)
+
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT post-hijack flush failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		client := fakeConn{writeErr: errors.New("write refused")}
+		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
+			// the default-size write buffer holds the whole 200 response, so
+			// fmt.Fprint succeeds (buffered) and only the explicit Flush call
+			// reaches the underlying (failing) conn.
+			return client, bufio.NewReadWriter(bufio.NewReader(client), bufio.NewWriter(client)), nil
+		})
+
+		svc.HandleCONNECT(w, req)
+
+		assert.Zero(t, svc.ActiveSessions())
 	})
 }
 

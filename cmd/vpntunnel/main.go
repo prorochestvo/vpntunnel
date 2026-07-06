@@ -349,9 +349,15 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		HandshakeMaxAge: lazy.DefaultHandshakeMaxAge,
 		ReconnectMin:    cfg.VPNStream.ReconnectMin,
 		ReconnectMax:    cfg.VPNStream.ReconnectMax,
-		ConfigDir:       configDir,
-		OpLog:           opLog,
-		Notifier:        notifier,
+		// RotateSettle reuses the operator-tuned on-demand settle delay so the
+		// streaming role's rotate honours the same Mullvad-session-free window
+		// without the lazy package importing on-demand config. SettleDelay
+		// always resolves to a valid value (default 15s, 5s minimum,
+		// config.go validation).
+		RotateSettle: cfg.API.VPN.Demand.SettleDelay,
+		ConfigDir:    configDir,
+		OpLog:        opLog,
+		Notifier:     notifier,
 	})
 	if err := supervisor.Start(ctx); err != nil {
 		return fmt.Errorf("start streaming supervisor: %w", err)
@@ -479,6 +485,20 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		)
 	}
 
+	// svc is constructed before apiSrv (reordered from the historical layout)
+	// so the rotateAdapter below can close over it: apiSrv's Options
+	// reference only cfg, cert, tokens, liveHealth, fullSet, scheduler,
+	// store, jobPool, access, opLog (never svc), and svc's Options reference
+	// only supervisor, verifier, access, opLog, cfg (never apiSrv) — the two
+	// constructions are independent, so reordering changes no behaviour.
+	svc := service.NewProxyService(service.ProxyServiceOptions{
+		Dialer:      supervisor,
+		Verifier:    verifier,
+		Access:      access,
+		OpLog:       opLog,
+		DialTimeout: cfg.VPNStream.DialTimeout,
+	})
+
 	apiSrv := apiserver.New(apiserver.Options{
 		Addr:                cfg.API.Listen,
 		ShutdownTimeout:     cfg.API.ShutdownTimeout,
@@ -495,15 +515,8 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		JobCounter:          store,
 		JobPool:             jobPool,
 		Access:              access,
+		Rotator:             rotateAdapter{sup: supervisor, svc: svc},
 	}, opLog)
-
-	svc := service.NewProxyService(service.ProxyServiceOptions{
-		Dialer:      supervisor,
-		Verifier:    verifier,
-		Access:      access,
-		OpLog:       opLog,
-		DialTimeout: cfg.VPNStream.DialTimeout,
-	})
 
 	srv := httpserver.New(httpserver.Options{
 		Listen:            cfg.VPNStream.Listen,

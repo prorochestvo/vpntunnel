@@ -54,11 +54,19 @@ segment (the HMAC tunnel id); there is no `X-Tunnel-Id` header. Routes:
 | Method | Path | Roles |
 |--------|------|-------|
 | `GET` | `/v1/admin/health` | admin |
+| `POST` | `/v1/admin/rotate` | admin |
 | `GET` | `/v1/tunnels` | admin, proxy |
 | `*` | `/v1/tunnels/{id}/proxy/{scheme}/{rest...}` | admin, proxy |
 
 All other paths return 404 with a JSON error envelope. Every response carries
 `X-Request-Id` (UUIDv7) and `X-Proxy-Error` on error paths.
+
+`/v1/admin/rotate` triggers a graceful streaming-tunnel rotation: gated on zero
+active **streaming** sessions unless `?force=true`. It always does
+break-before-make + settle (tear the current exit down, wait the on-demand
+settle delay, then bring a fresh random exit up) — the streaming role
+self-limits to ≤1 session, so on-demand is intentionally not consulted and the
+host's 2-device ceiling holds with no cross-role coordination.
 
 `/v1/tunnels` returns the FULL discovered catalog grouped by country as a
 `map[country][ids]` JSON object — it is a static catalog, not a live-device report, and

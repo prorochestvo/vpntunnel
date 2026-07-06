@@ -22,6 +22,8 @@ var _ tunnel.DialerCloser = &stubDevice{}
 var _ tunnel.HealthReporter = &stubDevice{}
 var _ Clock = &fakeClock{}
 var _ notify.Notifier = (*fakeNotifier)(nil)
+var _ tunnel.DialerCloser = (*raceCheckDevice)(nil)
+var _ tunnel.HealthReporter = (*raceCheckDevice)(nil)
 
 // stubDevice is a controllable DialerCloser + HealthReporter used in supervisor
 // tests. It records Close calls and exposes a settable LastHandshake.
@@ -81,6 +83,29 @@ func (o *orderedDevice) Close() error {
 		o.onClose()
 	}
 	return o.stubDevice.Close()
+}
+
+// raceCheckDevice wraps a *stubDevice and records, into the shared violated
+// flag, whether DialContext was ever called after Close — i.e. whether a
+// caller ever reached the torn-down old device during a rotation instead of
+// getting the supervisor's "temporarily unavailable" publicerror. Used by the
+// concurrent-dials-during-rotation stress test.
+type raceCheckDevice struct {
+	*stubDevice
+	closed   atomic.Bool
+	violated *atomic.Bool
+}
+
+func (d *raceCheckDevice) Close() error {
+	d.closed.Store(true)
+	return d.stubDevice.Close()
+}
+
+func (d *raceCheckDevice) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if d.closed.Load() {
+		d.violated.Store(true)
+	}
+	return d.stubDevice.DialContext(ctx, network, address)
 }
 
 // fakeClock drives time without real sleeps. Each call to After enqueues a
@@ -299,6 +324,13 @@ func awaitEventLen(t *testing.T, mu *sync.Mutex, events *[]string, n int, timeou
 	}
 }
 
+// testRotateSettle is a small RotateSettle value used across supervisor (and
+// integration) tests that do not exercise rotation directly; it only needs to
+// satisfy the required > 0 validation in NewStreamingSupervisor. Tests that
+// DO exercise RotateIfIdle drive it explicitly via the fake clock, so the
+// exact value here is otherwise immaterial.
+const testRotateSettle = 50 * time.Millisecond
+
 // defaultTestOpts builds SupervisorOptions with a 24h poll interval so no poll
 // ever fires accidentally; tests control timing via clk.Advance.
 func defaultTestOpts(
@@ -314,6 +346,7 @@ func defaultTestOpts(
 		ReconnectMin:    reconnMin,
 		ReconnectMax:    reconnMax,
 		PollInterval:    24 * time.Hour,
+		RotateSettle:    testRotateSettle,
 		Clock:           clk,
 		ConfigDir:       "/fakedir",
 		OpLog:           slog.New(slog.DiscardHandler),
@@ -462,6 +495,7 @@ func TestStreamingSupervisor_reconnect(t *testing.T) {
 			ReconnectMin:    reconnMin,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    5 * time.Minute,
+			RotateSettle:    testRotateSettle,
 			Clock:           clk,
 			ConfigDir:       "/fakedir",
 			OpLog:           slog.New(slog.DiscardHandler),
@@ -533,6 +567,7 @@ func TestStreamingSupervisor_reconnect(t *testing.T) {
 			ReconnectMin:    reconnMin,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    5 * time.Minute,
+			RotateSettle:    testRotateSettle,
 			Clock:           clk,
 			ConfigDir:       "/fakedir",
 			OpLog:           slog.New(slog.DiscardHandler),
@@ -581,6 +616,7 @@ func TestStreamingSupervisor_reconnect(t *testing.T) {
 			ReconnectMin:    reconnMin,
 			ReconnectMax:    3 * time.Hour,
 			PollInterval:    5 * time.Minute,
+			RotateSettle:    testRotateSettle,
 			Clock:           clk,
 			ConfigDir:       "/fakedir",
 			OpLog:           slog.New(slog.DiscardHandler),
@@ -643,6 +679,7 @@ func TestStreamingSupervisor_backoff(t *testing.T) {
 			ReconnectMin:    reconnMin,
 			ReconnectMax:    reconnMax,
 			PollInterval:    5 * time.Minute,
+			RotateSettle:    testRotateSettle,
 			Clock:           clk,
 			ConfigDir:       "/fakedir",
 			OpLog:           slog.New(slog.DiscardHandler),
@@ -726,6 +763,7 @@ func TestStreamingSupervisor_backoff(t *testing.T) {
 			ReconnectMin:    reconnMin,
 			ReconnectMax:    reconnMax,
 			PollInterval:    5 * time.Minute,
+			RotateSettle:    testRotateSettle,
 			Clock:           clk,
 			ConfigDir:       "/fakedir",
 			OpLog:           slog.New(slog.DiscardHandler),
@@ -985,6 +1023,42 @@ func TestStreamingSupervisor_LiveHealth(t *testing.T) {
 	})
 }
 
+// TestNewStreamingSupervisor_panics tests the RotateSettle validation added
+// alongside RotateIfIdle. It mirrors the panic-guard test convention already
+// used for OnDemandScheduler's required options.
+func TestNewStreamingSupervisor_panics(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero RotateSettle panics", func(t *testing.T) {
+		t.Parallel()
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+		assert.Panics(t, func() {
+			NewStreamingSupervisor(SupervisorOptions{
+				Eligible:        es,
+				HandshakeMaxAge: 3 * time.Minute,
+				ReconnectMin:    10 * time.Minute,
+				ReconnectMax:    3 * time.Hour,
+				ConfigDir:       "/fakedir",
+			})
+		})
+	})
+
+	t.Run("negative RotateSettle panics", func(t *testing.T) {
+		t.Parallel()
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+		assert.Panics(t, func() {
+			NewStreamingSupervisor(SupervisorOptions{
+				Eligible:        es,
+				HandshakeMaxAge: 3 * time.Minute,
+				ReconnectMin:    10 * time.Minute,
+				ReconnectMax:    3 * time.Hour,
+				RotateSettle:    -time.Second,
+				ConfigDir:       "/fakedir",
+			})
+		})
+	})
+}
+
 // TestStreamingSupervisor_Notifier tests that Start and a forced reconnect
 // each report exactly one notify.Event, and that a nil Notifier defaults to
 // notify.Nop (no panic, no send).
@@ -1050,5 +1124,476 @@ func TestStreamingSupervisor_Notifier(t *testing.T) {
 		defer cancel()
 		assert.NotPanics(t, func() { require.NoError(t, sup.Start(ctx)) })
 		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+	})
+}
+
+// rotateCallResult carries a RotateIfIdle return across a channel so
+// assertions stay on the test's own goroutine (calling require/assert from a
+// background goroutine is unsafe).
+type rotateCallResult struct {
+	res RotateResult
+	err error
+}
+
+// TestStreamingSupervisor_RotateIfIdle drives every RotateIfIdle outcome —
+// idle rotation, the busy gate (plain and force-overridden), build failure
+// and self-heal, no-live-device, loopCtx cancel during settle, caller ctx
+// cancel, and a concurrent-access stress run — against the loop goroutine's
+// real select-driven state machine, using the fake clock to prove the settle
+// gates the build and break-before-make ordering holds.
+func TestStreamingSupervisor_RotateIfIdle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rotates when idle, gating the build until settle elapses", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var mu sync.Mutex
+		var devices []*stubDevice
+		var buildErr error
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		require.NoError(t, sup.Start(ctx))
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+
+		mu.Lock()
+		oldDevice := devices[0]
+		mu.Unlock()
+
+		t0 := clk.Now()
+		ch := make(chan rotateCallResult, 1)
+		go func() {
+			res, err := sup.RotateIfIdle(t.Context(), false, func() bool { return false })
+			ch <- rotateCallResult{res, err}
+		}()
+
+		// break-before-make: the old device must already be closed by the
+		// time the settle timer is registered.
+		awaitCloseCount(t, oldDevice, 1, 2*time.Second)
+		awaitTimerAt(t, clk, t0.Add(testRotateSettle), 2*time.Second)
+
+		// the settle must gate the build: no second device yet.
+		mu.Lock()
+		n := len(devices)
+		mu.Unlock()
+		assert.Equal(t, 1, n, "build must not start before rotateSettle elapses")
+
+		clk.Advance(testRotateSettle)
+		awaitDeviceLen(t, &mu, &devices, 2, 2*time.Second)
+
+		got := <-ch
+		require.NoError(t, got.err)
+		assert.Equal(t, RotateRotated, got.res.Outcome)
+		assert.Equal(t, "se", got.res.Country)
+		assert.Equal(t, 1, oldDevice.closeCount())
+
+		mu.Lock()
+		newDevice := devices[1]
+		mu.Unlock()
+		assert.NotSame(t, oldDevice, newDevice, "rotation must build a fresh device instance")
+	})
+
+	t.Run("skips when busy: gate keeps the live device untouched", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var mu sync.Mutex
+		var devices []*stubDevice
+		var buildErr error
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		require.NoError(t, sup.Start(ctx))
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+
+		mu.Lock()
+		oldDevice := devices[0]
+		mu.Unlock()
+
+		res, err := sup.RotateIfIdle(t.Context(), false, func() bool { return true })
+		require.NoError(t, err)
+		assert.Equal(t, RotateSkippedActive, res.Outcome)
+		assert.Zero(t, oldDevice.closeCount(), "busy rotation must not close the live device")
+
+		mu.Lock()
+		n := len(devices)
+		mu.Unlock()
+		assert.Equal(t, 1, n, "busy rotation must not build a new device")
+	})
+
+	t.Run("force ignores busy but still breaks-before-making and settles", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var mu sync.Mutex
+		var devices []*stubDevice
+		var buildErr error
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		require.NoError(t, sup.Start(ctx))
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+
+		mu.Lock()
+		oldDevice := devices[0]
+		mu.Unlock()
+
+		t0 := clk.Now()
+		ch := make(chan rotateCallResult, 1)
+		go func() {
+			res, err := sup.RotateIfIdle(t.Context(), true, func() bool { return true }) // busy=true, force=true
+			ch <- rotateCallResult{res, err}
+		}()
+
+		awaitCloseCount(t, oldDevice, 1, 2*time.Second) // proves break-before-make despite busy()==true
+		awaitTimerAt(t, clk, t0.Add(testRotateSettle), 2*time.Second)
+		clk.Advance(testRotateSettle)
+
+		got := <-ch
+		require.NoError(t, got.err)
+		assert.Equal(t, RotateRotated, got.res.Outcome)
+		assert.Equal(t, "se", got.res.Country)
+	})
+
+	t.Run("build failure leaves device nil then the loop self-heals", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var buildCount int32
+		var mu sync.Mutex
+		var devices []*stubDevice
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+			n := atomic.AddInt32(&buildCount, 1)
+			if n == 2 {
+				// the rotation's post-settle rebuild fails; the first (Start)
+				// and third (loop self-heal) builds succeed.
+				return nil, errors.New("second build fails")
+			}
+			d := &stubDevice{handshake: epoch.Add(-time.Second)}
+			mu.Lock()
+			devices = append(devices, d)
+			mu.Unlock()
+			return d, nil
+		})
+
+		const reconnMin = 10 * time.Minute
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, reconnMin, 3*time.Hour, clk))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		require.NoError(t, sup.Start(ctx))
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+
+		mu.Lock()
+		oldDevice := devices[0]
+		mu.Unlock()
+
+		t0 := clk.Now()
+		ch := make(chan rotateCallResult, 1)
+		go func() {
+			res, err := sup.RotateIfIdle(t.Context(), false, func() bool { return false })
+			ch <- rotateCallResult{res, err}
+		}()
+
+		awaitCloseCount(t, oldDevice, 1, 2*time.Second)
+		awaitTimerAt(t, clk, t0.Add(testRotateSettle), 2*time.Second)
+		clk.Advance(testRotateSettle) // settle fires -> rebuild attempt #2 -> fails
+
+		got := <-ch
+		require.NoError(t, got.err)
+		assert.Equal(t, RotateUnavailable, got.res.Outcome)
+
+		// the loop re-enters its d==nil backoff branch at reconnMin.
+		t1 := clk.Now()
+		awaitTimerAt(t, clk, t1.Add(reconnMin), 2*time.Second)
+		clk.Advance(reconnMin) // backoff elapses -> rebuild attempt #3 -> succeeds
+
+		awaitDeviceLen(t, &mu, &devices, 2, 2*time.Second)
+		_, ok := sup.LiveHealth()
+		assert.True(t, ok, "loop must self-heal to a live device after the failed rotation build")
+	})
+
+	t.Run("unavailable when no device is live", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		buildErr := errors.New("always fails")
+		var mu sync.Mutex
+		var devices []*stubDevice
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch)
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		require.NoError(t, sup.Start(ctx)) // Start tolerates a first-build failure
+
+		res, err := sup.RotateIfIdle(t.Context(), false, func() bool { return false })
+		require.NoError(t, err)
+		assert.Equal(t, RotateUnavailable, res.Outcome)
+	})
+
+	t.Run("loopCtx cancel during settle returns Unavailable with the old device already closed", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var mu sync.Mutex
+		var devices []*stubDevice
+		var buildErr error
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		// runCtx is the supervisor's own run/loop context — distinct from the
+		// caller ctx passed to RotateIfIdle below — so cancelling it exercises
+		// loopCtx.Done() inside handleRotate's settle wait, not the caller-side
+		// ctx-cancel path (covered by its own subtest).
+		runCtx, runCancel := context.WithCancel(context.Background())
+		defer runCancel()
+		require.NoError(t, sup.Start(runCtx))
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+
+		mu.Lock()
+		oldDevice := devices[0]
+		mu.Unlock()
+
+		t0 := clk.Now()
+		ch := make(chan rotateCallResult, 1)
+		go func() {
+			res, err := sup.RotateIfIdle(t.Context(), false, func() bool { return false })
+			ch <- rotateCallResult{res, err}
+		}()
+
+		awaitCloseCount(t, oldDevice, 1, 2*time.Second)
+		awaitTimerAt(t, clk, t0.Add(testRotateSettle), 2*time.Second)
+
+		runCancel() // shutdown mid-rotate, before the settle timer fires
+
+		got := <-ch
+		require.NoError(t, got.err, "loopCtx cancel during settle must not surface as a RotateIfIdle error")
+		assert.Equal(t, RotateUnavailable, got.res.Outcome)
+		assert.Equal(t, 1, oldDevice.closeCount(), "old device must already be closed before the shutdown abort")
+
+		sup.Stop() // loop already exited via runCtx.Done(); Stop just joins it
+	})
+
+	t.Run("not started returns unavailable without blocking", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+		var buildErr error
+		var mu sync.Mutex
+		var devices []*stubDevice
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		// deliberately never Started: RotateIfIdle must short-circuit on the
+		// !started guard and return immediately, rather than block forever
+		// sending on a rotateCh that no loop goroutine will ever read.
+		res, err := sup.RotateIfIdle(t.Context(), false, func() bool { return false })
+		require.NoError(t, err)
+		assert.Equal(t, RotateUnavailable, res.Outcome)
+	})
+
+	t.Run("caller ctx cancel during in-flight rotation returns ctx.Err()", func(t *testing.T) {
+		t.Parallel()
+		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		clk := newFakeClock(epoch)
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+		var buildErr error
+		var mu sync.Mutex
+		var devices []*stubDevice
+		fn := stubDeviceBuilderFn(&mu, &devices, &buildErr, epoch.Add(-time.Second))
+
+		sup := NewStreamingSupervisor(defaultTestOpts(es, fn, 3*time.Minute, 10*time.Minute, 3*time.Hour, clk))
+		// runCtx keeps the loop alive; the caller ctx passed to RotateIfIdle is
+		// distinct, so cancelling it exercises the SECOND select (the reply
+		// wait) while a rotation is genuinely in flight — the plan's R4 path,
+		// which the pre-Start degenerate case never reached.
+		runCtx, runCancel := context.WithCancel(context.Background())
+		defer runCancel()
+		require.NoError(t, sup.Start(runCtx))
+		awaitDeviceLen(t, &mu, &devices, 1, 500*time.Millisecond)
+
+		mu.Lock()
+		oldDevice := devices[0]
+		mu.Unlock()
+
+		callerCtx, callerCancel := context.WithCancel(context.Background())
+		defer callerCancel()
+
+		t0 := clk.Now()
+		ch := make(chan rotateCallResult, 1)
+		go func() {
+			res, err := sup.RotateIfIdle(callerCtx, false, func() bool { return false })
+			ch <- rotateCallResult{res, err}
+		}()
+
+		// wait until the rotation is genuinely in flight: the old device torn
+		// down and the settle timer registered means the request was already
+		// handed off and RotateIfIdle is now blocked in its reply-wait select.
+		awaitCloseCount(t, oldDevice, 1, 2*time.Second)
+		awaitTimerAt(t, clk, t0.Add(testRotateSettle), 2*time.Second)
+
+		callerCancel() // caller disconnects mid-rotation
+
+		got := <-ch
+		assert.ErrorIs(t, got.err, context.Canceled)
+		assert.Zero(t, got.res)
+
+		// the loop still finishes the rotation on runCtx; advance the settle so
+		// it builds+swaps rather than being left mid-settle at cleanup.
+		clk.Advance(testRotateSettle)
+		awaitDeviceLen(t, &mu, &devices, 2, 2*time.Second)
+
+		runCancel()
+		sup.Stop()
+	})
+
+	t.Run("concurrent dials during rotation never reach the torn-down device", func(t *testing.T) {
+		t.Parallel()
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		var violated atomic.Bool
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+			return &raceCheckDevice{stubDevice: &stubDevice{handshake: time.Now()}, violated: &violated}, nil
+		})
+
+		sup := NewStreamingSupervisor(SupervisorOptions{
+			Eligible:        es,
+			DeviceBuilder:   fn,
+			HandshakeMaxAge: time.Hour,
+			ReconnectMin:    time.Hour,
+			ReconnectMax:    time.Hour,
+			PollInterval:    time.Hour,
+			RotateSettle:    2 * time.Millisecond, // real clock: keep the stress run fast
+			ConfigDir:       "/fakedir",
+			OpLog:           slog.New(slog.DiscardHandler),
+		})
+		ctx, cancel := context.WithCancel(t.Context())
+		require.NoError(t, sup.Start(ctx))
+
+		var activeSessions atomic.Int64
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					activeSessions.Add(1)
+					_, _ = sup.DialContext(ctx, "tcp", "example.com:443")
+					activeSessions.Add(-1)
+					time.Sleep(time.Millisecond) // natural idle window between dials
+				}
+			}()
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = sup.RotateIfIdle(ctx, false, func() bool { return activeSessions.Load() > 0 })
+			}
+		}()
+
+		time.Sleep(200 * time.Millisecond)
+		close(stop)
+		wg.Wait()
+		cancel()
+		sup.Stop()
+
+		assert.False(t, violated.Load(),
+			"a dial must never reach a device already Closed by a rotation")
+	})
+
+	t.Run("concurrent dials during forced rotation stay race-clean", func(t *testing.T) {
+		t.Parallel()
+		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
+
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+			return &stubDevice{handshake: time.Now()}, nil
+		})
+
+		sup := NewStreamingSupervisor(SupervisorOptions{
+			Eligible:        es,
+			DeviceBuilder:   fn,
+			HandshakeMaxAge: time.Hour,
+			ReconnectMin:    time.Hour,
+			ReconnectMax:    time.Hour,
+			PollInterval:    time.Hour,
+			RotateSettle:    2 * time.Millisecond,
+			ConfigDir:       "/fakedir",
+			OpLog:           slog.New(slog.DiscardHandler),
+		})
+		ctx, cancel := context.WithCancel(t.Context())
+		require.NoError(t, sup.Start(ctx))
+
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+
+		// force=true accepts dropped in-flight dials — this variant asserts
+		// only that concurrent access stays race-clean, per the plan.
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					_, _ = sup.DialContext(ctx, "tcp", "example.com:443")
+				}
+			}()
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = sup.RotateIfIdle(ctx, true, func() bool { return false })
+			}
+		}()
+
+		time.Sleep(200 * time.Millisecond)
+		close(stop)
+		wg.Wait()
+		cancel()
+		sup.Stop()
 	})
 }
