@@ -3,23 +3,23 @@ package main
 import (
 	"context"
 
+	"vpntunnel/internal/application"
 	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/router"
-	"vpntunnel/internal/service"
 )
 
 // compile-time assertion: rotateAdapter must satisfy router.Rotator.
 var _ router.Rotator = rotateAdapter{}
 
 // rotateAdapter bridges *lazy.StreamingSupervisor.RotateIfIdle and
-// *service.ProxyService.ActiveSessions to the transport-local
+// *application.ProxyService.ActiveSessions to the transport-local
 // router.Rotator interface, so the apiserver package never imports lazy
 // (mirroring how the handlers package keeps lazy out via Router/ZoneChecker/
 // TunnelCatalog). It has exactly one consumer — this binary — so it lives
 // under cmd/ rather than internal/, per the project's package-placement rule.
 type rotateAdapter struct {
 	sup *lazy.StreamingSupervisor
-	svc *service.ProxyService
+	svc *application.ProxyService
 }
 
 // Rotate implements router.Rotator by delegating the gate decision to

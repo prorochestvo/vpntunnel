@@ -1,4 +1,4 @@
-package service
+package application
 
 // IsLoopbackRemote exposes isLoopbackRemote for white-box table tests in the
 // service_test package.

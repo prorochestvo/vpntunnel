@@ -1,4 +1,4 @@
-package service_test
+package application_test
 
 import (
 	"bufio"
@@ -21,10 +21,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/application"
 	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
-	"vpntunnel/internal/service"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -87,16 +87,16 @@ func directDialer() *mockDialer {
 	}}
 }
 
-func newTestService(t *testing.T, dialer tunnel.Dialer, opts ...func(*service.ProxyServiceOptions)) *service.ProxyService {
+func newTestService(t *testing.T, dialer tunnel.Dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
 	t.Helper()
-	o := service.ProxyServiceOptions{
+	o := application.ProxyServiceOptions{
 		Dialer:      dialer,
 		DialTimeout: 5 * time.Second,
 	}
 	for _, fn := range opts {
 		fn(&o)
 	}
-	return service.NewProxyService(o)
+	return application.NewProxyService(o)
 }
 
 func TestProxyService_HandleHTTP(t *testing.T) {
@@ -210,7 +210,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 		assert.Equal(t, http.StatusBadGateway, rr.Code)
 		assert.Equal(t, "Upstream unreachable.\n", rr.Body.String())
-		assert.NotContains(t, rr.Body.String(), service.ErrFallbackMessage, "dial fail must surface as public, not fallback")
+		assert.NotContains(t, rr.Body.String(), application.ErrFallbackMessage, "dial fail must surface as public, not fallback")
 	})
 
 	t.Run("propagates client cancellation to upstream", func(t *testing.T) {
@@ -260,7 +260,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		}, nil, nil)
 		require.NoError(t, err)
 
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Access = al
 		})
 
@@ -319,7 +319,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		}, nil, nil)
 		require.NoError(t, err)
 
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Access = al
 		})
 
@@ -368,7 +368,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		t.Cleanup(upstream.Close)
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
 		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
@@ -381,7 +381,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 	t.Run("auth enabled missing header returns 407 with Proxy-Authenticate", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -395,7 +395,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 	t.Run("auth enabled with Basic scheme returns 407", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -412,7 +412,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		t.Parallel()
 		const secretToken = "test-secret-wrong-xk3m9v"
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -427,7 +427,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 	t.Run("auth enabled with malformed header returns 407", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -452,7 +452,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		t.Cleanup(upstream.Close)
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
 		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
@@ -473,7 +473,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
 		})
@@ -498,7 +498,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
 		})
@@ -521,7 +521,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
 		})
@@ -543,7 +543,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		t.Cleanup(upstream.Close)
 
 		var lb lockedBuffer
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool {
 				t.Fatal("verifier must not be called for loopback client")
 				return false
@@ -567,7 +567,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		t.Cleanup(upstream.Close)
 
 		var lb lockedBuffer
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool {
 				t.Fatal("verifier must not be called for loopback client")
 				return false
@@ -585,7 +585,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 	t.Run("auth enabled rejects non-loopback", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -599,7 +599,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 	t.Run("auth enabled fails closed on empty RemoteAddr", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -894,7 +894,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 			}
 		}()
 
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.DialTimeout = 5 * time.Second
 		})
 
@@ -988,7 +988,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		}()
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
 		// force non-loopback so the loopback bypass does not fire and the token
@@ -1017,7 +1017,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 
 	t.Run("auth enabled missing header returns 407 without hijacking", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		// override RemoteAddr to non-loopback so the bypass does not fire
@@ -1046,7 +1046,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		t.Parallel()
 		const secretToken = "connect-wrong-xk3m9v"
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
 		// override RemoteAddr to non-loopback so the bypass does not fire
@@ -1076,7 +1076,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		t.Parallel()
 		const secretToken = "connect-basic-scheme-xk3m9v"
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
 		// override RemoteAddr to non-loopback so the bypass does not fire
@@ -1110,7 +1110,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 		v := auth.NewBearerVerifier(secretToken)
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
 		})
@@ -1152,7 +1152,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		}()
 
 		var lb lockedBuffer
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool {
 				t.Fatal("verifier must not be called for loopback client")
 				return false
@@ -1183,7 +1183,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 
 	t.Run("auth enabled rejects non-loopback", func(t *testing.T) {
 		t.Parallel()
-		svc := newTestService(t, directDialer(), func(o *service.ProxyServiceOptions) {
+		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = &mockVerifier{verifyFn: func(string) bool { return false }}
 		})
 		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1504,7 +1504,7 @@ func TestIsLoopbackRemote(t *testing.T) {
 		tc := tc
 		t.Run(tc.addr, func(t *testing.T) {
 			t.Parallel()
-			got := service.IsLoopbackRemote(tc.addr)
+			got := application.IsLoopbackRemote(tc.addr)
 			assert.Equal(t, tc.want, got, "addr=%q", tc.addr)
 		})
 	}

@@ -40,6 +40,7 @@ import (
 	"syscall"
 	"time"
 
+	"vpntunnel/internal/application"
 	"vpntunnel/internal/application/asyncjob"
 	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/httpV1/handlers"
@@ -50,7 +51,6 @@ import (
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/infrastructure/observability"
-	"vpntunnel/internal/service"
 )
 
 // runOpt is a functional option for runWithOpts, used to override internals in
@@ -491,7 +491,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// store, jobPool, access, opLog (never svc), and svc's Options reference
 	// only supervisor, verifier, access, opLog, cfg (never apiSrv) — the two
 	// constructions are independent, so reordering changes no behaviour.
-	svc := service.NewProxyService(service.ProxyServiceOptions{
+	svc := application.NewProxyService(application.ProxyServiceOptions{
 		Dialer:      supervisor,
 		Verifier:    verifier,
 		Access:      access,

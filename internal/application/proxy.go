@@ -1,4 +1,4 @@
-// Package service implements the core proxy logic: HandleHTTP for
+// Package application implements the core proxy logic: HandleHTTP for
 // plain-HTTP forward requests and HandleCONNECT for HTTPS tunnels.
 //
 // Error contract: methods call publicerror.New for failures whose cause is
@@ -7,7 +7,7 @@
 // genuinely unexpected impl failures (request build error, hijacker missing)
 // where leaking detail would obscure intent. The HTTP transport layer does
 // NOT need to inspect errors; the service writes the response itself.
-package service
+package application
 
 import (
 	"context"

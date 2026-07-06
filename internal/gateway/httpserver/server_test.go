@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/application"
 	"vpntunnel/internal/gateway/httpserver"
-	"vpntunnel/internal/service"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -39,9 +39,9 @@ func makeOpts(addr string) httpserver.Options {
 	}
 }
 
-func newSvc(t *testing.T) *service.ProxyService {
+func newSvc(t *testing.T) *application.ProxyService {
 	t.Helper()
-	return service.NewProxyService(service.ProxyServiceOptions{
+	return application.NewProxyService(application.ProxyServiceOptions{
 		Dialer:      &stubDialer{},
 		DialTimeout: 5 * time.Second,
 	})
@@ -277,7 +277,7 @@ func TestServer(t *testing.T) {
 // connectNotifier wraps ProxyService and signals done when HandleCONNECT
 // returns, ensuring that tunnels.Add(1) has been called before WaitTunnels.
 type connectNotifier struct {
-	svc  *service.ProxyService
+	svc  *application.ProxyService
 	done chan<- struct{}
 }
 

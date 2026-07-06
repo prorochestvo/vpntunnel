@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/application"
 	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/router"
-	"vpntunnel/internal/service"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -95,7 +95,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 		require.NoError(t, sup.Start(ctx))
 		t.Cleanup(sup.Stop)
 
-		svc := service.NewProxyService(service.ProxyServiceOptions{
+		svc := application.NewProxyService(application.ProxyServiceOptions{
 			Dialer:      &blockingDialer{release: make(chan struct{})},
 			DialTimeout: time.Second,
 		})
@@ -117,7 +117,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 		t.Cleanup(sup.Stop)
 
 		release := make(chan struct{})
-		svc := service.NewProxyService(service.ProxyServiceOptions{
+		svc := application.NewProxyService(application.ProxyServiceOptions{
 			Dialer:      &blockingDialer{release: release},
 			DialTimeout: 5 * time.Second,
 		})
@@ -154,7 +154,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 		require.NoError(t, sup.Start(ctx)) // Start tolerates a first-build failure
 		t.Cleanup(sup.Stop)
 
-		svc := service.NewProxyService(service.ProxyServiceOptions{
+		svc := application.NewProxyService(application.ProxyServiceOptions{
 			Dialer:      &blockingDialer{release: make(chan struct{})},
 			DialTimeout: time.Second,
 		})
@@ -185,7 +185,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 		require.NoError(t, sup.Start(ctx))
 		t.Cleanup(sup.Stop)
 
-		svc := service.NewProxyService(service.ProxyServiceOptions{
+		svc := application.NewProxyService(application.ProxyServiceOptions{
 			Dialer:      &blockingDialer{release: make(chan struct{})},
 			DialTimeout: time.Second,
 		})

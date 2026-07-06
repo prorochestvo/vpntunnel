@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"time"
 
-	"vpntunnel/internal/service"
+	"vpntunnel/internal/application"
 )
 
 // Options configures the HTTP proxy server. It carries only the three scalars
@@ -32,12 +32,12 @@ type Options struct {
 // must outlive any per-write deadline. The risk of slow-write attacks against
 // the forward-HTTP path is mitigated by ReadHeaderTimeout and upstream
 // http.Client timeouts; accepted for v1.
-func New(opts Options, svc *service.ProxyService, opLog *slog.Logger) *Server {
+func New(opts Options, svc *application.ProxyService, opLog *slog.Logger) *Server {
 	return NewWithHandler(opts, svc, opLog)
 }
 
 // NewWithHandler constructs a Server that dispatches to handler instead of
-// a concrete *service.ProxyService. Intended for testing with stub handlers.
+// a concrete *application.ProxyService. Intended for testing with stub handlers.
 func NewWithHandler(opts Options, handler proxyHandler, opLog *slog.Logger) *Server {
 	logger := opLog
 	if logger == nil {
@@ -116,8 +116,8 @@ type proxyHandler interface {
 	WaitTunnels(ctx context.Context) error
 }
 
-// compile-time assertion: *service.ProxyService satisfies proxyHandler.
-var _ proxyHandler = (*service.ProxyService)(nil)
+// compile-time assertion: *application.ProxyService satisfies proxyHandler.
+var _ proxyHandler = (*application.ProxyService)(nil)
 
 func rootHandler(h proxyHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
