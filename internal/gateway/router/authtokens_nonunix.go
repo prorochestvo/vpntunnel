@@ -1,6 +1,6 @@
 //go:build !unix
 
-package apiserver
+package router
 
 import "os"
 

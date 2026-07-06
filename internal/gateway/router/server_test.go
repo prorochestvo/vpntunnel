@@ -1,4 +1,4 @@
-package apiserver_test
+package router_test
 
 import (
 	"bytes"
@@ -23,9 +23,9 @@ import (
 
 	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/gateway/router"
+	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
-	"vpntunnel/internal/transport/apiserver"
-	"vpntunnel/internal/transport/apiserver/apitls"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -83,9 +83,9 @@ type serverFixture struct {
 // server runs HTTPS (TLS 1.3) with a self-signed cert; when false it runs plain
 // HTTP with Cert: nil. startServer is a thin wrapper that always enables TLS so
 // existing tests compile unchanged. mutate, if given, is applied to the
-// constructed apiserver.Options before New is called — e.g. to inject a
+// constructed router.Options before New is called — e.g. to inject a
 // Rotator — so one-off fields don't need a dedicated fixture function.
-func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*apiserver.Options)) *serverFixture {
+func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*router.Options)) *serverFixture {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -116,7 +116,7 @@ func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*apiserver.Op
 		ProxyTokenFile: userFile,
 	}
 
-	tokens, err := apiserver.LoadTokens(apiAuth, dir)
+	tokens, err := router.LoadTokens(apiAuth, dir)
 	require.NoError(t, err)
 
 	// load or generate a TLS cert only when TLS is enabled.
@@ -136,7 +136,7 @@ func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*apiserver.Op
 	onDemand := &fakeLiveHealther{ok: false}
 	liveHealth := handlers.NewLiveHealthModel(streaming, onDemand)
 
-	opts := apiserver.Options{
+	opts := router.Options{
 		Addr:                "127.0.0.1:0",
 		ShutdownTimeout:     5 * time.Second,
 		Cert:                cert,
@@ -153,7 +153,7 @@ func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*apiserver.Op
 	for _, m := range mutate {
 		m(&opts)
 	}
-	srv := apiserver.New(opts, slog.New(slog.DiscardHandler))
+	srv := router.New(opts, slog.New(slog.DiscardHandler))
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -543,7 +543,7 @@ func TestServer_HTTPMode(t *testing.T) {
 			AdminTokenFile: writeTokenFn("admin.token", adminPlain),
 			ProxyTokenFile: writeTokenFn("user.token", userPlain),
 		}
-		tokens, err := apiserver.LoadTokens(apiAuth, dir)
+		tokens, err := router.LoadTokens(apiAuth, dir)
 		require.NoError(t, err)
 
 		streaming := &fakeLiveHealther{
@@ -558,7 +558,7 @@ func TestServer_HTTPMode(t *testing.T) {
 		sw := &syncWriter{mu: &mu, buf: &logBuf}
 		captureLog := slog.New(slog.NewTextHandler(sw, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-		opts := apiserver.Options{
+		opts := router.Options{
 			Addr:                "127.0.0.1:0",
 			ShutdownTimeout:     5 * time.Second,
 			Cert:                nil, // HTTP mode
@@ -572,7 +572,7 @@ func TestServer_HTTPMode(t *testing.T) {
 			MaxUpstreamTimeout:  5 * time.Minute,
 			HealthMaxAge:        180 * time.Second,
 		}
-		srv := apiserver.New(opts, captureLog)
+		srv := router.New(opts, captureLog)
 
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
@@ -645,7 +645,7 @@ func startAuthServer(t *testing.T) *authServerFixture {
 		ProxyTokenFile: userFile,
 	}
 
-	tokens, err := apiserver.LoadTokens(apiAuth, dir)
+	tokens, err := router.LoadTokens(apiAuth, dir)
 	require.NoError(t, err)
 
 	certDir := filepath.Join(dir, "tls")
@@ -667,7 +667,7 @@ func startAuthServer(t *testing.T) *authServerFixture {
 	syncWriter := &syncWriter{mu: &mu, buf: &logBuf}
 	captureLog := slog.New(slog.NewTextHandler(syncWriter, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	opts := apiserver.Options{
+	opts := router.Options{
 		Addr:                "127.0.0.1:0",
 		ShutdownTimeout:     5 * time.Second,
 		Cert:                cert,
@@ -681,7 +681,7 @@ func startAuthServer(t *testing.T) *authServerFixture {
 		MaxUpstreamTimeout:  5 * time.Minute,
 		HealthMaxAge:        180 * time.Second,
 	}
-	srv := apiserver.New(opts, captureLog)
+	srv := router.New(opts, captureLog)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

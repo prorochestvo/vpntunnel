@@ -1,10 +1,10 @@
-// Package apiserver implements the HTTPS API listener for the vpntunnel
+// Package router implements the HTTPS API listener for the vpntunnel
 // daemon: TLS setup, request-ID middleware, Bearer-token auth, role-based
 // routing, and the UUIDv7 request-ID generator. Tokens and Role types are
 // defined in this file; the server skeleton lives in server.go; handlers
 // for /v1/admin/health, /v1/tunnels, and /v1/proxy/... live in the
-// handlers/ sub-package.
-package apiserver
+// sibling httpV1/handlers package.
+package router
 
 import (
 	"bytes"

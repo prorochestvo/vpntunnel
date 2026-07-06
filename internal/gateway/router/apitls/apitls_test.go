@@ -19,8 +19,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/transport/apiserver/apitls"
 )
 
 // recordingHandler is a slog.Handler that captures every log record for

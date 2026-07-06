@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	lazy "vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/service"
-	"vpntunnel/internal/transport/apiserver"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -81,7 +81,7 @@ func newAdapterTestSupervisor(t *testing.T, builder lazy.DeviceBuilderFn, rotate
 }
 
 // TestRotateAdapter_Rotate covers rotateAdapter's outcome mapping: each
-// lazy.Rotate* maps to the matching apiserver.Rotation*, the ctx-cancel error
+// lazy.Rotate* maps to the matching router.Rotation*, the ctx-cancel error
 // passes through unchanged, and ActiveSessions is populated only on the
 // skipped branch.
 func TestRotateAdapter_Rotate(t *testing.T) {
@@ -103,7 +103,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 
 		res, err := a.Rotate(t.Context(), false)
 		require.NoError(t, err)
-		assert.Equal(t, apiserver.RotationRotated, res.Outcome)
+		assert.Equal(t, router.RotationRotated, res.Outcome)
 		assert.Equal(t, "se", res.Country)
 		assert.Zero(t, res.ActiveSessions)
 	})
@@ -135,7 +135,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 
 		res, err := a.Rotate(t.Context(), false)
 		require.NoError(t, err)
-		assert.Equal(t, apiserver.RotationSkippedActive, res.Outcome)
+		assert.Equal(t, router.RotationSkippedActive, res.Outcome)
 		assert.Equal(t, int64(1), res.ActiveSessions)
 		assert.Empty(t, res.Country)
 
@@ -162,7 +162,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 
 		res, err := a.Rotate(t.Context(), false)
 		require.NoError(t, err)
-		assert.Equal(t, apiserver.RotationUnavailable, res.Outcome)
+		assert.Equal(t, router.RotationUnavailable, res.Outcome)
 		assert.Empty(t, res.Country)
 		assert.Zero(t, res.ActiveSessions)
 	})

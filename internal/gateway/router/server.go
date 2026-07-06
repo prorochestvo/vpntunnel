@@ -1,4 +1,4 @@
-package apiserver
+package router
 
 import (
 	"context"
@@ -105,7 +105,7 @@ func New(opts Options, log *slog.Logger) *Server {
 	if fwd == nil {
 		fwd = handlers.NewTunnelForwarder(opts.MaxRequestBodyBytes, log)
 	} else {
-		log.Warn("SECURITY: apiserver.Options.ProxyForwarder override active — WireGuard dialer and IP deny-list bypassed; must only fire in test binaries")
+		log.Warn("SECURITY: router.Options.ProxyForwarder override active — WireGuard dialer and IP deny-list bypassed; must only fire in test binaries")
 	}
 	proxyHandler := handlers.NewProxyHandler(
 		opts.ZoneChecker,

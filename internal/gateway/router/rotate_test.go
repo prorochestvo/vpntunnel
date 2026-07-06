@@ -1,4 +1,4 @@
-package apiserver_test
+package router_test
 
 import (
 	"context"
@@ -10,23 +10,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/transport/apiserver"
+	"vpntunnel/internal/gateway/router"
 )
 
-var _ apiserver.Rotator = (*stubRotator)(nil)
+var _ router.Rotator = (*stubRotator)(nil)
 
-// stubRotator is a recording test double for apiserver.Rotator: it always
+// stubRotator is a recording test double for router.Rotator: it always
 // returns the configured result/err and records every force value it was
 // called with, so tests can assert both the response body and that ?force
 // reached the rotator unchanged.
 type stubRotator struct {
 	mu     sync.Mutex
-	result apiserver.RotationResult
+	result router.RotationResult
 	err    error
 	forces []bool
 }
 
-func (s *stubRotator) Rotate(_ context.Context, force bool) (apiserver.RotationResult, error) {
+func (s *stubRotator) Rotate(_ context.Context, force bool) (router.RotationResult, error) {
 	s.mu.Lock()
 	s.forces = append(s.forces, force)
 	s.mu.Unlock()
@@ -58,7 +58,7 @@ func TestServer_handleRotate(t *testing.T) {
 	t.Run("non-POST with admin token returns 405 with Allow header", func(t *testing.T) {
 		t.Parallel()
 		stub := &stubRotator{}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.get(t, "/v1/admin/rotate", f.adminToken)
@@ -70,7 +70,7 @@ func TestServer_handleRotate(t *testing.T) {
 	t.Run("proxy token returns 403", func(t *testing.T) {
 		t.Parallel()
 		stub := &stubRotator{}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", f.userToken)
@@ -81,7 +81,7 @@ func TestServer_handleRotate(t *testing.T) {
 	t.Run("no token returns 401", func(t *testing.T) {
 		t.Parallel()
 		stub := &stubRotator{}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", "")
@@ -92,7 +92,7 @@ func TestServer_handleRotate(t *testing.T) {
 	t.Run("invalid force value returns 400", func(t *testing.T) {
 		t.Parallel()
 		stub := &stubRotator{}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate?force=notabool", f.adminToken)
@@ -102,8 +102,8 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("rotated outcome returns 200 with status and country", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: apiserver.RotationResult{Outcome: apiserver.RotationRotated, Country: "se"}}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", f.adminToken)
@@ -116,8 +116,8 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("skipped_active outcome returns 200 with status and active_sessions", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: apiserver.RotationResult{Outcome: apiserver.RotationSkippedActive, ActiveSessions: 3}}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationSkippedActive, ActiveSessions: 3}}
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", f.adminToken)
@@ -130,8 +130,8 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("unavailable outcome returns 503", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: apiserver.RotationResult{Outcome: apiserver.RotationUnavailable}}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationUnavailable}}
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", f.adminToken)
@@ -154,8 +154,8 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("force=true reaches the rotator", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: apiserver.RotationResult{Outcome: apiserver.RotationRotated, Country: "se"}}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate?force=true", f.adminToken)
@@ -165,8 +165,8 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("no force param defaults to false", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: apiserver.RotationResult{Outcome: apiserver.RotationRotated, Country: "se"}}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", f.adminToken)
@@ -176,8 +176,8 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("responses carry X-Request-Id", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: apiserver.RotationResult{Outcome: apiserver.RotationRotated, Country: "se"}}
-		f := startServerMode(t, false, func(o *apiserver.Options) { o.Rotator = stub })
+		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
 		resp := f.post(t, "/v1/admin/rotate", f.adminToken)

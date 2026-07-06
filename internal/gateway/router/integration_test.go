@@ -1,4 +1,4 @@
-package apiserver_test
+package router_test
 
 import (
 	"bufio"
@@ -27,10 +27,10 @@ import (
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/gateway/router"
+	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
-	"vpntunnel/internal/transport/apiserver"
-	"vpntunnel/internal/transport/apiserver/apitls"
 	"vpntunnel/internal/tunnel"
 )
 
@@ -111,7 +111,7 @@ func (f *blockingForwarder) Forward(ctx context.Context, _ *http.Request) (async
 
 // directSyncForwarder is a handlers.Forwarder that forwards to the upstream
 // directly over http.DefaultTransport, bypassing the WireGuard dialer and the
-// IP deny-list. Injected via apiserver.Options.ProxyForwarder so the sync
+// IP deny-list. Injected via router.Options.ProxyForwarder so the sync
 // /v1/proxy/ path can reach loopback upstreams in integration tests.
 type directSyncForwarder struct{}
 
@@ -269,13 +269,13 @@ type integrationDaemonOpts struct {
 	// storePath is the bbolt file path. When empty, a new temp file is used.
 	// Pass an explicit path to share a store across daemon restarts.
 	storePath string
-	// access is the optional access logger passed to apiserver.Options.Access.
+	// access is the optional access logger passed to router.Options.Access.
 	access *observability.AccessLogger
 	// httpMode, when true, boots the API listener as plain HTTP (Cert: nil).
 	// When false (the default), a self-signed TLS cert is generated and the
 	// API serves HTTPS. The nil-ness of Options.Cert is the mode discriminator.
 	httpMode bool
-	// proxyFwd, when non-nil, is used as apiserver.Options.ProxyForwarder
+	// proxyFwd, when non-nil, is used as router.Options.ProxyForwarder
 	// instead of directSyncForwarder{}. Allows tests to inject a transport
 	// that trusts self-signed upstream certs (e.g. tlsTrustingForwarder).
 	proxyFwd handlers.Forwarder
@@ -334,7 +334,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 		AdminTokenFile: writeToken("admin.token", adminPlain),
 		ProxyTokenFile: writeToken("user.token", userPlain),
 	}
-	tokens, err := apiserver.LoadTokens(apiAuth, dir)
+	tokens, err := router.LoadTokens(apiAuth, dir)
 	require.NoError(t, err)
 
 	// load or generate a TLS cert only when running in HTTPS mode.
@@ -371,7 +371,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 		proxyFwd = directSyncForwarder{}
 	}
 
-	srvOpts := apiserver.Options{
+	srvOpts := router.Options{
 		Addr:                "127.0.0.1:0",
 		ShutdownTimeout:     5 * time.Second,
 		Cert:                cert, // nil when httpMode == true
@@ -388,7 +388,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 		ProxyForwarder:      proxyFwd,
 		Access:              opts.access,
 	}
-	srv := apiserver.New(srvOpts, slog.New(slog.DiscardHandler))
+	srv := router.New(srvOpts, slog.New(slog.DiscardHandler))
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
