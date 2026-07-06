@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"vpntunnel/internal/transport/apiserver/handlers"
+	"vpntunnel/internal/gateway/httpV1/handlers"
 )
 
 // RotationOutcome enumerates the possible results of a Rotator.Rotate call.

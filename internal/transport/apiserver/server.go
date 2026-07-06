@@ -13,8 +13,8 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/domain"
+	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/infrastructure/observability"
-	"vpntunnel/internal/transport/apiserver/handlers"
 )
 
 // Options carries everything Server needs to start.

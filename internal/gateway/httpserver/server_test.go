@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/gateway/httpserver"
 	"vpntunnel/internal/service"
-	"vpntunnel/internal/transport/httpserver"
 	"vpntunnel/internal/tunnel"
 )
 

@@ -22,10 +22,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/transport/apiserver"
 	"vpntunnel/internal/transport/apiserver/apitls"
-	"vpntunnel/internal/transport/apiserver/handlers"
 	"vpntunnel/internal/tunnel"
 )
 
