@@ -11,6 +11,7 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/domain"
+	"vpntunnel/internal/gateway/httpV1/dto"
 )
 
 // NewHealthHandler returns an http.Handler that serves GET requests with the
@@ -58,7 +59,7 @@ func (h *healthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	reports := h.pool.Reports()
 
-	tunnelEntries := make([]entry, len(reports))
+	tunnelEntries := make([]dto.HealthEntry, len(reports))
 	for i, rep := range reports {
 		tunnelEntries[i] = tunnelHealthEntry(rep, now, h.maxAge)
 	}
@@ -68,7 +69,7 @@ func (h *healthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pendingCount, completedCount, tombstoneCount := h.fetchCounts()
 
 	status := aggregateStatus(tunnelEntries)
-	body := healthResponse{
+	body := dto.HealthResponse{
 		Status:             status,
 		Tunnels:            tunnelEntries,
 		PendingJobsCount:   pendingCount,
@@ -121,29 +122,13 @@ type tunnelPool interface {
 	Reports() []domain.TunnelHealth
 }
 
-// healthResponse is the top-level JSON body for the health endpoint.
-type healthResponse struct {
-	Status             string  `json:"status"`
-	Tunnels            []entry `json:"tunnels"`
-	PendingJobsCount   int     `json:"pending_jobs_count"`
-	CompletedJobsCount int     `json:"completed_jobs_count"`
-	TombstoneJobsCount int     `json:"tombstone_jobs_count"`
-}
-
-// entry is the per-tunnel fragment of the health response.
-type entry struct {
-	ID                  string `json:"id"`
-	Healthy             bool   `json:"healthy"`
-	HandshakeAgeSeconds int64  `json:"handshake_age_seconds"`
-}
-
 // tunnelHealthEntry returns the response entry for one TunnelHealth at the
 // given now. Pure function; deterministic; trivially testable without touching
 // the handler or the pool.
-func tunnelHealthEntry(h domain.TunnelHealth, now time.Time, maxAge time.Duration) entry {
+func tunnelHealthEntry(h domain.TunnelHealth, now time.Time, maxAge time.Duration) dto.HealthEntry {
 	ts := h.LastHandshake
 	if h.Err != nil || ts.IsZero() {
-		return entry{
+		return dto.HealthEntry{
 			ID:                  h.ID,
 			Healthy:             false,
 			HandshakeAgeSeconds: -1,
@@ -154,7 +139,7 @@ func tunnelHealthEntry(h domain.TunnelHealth, now time.Time, maxAge time.Duratio
 		age = 0 // future timestamp: clock skew; treat as just-handshaked
 	}
 	healthy := age <= maxAge
-	return entry{
+	return dto.HealthEntry{
 		ID:                  h.ID,
 		Healthy:             healthy,
 		HandshakeAgeSeconds: int64(age / time.Second),
@@ -164,7 +149,7 @@ func tunnelHealthEntry(h domain.TunnelHealth, now time.Time, maxAge time.Duratio
 // aggregateStatus derives the overall status string from per-tunnel entries.
 // Returns "ok" when all tunnels are healthy, "down" when none are (including
 // the empty-pool case), and "degraded" otherwise.
-func aggregateStatus(entries []entry) string {
+func aggregateStatus(entries []dto.HealthEntry) string {
 	if len(entries) == 0 {
 		return "down"
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"vpntunnel/internal/gateway/httpV1/dto"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 )
 
@@ -70,16 +71,6 @@ func (noopRotator) Rotate(context.Context, bool) (RotationResult, error) {
 	return RotationResult{Outcome: RotationUnavailable}, nil
 }
 
-// rotateResponse is the JSON body for /v1/admin/rotate. Country and
-// ActiveSessions are omitted from the encoded body unless meaningful for the
-// outcome (see RotationResult), keeping the three response shapes exactly as
-// documented in CLAUDE.md/README.md.
-type rotateResponse struct {
-	Status         string `json:"status"`
-	Country        string `json:"country,omitempty"`
-	ActiveSessions *int64 `json:"active_sessions,omitempty"`
-}
-
 // rotator returns the configured Rotator, defaulting to noopRotator{} so
 // handleRotate never needs to nil-check Options.Rotator.
 func (s *Server) rotator() Rotator {
@@ -122,25 +113,25 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var resp rotateResponse
+	var resp dto.RotateResponse
 	status := http.StatusOK
 	switch result.Outcome {
 	case RotationRotated:
-		resp = rotateResponse{Status: "rotated", Country: result.Country}
+		resp = dto.RotateResponse{Status: "rotated", Country: result.Country}
 		s.log.Info("rotate: streaming tunnel rotated",
 			slog.String("request_id", reqID),
 			slog.String("country", result.Country),
 		)
 	case RotationSkippedActive:
 		active := result.ActiveSessions
-		resp = rotateResponse{Status: "skipped_active", ActiveSessions: &active}
+		resp = dto.RotateResponse{Status: "skipped_active", ActiveSessions: &active}
 		s.log.Info("rotate: skipped, sessions active",
 			slog.String("request_id", reqID),
 			slog.Int64("active_sessions", result.ActiveSessions),
 		)
 	case RotationUnavailable:
 		status = http.StatusServiceUnavailable
-		resp = rotateResponse{Status: "unavailable"}
+		resp = dto.RotateResponse{Status: "unavailable"}
 		s.log.Info("rotate: unavailable", slog.String("request_id", reqID))
 	default:
 		s.log.Error("rotate: rotator returned an unknown outcome", slog.String("request_id", reqID))

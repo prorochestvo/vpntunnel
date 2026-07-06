@@ -15,6 +15,7 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/domain"
+	"vpntunnel/internal/gateway/httpV1/dto"
 )
 
 // fakePool is a test double for tunnelPool.
@@ -58,7 +59,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "ok", body.Status)
 		require.Len(t, body.Tunnels, 3)
@@ -81,7 +82,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "down", body.Status)
 		for _, e := range body.Tunnels {
@@ -104,7 +105,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "degraded", body.Status)
 		require.Len(t, body.Tunnels, 3)
@@ -128,7 +129,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "degraded", body.Status)
 		require.Len(t, body.Tunnels, 3)
@@ -150,7 +151,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "down", body.Status)
 		require.Len(t, body.Tunnels, 1)
@@ -167,7 +168,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "down", body.Status)
 		assert.Empty(t, body.Tunnels)
@@ -216,7 +217,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 		assert.NotContains(t, raw, "upstream peer unreachable", "error message must not appear in response body")
 		assert.NotContains(t, raw, "AS31013", "ASN must not appear in response body")
 
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.Unmarshal([]byte(raw), &body))
 		assert.False(t, body.Tunnels[1].Healthy)
 		assert.Equal(t, int64(-1), body.Tunnels[1].HandshakeAgeSeconds)
@@ -309,7 +310,7 @@ func TestHealthHandler_AsyncCounts(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, 0, body.PendingJobsCount)
 		assert.Equal(t, 0, body.CompletedJobsCount)
@@ -326,7 +327,7 @@ func TestHealthHandler_AsyncCounts(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, 5, body.PendingJobsCount)
 		assert.Equal(t, 3, body.CompletedJobsCount)
@@ -344,7 +345,7 @@ func TestHealthHandler_AsyncCounts(t *testing.T) {
 
 		// tunnel is healthy → HTTP 200 must not change because of the Counts error.
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, -1, body.PendingJobsCount)
 		assert.Equal(t, -1, body.CompletedJobsCount)
@@ -362,7 +363,7 @@ func TestHealthHandler_AsyncCounts(t *testing.T) {
 
 		// tunnel is down → 503, but counts must still be in the body.
 		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, "down", body.Status)
 		assert.Equal(t, 7, body.PendingJobsCount)
@@ -384,7 +385,7 @@ func TestHealthHandler_AsyncCounts(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
-		var body healthResponse
+		var body dto.HealthResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 		assert.Equal(t, 0, body.PendingJobsCount, "pending must be 0 for zero-value counter")
 		assert.Equal(t, 0, body.CompletedJobsCount, "completed must be 0 for zero-value counter")
