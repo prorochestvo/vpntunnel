@@ -1,4 +1,4 @@
-// Package wireguard provides a tunnel.Dialer backed by a userspace WireGuard
+// Package wireguard provides a domain.Dialer backed by a userspace WireGuard
 // device (wireguard-go) routed through a gVisor netstack TUN. The dialer
 // owns the device's lifecycle and must be Close()d on shutdown.
 //
@@ -22,15 +22,15 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // compile-time assertions that WireGuardDialer satisfies all four interfaces.
 var (
-	_ tunnel.Dialer         = (*WireGuardDialer)(nil)
-	_ tunnel.DialerCloser   = (*WireGuardDialer)(nil)
-	_ tunnel.HealthReporter = (*WireGuardDialer)(nil)
-	_ tunnel.Resolver       = (*WireGuardDialer)(nil)
+	_ domain.Dialer         = (*WireGuardDialer)(nil)
+	_ domain.DialerCloser   = (*WireGuardDialer)(nil)
+	_ domain.HealthReporter = (*WireGuardDialer)(nil)
+	_ domain.Resolver       = (*WireGuardDialer)(nil)
 )
 
 // NewDialer builds the WireGuard device and brings it up administratively.
@@ -94,7 +94,7 @@ type Options struct {
 	PrivateKey string
 	// LocalAddresses are the tunnel-side IP addresses for this end.
 	LocalAddresses []netip.Addr
-	// DNSServers are the DNS resolver IPs accessible inside the tunnel.
+	// DNSServers are the DNS resolver IPs accessible inside the domain.
 	// Must be covered by AllowedIPs or DNS resolution inside the tunnel will fail.
 	DNSServers []netip.Addr
 	// MTU is the tunnel MTU, typically 1420.
@@ -104,7 +104,7 @@ type Options struct {
 	// PeerEndpoint is the peer's UDP endpoint in "host:port" form.
 	// The hostname is resolved once at NewDialer time via system DNS.
 	PeerEndpoint string
-	// AllowedIPs is the list of IP prefixes routed through the tunnel.
+	// AllowedIPs is the list of IP prefixes routed through the domain.
 	AllowedIPs []netip.Prefix
 	// PersistentKeepaliveSeconds is the keepalive interval in seconds. 0 disables.
 	PersistentKeepaliveSeconds int
@@ -116,7 +116,7 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// WireGuardDialer implements tunnel.Dialer and tunnel.DialerCloser.
+// WireGuardDialer implements domain.Dialer and domain.DialerCloser.
 // It routes all outbound connections through a userspace WireGuard device.
 // It is safe for concurrent use after construction. The caller must call
 // Close() on shutdown to release the wireguard-go goroutines and UDP port.

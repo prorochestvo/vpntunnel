@@ -1,5 +1,4 @@
-// Package tunnel defines the egress dialer interfaces used by the proxy.
-package tunnel
+package domain
 
 import "time"
 

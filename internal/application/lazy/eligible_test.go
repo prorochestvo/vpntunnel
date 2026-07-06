@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // sampleConfigs is a helper that returns a slice of fake .conf filenames
@@ -125,7 +125,7 @@ func TestNewEligibleSet(t *testing.T) {
 		assert.Equal(t, "/fake/mullvad-se-sto-wg-001.conf", path)
 
 		// an HMAC id must NOT be found
-		hmacID := tunnel.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
+		hmacID := domain.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
 		_, ok = set.Lookup(hmacID)
 		assert.False(t, ok, "streaming set must not accept HMAC id as key")
 	})
@@ -178,7 +178,7 @@ func TestNewFullSet(t *testing.T) {
 		set, err := NewFullSet(cfgs, "/fake", testHMACKey)
 		require.NoError(t, err)
 
-		hmacID := tunnel.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
+		hmacID := domain.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
 		path, ok := set.Lookup(hmacID)
 		require.True(t, ok, "full set must be found by HMAC id")
 		assert.Equal(t, "/fake/mullvad-se-sto-wg-001.conf", path)
@@ -200,7 +200,7 @@ func TestNewFullSet(t *testing.T) {
 		set, err := NewFullSet(cfgs, "/fake", testHMACKey)
 		require.NoError(t, err)
 
-		hmacID := tunnel.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
+		hmacID := domain.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
 		assert.True(t, set.IsEligible(hmacID), "HMAC id must be eligible")
 		assert.False(t, set.IsEligible("mullvad-se-sto-wg-001"), "basename must not be eligible on full set")
 	})
@@ -226,15 +226,15 @@ func TestNewFullSet(t *testing.T) {
 		}
 
 		seEntry := byBasename["mullvad-se-sto-wg-001"]
-		assert.Equal(t, tunnel.TunnelID(testHMACKey, "mullvad-se-sto-wg-001"), seEntry.ID)
+		assert.Equal(t, domain.TunnelID(testHMACKey, "mullvad-se-sto-wg-001"), seEntry.ID)
 		assert.Equal(t, "se", seEntry.Country)
 
 		deEntry := byBasename["mullvad-de-fra-wg-001"]
-		assert.Equal(t, tunnel.TunnelID(testHMACKey, "mullvad-de-fra-wg-001"), deEntry.ID)
+		assert.Equal(t, domain.TunnelID(testHMACKey, "mullvad-de-fra-wg-001"), deEntry.ID)
 		assert.Equal(t, "de", deEntry.Country)
 
 		unparseable := byBasename["unparseable-123-wg-001"]
-		assert.Equal(t, tunnel.TunnelID(testHMACKey, "unparseable-123-wg-001"), unparseable.ID)
+		assert.Equal(t, domain.TunnelID(testHMACKey, "unparseable-123-wg-001"), unparseable.ID)
 		assert.Equal(t, "", unparseable.Country, "unparseable basename must yield empty Country")
 
 		// verify stable order: must match rawConfigs order
@@ -252,16 +252,16 @@ func TestNewFullSet(t *testing.T) {
 
 		// these zones would be excluded by a {us,gb} country filter but must be
 		// present in the full set so on-demand can route to any discovered zone.
-		deID := tunnel.TunnelID(testHMACKey, "mullvad-de-fra-wg-001")
-		uaID := tunnel.TunnelID(testHMACKey, "mullvad-ua-kiv-wg-001")
+		deID := domain.TunnelID(testHMACKey, "mullvad-de-fra-wg-001")
+		uaID := domain.TunnelID(testHMACKey, "mullvad-ua-kiv-wg-001")
 		_, ok := set.Lookup(deID)
 		assert.True(t, ok, "de-fra zone must be routable via the full set")
 		_, ok = set.Lookup(uaID)
 		assert.True(t, ok, "ua-kiv zone must be routable via the full set")
 
 		// zones that are also in {us,gb} must still be present.
-		usID := tunnel.TunnelID(testHMACKey, "mullvad-us-nyc-wg-001")
-		gbID := tunnel.TunnelID(testHMACKey, "mullvad-gb-lon-wg-001")
+		usID := domain.TunnelID(testHMACKey, "mullvad-us-nyc-wg-001")
+		gbID := domain.TunnelID(testHMACKey, "mullvad-gb-lon-wg-001")
 		_, ok = set.Lookup(usID)
 		assert.True(t, ok)
 		_, ok = set.Lookup(gbID)
@@ -286,7 +286,7 @@ func TestNewFullSet(t *testing.T) {
 		set, err := NewFullSet(cfgs, "/opt/vpntunnel/configs", testHMACKey)
 		require.NoError(t, err)
 
-		hmacID := tunnel.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
+		hmacID := domain.TunnelID(testHMACKey, "mullvad-se-sto-wg-001")
 		path, ok := set.Lookup(hmacID)
 		require.True(t, ok)
 		assert.Equal(t, "/opt/vpntunnel/configs/mullvad-se-sto-wg-001.conf", path)

@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // DeviceBuilderFn constructs one live DialerCloser from a config path. The
@@ -25,11 +25,11 @@ import (
 // config parsing. For a seam at the post-parse level (given an already-parsed
 // config, build a device — used to verify parsed options in tests), see
 // BuilderFn and BuildDialer.
-type DeviceBuilderFn func(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (tunnel.DialerCloser, error)
+type DeviceBuilderFn func(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (domain.DialerCloser, error)
 
 // DefaultDeviceBuilder is the production DeviceBuilderFn. It calls BuildDialer
 // with the DefaultBuilder as the wireguard factory.
-func DefaultDeviceBuilder(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (tunnel.DialerCloser, error) {
+func DefaultDeviceBuilder(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (domain.DialerCloser, error) {
 	return BuildDialer(ctx, configPath, configDir, opLog, nil)
 }
 
@@ -171,7 +171,7 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 }
 
 // StreamingSupervisor owns exactly one live streaming WireGuard device for the
-// process lifetime. It exposes a tunnel.Dialer whose DialContext delegates to
+// process lifetime. It exposes a domain.Dialer whose DialContext delegates to
 // the current live device under an RWMutex swap — in-flight connections to the
 // old device die naturally when the device is closed; new dials get the new
 // device (RESOLVED #5: no drain-before-close).
@@ -211,9 +211,9 @@ type StreamingSupervisor struct {
 
 	// mu guards device, deviceID, and reporter.
 	mu       sync.RWMutex
-	device   tunnel.DialerCloser
+	device   domain.DialerCloser
 	deviceID string
-	reporter tunnel.HealthReporter
+	reporter domain.HealthReporter
 
 	// stopOnce ensures Close/Stop tears down the device exactly once.
 	stopOnce sync.Once
@@ -230,7 +230,7 @@ type StreamingSupervisor struct {
 	rotateCh chan rotateReq
 }
 
-// DialContext implements tunnel.Dialer. It delegates to the current live device
+// DialContext implements domain.Dialer. It delegates to the current live device
 // under a read lock. If no device is currently live (mid-backoff after a failure)
 // it returns a publicerror so the proxy listener can surface a clean error.
 func (s *StreamingSupervisor) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -267,17 +267,17 @@ func (s *StreamingSupervisor) Stop() {
 // The returned TunnelHealth.Err is non-nil when the HealthReporter itself
 // failed to query its transport. Callers must not log TunnelHealth.Err verbatim
 // in external responses (CLAUDE.md: never expose Err text in the health body).
-func (s *StreamingSupervisor) LiveHealth() (tunnel.TunnelHealth, bool) {
+func (s *StreamingSupervisor) LiveHealth() (domain.TunnelHealth, bool) {
 	s.mu.RLock()
 	id := s.deviceID
 	rep := s.reporter
 	s.mu.RUnlock()
 
 	if rep == nil {
-		return tunnel.TunnelHealth{}, false
+		return domain.TunnelHealth{}, false
 	}
 	hs, err := rep.LastHandshake()
-	return tunnel.TunnelHealth{ID: id, LastHandshake: hs, Err: err}, true
+	return domain.TunnelHealth{ID: id, LastHandshake: hs, Err: err}, true
 }
 
 // RotateIfIdle asks the loop goroutine to perform a graceful streaming
@@ -529,9 +529,9 @@ func (s *StreamingSupervisor) handleRotate(loopCtx context.Context, req rotateRe
 	s.device, s.deviceID, s.reporter = newDev, id, rep // swap in — no re-check (adding, not tearing down)
 	s.mu.Unlock()
 
-	newCountry := strings.ToLower(tunnel.CountryFromID(id))
+	newCountry := strings.ToLower(domain.CountryFromID(id))
 	s.logger().Info("streaming supervisor: rotated tunnel",
-		slog.String("old_country", strings.ToLower(tunnel.CountryFromID(oldID))),
+		slog.String("old_country", strings.ToLower(domain.CountryFromID(oldID))),
 		slog.String("new_country", newCountry),
 		slog.String("new_tunnel_id", id),
 	)
@@ -541,7 +541,7 @@ func (s *StreamingSupervisor) handleRotate(loopCtx context.Context, req rotateRe
 
 // build calls s.deviceBuilder to create a live DialerCloser and casts the
 // result to HealthReporter. Returns a plain error on failure.
-func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (tunnel.DialerCloser, string, tunnel.HealthReporter, error) {
+func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (domain.DialerCloser, string, domain.HealthReporter, error) {
 	id := tunnelIDFromPath(configPath)
 
 	s.logger().Info("streaming supervisor: building tunnel",
@@ -558,7 +558,7 @@ func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (tun
 		return nil, "", nil, err
 	}
 
-	rep, _ := d.(tunnel.HealthReporter)
+	rep, _ := d.(domain.HealthReporter)
 	return d, id, rep, nil
 }
 
@@ -566,7 +566,7 @@ func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (tun
 // must already have been closed before calling swapDevice; this function does
 // NOT close it (caller's responsibility to enforce the "close old before new
 // build" invariant).
-func (s *StreamingSupervisor) swapDevice(d tunnel.DialerCloser, id string, rep tunnel.HealthReporter) {
+func (s *StreamingSupervisor) swapDevice(d domain.DialerCloser, id string, rep domain.HealthReporter) {
 	s.mu.Lock()
 	s.device = d
 	s.deviceID = id
@@ -601,7 +601,7 @@ func (s *StreamingSupervisor) shutdown() {
 
 // isHealthy queries the HealthReporter and returns true when the handshake
 // age is within HandshakeMaxAge. reason is a short enum string for logging.
-func (s *StreamingSupervisor) isHealthy(rep tunnel.HealthReporter) (bool, string) {
+func (s *StreamingSupervisor) isHealthy(rep domain.HealthReporter) (bool, string) {
 	if rep == nil {
 		// no HealthReporter — treat as healthy so we never tear down a device
 		// that doesn't expose health (e.g. a test fake without health support).
@@ -633,11 +633,11 @@ func (s *StreamingSupervisor) logger() *slog.Logger {
 // already made d the live device, with context.Background() rather than the
 // supervisor's run ctx: Notify never blocks, so the send is fire-and-forget
 // and outlives any single call's context.
-func (s *StreamingSupervisor) notifyChange(title, id string, d tunnel.Dialer) {
+func (s *StreamingSupervisor) notifyChange(title, id string, d domain.Dialer) {
 	s.notifier.Notify(context.Background(), notify.Event{
 		Source:   notify.SourceStreaming,
 		Title:    title,
-		Country:  strings.ToLower(tunnel.CountryFromID(id)),
+		Country:  strings.ToLower(domain.CountryFromID(id)),
 		Filename: id + ".conf",
 		Dialer:   d,
 	})

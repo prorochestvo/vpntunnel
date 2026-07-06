@@ -7,7 +7,7 @@ package notify
 import (
 	"context"
 
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // SourceStreaming and SourceOnDemand identify which tunnel-management
@@ -38,7 +38,7 @@ type Event struct {
 	// Dialer is the freshly built tunnel dialer, captured for the
 	// best-effort exit-IP probe. May be nil, in which case the probe is
 	// skipped.
-	Dialer tunnel.Dialer
+	Dialer domain.Dialer
 }
 
 // Notifier reports tunnel-change events to an operator-facing channel.

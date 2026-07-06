@@ -14,12 +14,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
-var _ tunnel.Dialer = (*fakeDialer)(nil)
+var _ domain.Dialer = (*fakeDialer)(nil)
 
-// fakeDialer is a tunnel.Dialer test double. When err is set, DialContext
+// fakeDialer is a domain.Dialer test double. When err is set, DialContext
 // always fails; otherwise it dials address for real over loopback, letting
 // tests point it at an httptest.Server without a real WireGuard device.
 type fakeDialer struct {

@@ -26,7 +26,6 @@ import (
 	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // ErrFallbackMessage is the generic error body sent to clients when an
@@ -71,7 +70,7 @@ func NewProxyService(opts ProxyServiceOptions) *ProxyService {
 // and Verifier (nil disables auth).
 type ProxyServiceOptions struct {
 	// Dialer routes outbound TCP connections. Required.
-	Dialer tunnel.Dialer
+	Dialer domain.Dialer
 	// Access is the rotating access log writer.
 	Access *observability.AccessLogger
 	// OpLog is the operational slog logger. If nil, slog.Default() is used.
@@ -87,7 +86,7 @@ type ProxyServiceOptions struct {
 // ProxyService implements forward HTTP proxying (HandleHTTP) and HTTPS
 // tunnelling (HandleCONNECT). Methods are safe for concurrent use.
 type ProxyService struct {
-	dialer      tunnel.Dialer
+	dialer      domain.Dialer
 	verifier    auth.Verifier
 	httpClient  *http.Client
 	access      *observability.AccessLogger

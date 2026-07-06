@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // NewLiveHealthModel returns a LiveHealthModel that aggregates health from the
@@ -18,7 +18,7 @@ func NewLiveHealthModel(streaming liveHealther, onDemand liveHealther) *LiveHeal
 // safety is delegated to the source's LiveHealth().
 //
 // Response shape (CLAUDE.md invariant): the returned slices contain
-// tunnel.TunnelHealth values; the health handler projects them to the fixed
+// domain.TunnelHealth values; the health handler projects them to the fixed
 // JSON body shape. This type never adds fields or exposes Err text in any
 // handler-visible output.
 type LiveHealthModel struct {
@@ -32,7 +32,7 @@ type LiveHealthModel struct {
 type liveHealther interface {
 	// LiveHealth returns a health snapshot of the currently live device.
 	// ok is false when no device is live.
-	LiveHealth() (tunnel.TunnelHealth, bool)
+	LiveHealth() (domain.TunnelHealth, bool)
 }
 
 // Reports returns the live health snapshot for the health handler.
@@ -40,19 +40,19 @@ type liveHealther interface {
 // Ordering: streaming first, then on-demand IFF one is currently live. A
 // streaming device with no live on-demand returns a single-element slice; both
 // live returns two elements.
-func (m *LiveHealthModel) Reports() []tunnel.TunnelHealth {
+func (m *LiveHealthModel) Reports() []domain.TunnelHealth {
 	streamHealth, streamOk := m.streaming.LiveHealth()
 	odHealth, odOk := m.onDemand.LiveHealth()
 
 	switch {
 	case streamOk && odOk:
-		return []tunnel.TunnelHealth{streamHealth, odHealth}
+		return []domain.TunnelHealth{streamHealth, odHealth}
 	case streamOk:
-		return []tunnel.TunnelHealth{streamHealth}
+		return []domain.TunnelHealth{streamHealth}
 	case odOk:
-		return []tunnel.TunnelHealth{odHealth}
+		return []domain.TunnelHealth{odHealth}
 	default:
-		return []tunnel.TunnelHealth{}
+		return []domain.TunnelHealth{}
 	}
 }
 

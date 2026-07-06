@@ -14,17 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // fakePool is a test double for tunnelPool.
 type fakePool struct {
-	reports []tunnel.TunnelHealth
+	reports []domain.TunnelHealth
 }
 
 var _ tunnelPool = (*fakePool)(nil)
 
-func (f *fakePool) Reports() []tunnel.TunnelHealth { return f.reports }
+func (f *fakePool) Reports() []domain.TunnelHealth { return f.reports }
 
 // stubCounter is a test double for AsyncJobCounter.
 type stubCounter struct {
@@ -46,7 +46,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 
 	t.Run("all_healthy_returns_ok_200", func(t *testing.T) {
 		t.Parallel()
-		reports := []tunnel.TunnelHealth{
+		reports := []domain.TunnelHealth{
 			{ID: "se-sto-wg-001", LastHandshake: recent},
 			{ID: "de-fra-wg-001", LastHandshake: recent},
 			{ID: "nl-ams-wg-001", LastHandshake: recent},
@@ -69,7 +69,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 
 	t.Run("none_healthy_returns_down_503", func(t *testing.T) {
 		t.Parallel()
-		reports := []tunnel.TunnelHealth{
+		reports := []domain.TunnelHealth{
 			{ID: "se-sto-wg-001", LastHandshake: time.Time{}},
 			{ID: "de-fra-wg-001", LastHandshake: time.Time{}},
 			{ID: "nl-ams-wg-001", LastHandshake: time.Time{}},
@@ -92,7 +92,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 
 	t.Run("mixed_returns_degraded_200", func(t *testing.T) {
 		t.Parallel()
-		reports := []tunnel.TunnelHealth{
+		reports := []domain.TunnelHealth{
 			{ID: "se-sto-wg-001", LastHandshake: recent},
 			{ID: "de-fra-wg-001", LastHandshake: recent},
 			{ID: "nl-ams-wg-001", LastHandshake: old},
@@ -116,7 +116,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 	t.Run("single_reporter_error_marks_unhealthy", func(t *testing.T) {
 		t.Parallel()
 		errored := errors.New("wg device closed")
-		reports := []tunnel.TunnelHealth{
+		reports := []domain.TunnelHealth{
 			{ID: "se-sto-wg-001", LastHandshake: recent},
 			{ID: "de-fra-wg-001", Err: errored},
 			{ID: "nl-ams-wg-001", LastHandshake: recent},
@@ -140,7 +140,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 
 	t.Run("zero_handshake_marks_unhealthy_with_age_minus_one", func(t *testing.T) {
 		t.Parallel()
-		reports := []tunnel.TunnelHealth{
+		reports := []domain.TunnelHealth{
 			{ID: "se-sto-wg-001", LastHandshake: time.Time{}},
 		}
 		h := NewHealthHandler(&fakePool{reports: reports}, maxAge, &stubCounter{}, testLogger(t))
@@ -202,7 +202,7 @@ func TestHealthHandler_ServeHTTP(t *testing.T) {
 	t.Run("response_omits_internal_error_text", func(t *testing.T) {
 		t.Parallel()
 		sensitiveErr := errors.New("upstream peer unreachable: AS31013")
-		reports := []tunnel.TunnelHealth{
+		reports := []domain.TunnelHealth{
 			{ID: "se-sto-wg-001", LastHandshake: recent},
 			{ID: "de-fra-wg-001", Err: sensitiveErr},
 		}
@@ -232,7 +232,7 @@ func TestTunnelHealthEntry(t *testing.T) {
 	t.Run("recent_handshake_no_err_returns_healthy", func(t *testing.T) {
 		t.Parallel()
 		ts := now.Add(-10 * time.Second)
-		h := tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: ts}
+		h := domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: ts}
 		e := tunnelHealthEntry(h, now, maxAge)
 		assert.True(t, e.Healthy)
 		assert.Equal(t, int64(10), e.HandshakeAgeSeconds)
@@ -242,7 +242,7 @@ func TestTunnelHealthEntry(t *testing.T) {
 	t.Run("old_handshake_returns_unhealthy_with_correct_age", func(t *testing.T) {
 		t.Parallel()
 		ts := now.Add(-200 * time.Second)
-		h := tunnel.TunnelHealth{ID: "de-fra-wg-001", LastHandshake: ts}
+		h := domain.TunnelHealth{ID: "de-fra-wg-001", LastHandshake: ts}
 		e := tunnelHealthEntry(h, now, maxAge)
 		assert.False(t, e.Healthy)
 		assert.Equal(t, int64(200), e.HandshakeAgeSeconds)
@@ -250,7 +250,7 @@ func TestTunnelHealthEntry(t *testing.T) {
 
 	t.Run("zero_handshake_returns_unhealthy_with_age_minus_one", func(t *testing.T) {
 		t.Parallel()
-		h := tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Time{}}
+		h := domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Time{}}
 		e := tunnelHealthEntry(h, now, maxAge)
 		assert.False(t, e.Healthy)
 		assert.Equal(t, int64(-1), e.HandshakeAgeSeconds)
@@ -259,7 +259,7 @@ func TestTunnelHealthEntry(t *testing.T) {
 	t.Run("non_nil_err_returns_unhealthy_regardless_of_handshake_freshness", func(t *testing.T) {
 		t.Parallel()
 		ts := now.Add(-5 * time.Second) // very fresh, but Err is set
-		h := tunnel.TunnelHealth{ID: "nl-ams-wg-001", LastHandshake: ts, Err: errors.New("device closed")}
+		h := domain.TunnelHealth{ID: "nl-ams-wg-001", LastHandshake: ts, Err: errors.New("device closed")}
 		e := tunnelHealthEntry(h, now, maxAge)
 		assert.False(t, e.Healthy)
 		assert.Equal(t, int64(-1), e.HandshakeAgeSeconds)
@@ -268,7 +268,7 @@ func TestTunnelHealthEntry(t *testing.T) {
 	t.Run("handshake_exactly_at_max_age_is_healthy", func(t *testing.T) {
 		t.Parallel()
 		ts := now.Add(-maxAge) // age == maxAge exactly; <= maxAge is true
-		h := tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: ts}
+		h := domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: ts}
 		e := tunnelHealthEntry(h, now, maxAge)
 		assert.True(t, e.Healthy)
 		assert.Equal(t, int64(maxAge/time.Second), e.HandshakeAgeSeconds)
@@ -277,7 +277,7 @@ func TestTunnelHealthEntry(t *testing.T) {
 	t.Run("future_handshake_clamped_to_zero_age_healthy", func(t *testing.T) {
 		t.Parallel()
 		ts := now.Add(5 * time.Second)
-		h := tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: ts}
+		h := domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: ts}
 		e := tunnelHealthEntry(h, now, maxAge)
 		assert.True(t, e.Healthy)
 		assert.Equal(t, int64(0), e.HandshakeAgeSeconds)
@@ -292,11 +292,11 @@ func TestHealthHandler_AsyncCounts(t *testing.T) {
 	recent := now.Add(-10 * time.Second)
 
 	// healthyPool returns one healthy tunnel so the response is 200/ok.
-	healthyPool := &fakePool{reports: []tunnel.TunnelHealth{
+	healthyPool := &fakePool{reports: []domain.TunnelHealth{
 		{ID: "se-sto-wg-001", LastHandshake: recent},
 	}}
 	// downPool returns a zero-time tunnel so the response is 503/down.
-	downPool := &fakePool{reports: []tunnel.TunnelHealth{
+	downPool := &fakePool{reports: []domain.TunnelHealth{
 		{ID: "se-sto-wg-001", LastHandshake: time.Time{}},
 	}}
 

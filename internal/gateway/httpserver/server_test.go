@@ -17,11 +17,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/gateway/httpserver"
-	"vpntunnel/internal/tunnel"
 )
 
-var _ tunnel.Dialer = (*stubDialer)(nil)
+var _ domain.Dialer = (*stubDialer)(nil)
 
 // stubDialer routes DialContext directly to net.Dial.
 type stubDialer struct{}

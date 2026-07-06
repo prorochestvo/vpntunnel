@@ -1,6 +1,11 @@
-// Package domain defines the core value types shared across the vpntunnel
-// internal packages. It has no I/O, no business logic, and no imports beyond
-// the standard library.
+// Package domain defines the core value types and egress port interfaces
+// shared across the vpntunnel internal packages. It has no I/O, no business
+// logic, and no imports beyond the standard library.
+//
+// The egress ports: callers use Dialer exclusively; implementations that own
+// resources (e.g. a userspace WireGuard device) also implement DialerCloser;
+// implementations that report tunnel health also implement HealthReporter;
+// those that support DNS resolution inside the tunnel also implement Resolver.
 package domain
 
 // RequestSummary holds the per-request fields written to the access log.

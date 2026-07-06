@@ -22,11 +22,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
-	"vpntunnel/internal/tunnel"
 )
 
 // compile-time assertions: test doubles must satisfy the interfaces they implement.
@@ -50,11 +50,11 @@ func (fakeCatalog) Entries() []lazy.CatalogEntry {
 
 // fakeLiveHealther returns a fixed TunnelHealth snapshot for the streaming supervisor fake.
 type fakeLiveHealther struct {
-	health tunnel.TunnelHealth
+	health domain.TunnelHealth
 	ok     bool
 }
 
-func (f *fakeLiveHealther) LiveHealth() (tunnel.TunnelHealth, bool) {
+func (f *fakeLiveHealther) LiveHealth() (domain.TunnelHealth, bool) {
 	return f.health, f.ok
 }
 
@@ -66,7 +66,7 @@ func (fakeZoneChecker) IsEligible(_ string) bool { return true }
 // fakeZoneRouter always returns an error so async/sync routing paths fail cleanly.
 type fakeZoneRouter struct{}
 
-func (fakeZoneRouter) Route(_ context.Context, _ string) (tunnel.Dialer, tunnel.Resolver, func(), error) {
+func (fakeZoneRouter) Route(_ context.Context, _ string) (domain.Dialer, domain.Resolver, func(), error) {
 	return nil, nil, nil, fmt.Errorf("fakeZoneRouter: not connected")
 }
 
@@ -130,7 +130,7 @@ func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*router.Optio
 	// fake live health: streaming reports se-sto-wg-001 healthy; on-demand idle.
 	now := time.Now()
 	streaming := &fakeLiveHealther{
-		health: tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: now.Add(-5 * time.Second)},
+		health: domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: now.Add(-5 * time.Second)},
 		ok:     true,
 	}
 	onDemand := &fakeLiveHealther{ok: false}
@@ -547,7 +547,7 @@ func TestServer_HTTPMode(t *testing.T) {
 		require.NoError(t, err)
 
 		streaming := &fakeLiveHealther{
-			health: tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Now().Add(-5 * time.Second)},
+			health: domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Now().Add(-5 * time.Second)},
 			ok:     true,
 		}
 		onDemand := &fakeLiveHealther{ok: false}
@@ -654,7 +654,7 @@ func startAuthServer(t *testing.T) *authServerFixture {
 
 	// fake live health: streaming reports one healthy tunnel; on-demand idle.
 	streaming := &fakeLiveHealther{
-		health: tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Now().Add(-5 * time.Second)},
+		health: domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Now().Add(-5 * time.Second)},
 		ok:     true,
 	}
 	onDemand := &fakeLiveHealther{ok: false}

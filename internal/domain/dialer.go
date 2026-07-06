@@ -1,9 +1,4 @@
-// Package tunnel defines the egress dialer interfaces used by the proxy.
-// Callers use Dialer exclusively; implementations that own resources (e.g. a
-// userspace WireGuard device) also implement DialerCloser; implementations
-// that report tunnel health also implement HealthReporter; implementations
-// that support DNS resolution inside the tunnel also implement Resolver.
-package tunnel
+package domain
 
 import (
 	"context"

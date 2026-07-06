@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/ipdeny"
-	"vpntunnel/internal/tunnel"
 )
 
 // NewTunnelForwarder returns a forwarder that routes outbound requests through
@@ -50,8 +50,8 @@ func (f *tunnelForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	tunnelID string,
-	dialer tunnel.Dialer,
-	resolver tunnel.Resolver,
+	dialer domain.Dialer,
+	resolver domain.Resolver,
 ) error {
 	// recover from any panic; map to 500 internal_error so the request does not hang.
 	defer func() {
@@ -100,8 +100,8 @@ func (f *tunnelForwarder) ForwardRaw(
 	ctx context.Context,
 	req *http.Request,
 	tunnelID string,
-	dialer tunnel.Dialer,
-	resolver tunnel.Resolver,
+	dialer domain.Dialer,
+	resolver domain.Resolver,
 ) (asyncjob.UpstreamResponse, error) {
 	transport := f.transportFor(tunnelID, dialer, resolver)
 
@@ -154,8 +154,8 @@ func (f *tunnelForwarder) classifyRawError(err error) error {
 
 // transportFor returns the cached *http.Transport for tunnelID, building and
 // storing one on first access. The transport's DialContext enforces the IP
-// deny-list before dialing through the tunnel.
-func (f *tunnelForwarder) transportFor(id string, dialer tunnel.Dialer, resolver tunnel.Resolver) *http.Transport {
+// deny-list before dialing through the domain.
+func (f *tunnelForwarder) transportFor(id string, dialer domain.Dialer, resolver domain.Resolver) *http.Transport {
 	if existing, ok := f.transports.Load(id); ok {
 		return existing.(*http.Transport)
 	}
@@ -181,7 +181,7 @@ func (f *tunnelForwarder) transportFor(id string, dialer tunnel.Dialer, resolver
 // would otherwise reach into private space. .Unmap() is called on each
 // resolved address so IPv4-mapped IPv6 addresses (::ffff:10.x.x.x) correctly
 // match their IPv4 entries in DefaultDeny.
-func (f *tunnelForwarder) denyAwareDial(dialer tunnel.Dialer, resolver tunnel.Resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
+func (f *tunnelForwarder) denyAwareDial(dialer domain.Dialer, resolver domain.Resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
@@ -278,7 +278,7 @@ const forwardRawMaxBody = int64(10 * 1024 * 1024) // 10 MiB
 var errDenyList = errors.New("ipdeny: target resolves to a denied address")
 
 // hopByHopHeaders are stripped from upstream responses per RFC 7230 §6.1.
-// Duplicated here (not extracted from internal/service/proxy.go) because the
+// Duplicated here (not extracted from internal/application/proxy.go) because the
 // two sites must be free to diverge in v1: the forward proxy on 7788 strips
 // these on inbound requests; the API on 8888 strips them on outbound responses.
 // The list is small and stable.

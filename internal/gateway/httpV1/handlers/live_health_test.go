@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // compile-time assertion: fakeLiveHealther must satisfy liveHealther.
@@ -15,16 +15,16 @@ var _ liveHealther = (*fakeLiveHealther)(nil)
 
 // fakeLiveHealther is a test double for liveHealther.
 type fakeLiveHealther struct {
-	health tunnel.TunnelHealth
+	health domain.TunnelHealth
 	ok     bool
 }
 
-func (f *fakeLiveHealther) LiveHealth() (tunnel.TunnelHealth, bool) {
+func (f *fakeLiveHealther) LiveHealth() (domain.TunnelHealth, bool) {
 	return f.health, f.ok
 }
 
-func makeHealth(id string, hs time.Time) tunnel.TunnelHealth {
-	return tunnel.TunnelHealth{ID: id, LastHandshake: hs}
+func makeHealth(id string, hs time.Time) domain.TunnelHealth {
+	return domain.TunnelHealth{ID: id, LastHandshake: hs}
 }
 
 func TestLiveHealthModel_Reports(t *testing.T) {
@@ -86,7 +86,7 @@ func TestLiveHealthModel_Reports(t *testing.T) {
 
 		hs := now.Truncate(time.Second)
 		streaming := &fakeLiveHealther{
-			health: tunnel.TunnelHealth{ID: "stream-se", LastHandshake: hs, Err: nil},
+			health: domain.TunnelHealth{ID: "stream-se", LastHandshake: hs, Err: nil},
 			ok:     true,
 		}
 		onDemand := &fakeLiveHealther{ok: false}
@@ -121,7 +121,7 @@ func TestCountryFromTunnelID(t *testing.T) {
 		tc := tc
 		t.Run(tc.id, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, tunnel.CountryFromID(tc.id))
+			assert.Equal(t, tc.want, domain.CountryFromID(tc.id))
 		})
 	}
 }

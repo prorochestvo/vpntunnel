@@ -13,17 +13,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/notify"
-	"vpntunnel/internal/tunnel"
 )
 
 // compile-time checks: the fakes satisfy the required interfaces.
-var _ tunnel.DialerCloser = &stubDevice{}
-var _ tunnel.HealthReporter = &stubDevice{}
+var _ domain.DialerCloser = &stubDevice{}
+var _ domain.HealthReporter = &stubDevice{}
 var _ Clock = &fakeClock{}
 var _ notify.Notifier = (*fakeNotifier)(nil)
-var _ tunnel.DialerCloser = (*raceCheckDevice)(nil)
-var _ tunnel.HealthReporter = (*raceCheckDevice)(nil)
+var _ domain.DialerCloser = (*raceCheckDevice)(nil)
+var _ domain.HealthReporter = (*raceCheckDevice)(nil)
 
 // stubDevice is a controllable DialerCloser + HealthReporter used in supervisor
 // tests. It records Close calls and exposes a settable LastHandshake.
@@ -222,7 +222,7 @@ func awaitNotifierLen(t *testing.T, f *fakeNotifier, n int, timeout time.Duratio
 // to *devices (guarded by mu). When *buildErr is non-nil the fn returns that
 // error without creating a device. The device's initial handshake is hs.
 func stubDeviceBuilderFn(mu *sync.Mutex, devices *[]*stubDevice, buildErr *error, hs time.Time) DeviceBuilderFn {
-	return func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+	return func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 		if *buildErr != nil {
 			return nil, *buildErr
 		}
@@ -237,8 +237,8 @@ func stubDeviceBuilderFn(mu *sync.Mutex, devices *[]*stubDevice, buildErr *error
 // counterDeviceBuilderFn wraps a no-arg factory into a DeviceBuilderFn,
 // ignoring config path, configDir, and logger. Useful when build behaviour is
 // driven by a call counter.
-func counterDeviceBuilderFn(f func() (tunnel.DialerCloser, error)) DeviceBuilderFn {
-	return func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+func counterDeviceBuilderFn(f func() (domain.DialerCloser, error)) DeviceBuilderFn {
+	return func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 		return f()
 	}
 }
@@ -471,7 +471,7 @@ func TestStreamingSupervisor_reconnect(t *testing.T) {
 		var events []string
 		var devices []*stubDevice
 
-		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 			base := &stubDevice{handshake: epoch.Add(-(maxAge + time.Second))}
 			d := &orderedDevice{
 				stubDevice: base,
@@ -659,7 +659,7 @@ func TestStreamingSupervisor_backoff(t *testing.T) {
 		var mu sync.Mutex
 		var devices []*stubDevice
 
-		fn := counterDeviceBuilderFn(func() (tunnel.DialerCloser, error) {
+		fn := counterDeviceBuilderFn(func() (domain.DialerCloser, error) {
 			n := atomic.AddInt32(&buildCount, 1)
 			if n == 1 {
 				// first build: succeed with stale handshake so the poll tears it down.
@@ -739,7 +739,7 @@ func TestStreamingSupervisor_backoff(t *testing.T) {
 		var mu sync.Mutex
 		var devices []*stubDevice
 
-		fn := counterDeviceBuilderFn(func() (tunnel.DialerCloser, error) {
+		fn := counterDeviceBuilderFn(func() (domain.DialerCloser, error) {
 			n := atomic.AddInt32(&buildCount, 1)
 			var hs time.Time
 			if n == 1 {
@@ -1070,7 +1070,7 @@ func TestStreamingSupervisor_Notifier(t *testing.T) {
 		epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 		clk := newFakeClock(epoch)
 		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
-		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 			return &stubDevice{handshake: epoch.Add(-time.Second)}, nil
 		})
 
@@ -1277,7 +1277,7 @@ func TestStreamingSupervisor_RotateIfIdle(t *testing.T) {
 		var buildCount int32
 		var mu sync.Mutex
 		var devices []*stubDevice
-		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 			n := atomic.AddInt32(&buildCount, 1)
 			if n == 2 {
 				// the rotation's post-settle rebuild fails; the first (Start)
@@ -1472,7 +1472,7 @@ func TestStreamingSupervisor_RotateIfIdle(t *testing.T) {
 		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
 
 		var violated atomic.Bool
-		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 			return &raceCheckDevice{stubDevice: &stubDevice{handshake: time.Now()}, violated: &violated}, nil
 		})
 
@@ -1539,7 +1539,7 @@ func TestStreamingSupervisor_RotateIfIdle(t *testing.T) {
 		t.Parallel()
 		es := supervisorEligibleSet(t, "/fakedir", "se-sto-wg-001")
 
-		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+		fn := DeviceBuilderFn(func(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 			return &stubDevice{handshake: time.Now()}, nil
 		})
 

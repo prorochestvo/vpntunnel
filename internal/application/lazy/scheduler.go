@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // PrefixUnknownZone and PrefixZoneBringUpFailure are the leading tokens of the
@@ -142,7 +142,7 @@ type OnDemandScheduler struct {
 	// LiveHealth. Using a mutex (not atomic) because reporter is an interface.
 	snapMu       sync.RWMutex
 	snapID       string
-	snapReporter tunnel.HealthReporter
+	snapReporter domain.HealthReporter
 }
 
 // Route acquires a dialer/resolver for the given tunnel and returns a release
@@ -151,7 +151,7 @@ type OnDemandScheduler struct {
 //
 // Returns a *publicerror.Error for unknown tunnels or device bring-up failures.
 // Returns ctx.Err() when ctx is cancelled while waiting.
-func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer tunnel.Dialer, resolver tunnel.Resolver, release func(), err error) {
+func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer domain.Dialer, resolver domain.Resolver, release func(), err error) {
 	configPath, ok := s.eligible.Lookup(tunnelID)
 	if !ok {
 		// tunnelID is an opaque string (HMAC id or basename) chosen by the operator
@@ -199,17 +199,17 @@ func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer 
 // The returned TunnelHealth.Err is non-nil when the HealthReporter failed to
 // query its transport. Callers must not log TunnelHealth.Err verbatim in
 // external responses (CLAUDE.md: never expose Err text in the health body).
-func (s *OnDemandScheduler) LiveHealth() (tunnel.TunnelHealth, bool) {
+func (s *OnDemandScheduler) LiveHealth() (domain.TunnelHealth, bool) {
 	s.snapMu.RLock()
 	id := s.snapID
 	rep := s.snapReporter
 	s.snapMu.RUnlock()
 
 	if rep == nil {
-		return tunnel.TunnelHealth{}, false
+		return domain.TunnelHealth{}, false
 	}
 	hs, err := rep.LastHandshake()
-	return tunnel.TunnelHealth{ID: id, LastHandshake: hs, Err: err}, true
+	return domain.TunnelHealth{ID: id, LastHandshake: hs, Err: err}, true
 }
 
 // Run is the device lifecycle loop. It must be called exactly once, in a
@@ -220,8 +220,8 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 
 	var (
 		currentZone     string
-		currentDevice   tunnel.DialerCloser
-		currentResolver tunnel.Resolver
+		currentDevice   domain.DialerCloser
+		currentResolver domain.Resolver
 
 		activeJobs int
 
@@ -243,19 +243,19 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 		settleTimer      <-chan time.Time
 	)
 
-	setSnapshot := func(id string, rep tunnel.HealthReporter) {
+	setSnapshot := func(id string, rep domain.HealthReporter) {
 		s.snapMu.Lock()
 		s.snapID = id
 		s.snapReporter = rep
 		s.snapMu.Unlock()
 	}
 
-	grant := func(req routeRequest, d tunnel.DialerCloser, res tunnel.Resolver) {
+	grant := func(req routeRequest, d domain.DialerCloser, res domain.Resolver) {
 		activeJobs++
 		req.replyCh <- routeReply{dialer: d, resolver: res}
 	}
 
-	grantAll := func(reqs []routeRequest, d tunnel.DialerCloser, res tunnel.Resolver) {
+	grantAll := func(reqs []routeRequest, d domain.DialerCloser, res domain.Resolver) {
 		for _, req := range reqs {
 			grant(req, d, res)
 		}
@@ -369,7 +369,7 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 
 	// finishSwitch builds the settling tunnel's device (settleTimer has fired). On
 	// success it grants the whole batch; on bring-up failure it fails the whole
-	// batch with a publicerror and advances to the next pending tunnel.
+	// batch with a publicerror and advances to the next pending domain.
 	finishSwitch := func() {
 		settling = false
 		settleTimer = nil
@@ -392,8 +392,8 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 			return
 		}
 
-		res, _ := d.(tunnel.Resolver)
-		rep, _ := d.(tunnel.HealthReporter)
+		res, _ := d.(domain.Resolver)
+		rep, _ := d.(domain.HealthReporter)
 		currentZone = tunnelID
 		currentDevice = d
 		currentResolver = res
@@ -518,9 +518,9 @@ func (s *OnDemandScheduler) logger() *slog.Logger {
 // the .conf basename, so the filename/country must be derived from
 // configPath instead. It is called only on the success branch of
 // finishSwitch, after the new device is already live.
-func (s *OnDemandScheduler) notifyChange(configPath string, d tunnel.Dialer) {
+func (s *OnDemandScheduler) notifyChange(configPath string, d domain.Dialer) {
 	base := filepath.Base(configPath)
-	cc := strings.ToLower(tunnel.CountryFromID(strings.TrimSuffix(base, ".conf")))
+	cc := strings.ToLower(domain.CountryFromID(strings.TrimSuffix(base, ".conf")))
 	title := "on-demand: " + cc
 	if cc == "" {
 		title = "on-demand: " + base
@@ -544,8 +544,8 @@ type routeRequest struct {
 
 // routeReply is the Run loop's response to a routeRequest.
 type routeReply struct {
-	dialer   tunnel.Dialer
-	resolver tunnel.Resolver
+	dialer   domain.Dialer
+	resolver domain.Resolver
 	err      error
 }
 

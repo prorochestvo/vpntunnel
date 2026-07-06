@@ -1128,7 +1128,7 @@ func TestLoad(t *testing.T) {
 		var pe *publicerror.Error
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
-			"config.api.async: moved to api.vpn.async (only storage_path survives; max_concurrent_jobs/pending_timeout/complete_ttl/tombstone_ttl are now built-in constants in internal/asyncjob)",
+			"config.api.async: moved to api.vpn.async (only storage_path survives; max_concurrent_jobs/pending_timeout/complete_ttl/tombstone_ttl are now built-in constants in internal/application/asyncjob)",
 			pe.Details(),
 		)
 	})
@@ -1152,7 +1152,7 @@ func TestLoad(t *testing.T) {
 		var pe *publicerror.Error
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
-			"config.api.vpn.async.max_concurrent_jobs: removed; now a built-in constant in internal/asyncjob",
+			"config.api.vpn.async.max_concurrent_jobs: removed; now a built-in constant in internal/application/asyncjob",
 			pe.Details(),
 		)
 	})
@@ -1176,7 +1176,7 @@ func TestLoad(t *testing.T) {
 		var pe *publicerror.Error
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
-			"config.api.vpn.async.pending_timeout: removed; now a built-in constant in internal/asyncjob",
+			"config.api.vpn.async.pending_timeout: removed; now a built-in constant in internal/application/asyncjob",
 			pe.Details(),
 		)
 	})
@@ -1200,7 +1200,7 @@ func TestLoad(t *testing.T) {
 		var pe *publicerror.Error
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
-			"config.api.vpn.async.complete_ttl: removed; now a built-in constant in internal/asyncjob",
+			"config.api.vpn.async.complete_ttl: removed; now a built-in constant in internal/application/asyncjob",
 			pe.Details(),
 		)
 	})
@@ -1224,7 +1224,7 @@ func TestLoad(t *testing.T) {
 		var pe *publicerror.Error
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
-			"config.api.vpn.async.tombstone_ttl: removed; now a built-in constant in internal/asyncjob",
+			"config.api.vpn.async.tombstone_ttl: removed; now a built-in constant in internal/application/asyncjob",
 			pe.Details(),
 		)
 	})

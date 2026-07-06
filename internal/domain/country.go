@@ -1,4 +1,4 @@
-package tunnel
+package domain
 
 import "strings"
 

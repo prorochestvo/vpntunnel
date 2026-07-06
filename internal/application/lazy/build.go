@@ -8,20 +8,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/wireguard"
 	"vpntunnel/internal/infrastructure/wireguard/wgconf"
-	"vpntunnel/internal/tunnel"
 )
 
 // BuilderFn constructs one live dialer from a parsed config. The production
 // implementation calls wireguard.NewDialer; tests inject a fake that returns an
 // in-memory dialer. The function must not retain parsed after it returns.
-type BuilderFn func(ctx context.Context, parsed *wgconf.ParsedConfig, opLog *slog.Logger) (tunnel.DialerCloser, error)
+type BuilderFn func(ctx context.Context, parsed *wgconf.ParsedConfig, opLog *slog.Logger) (domain.DialerCloser, error)
 
 // DefaultBuilder is the production BuilderFn. It maps a ParsedConfig to
 // wireguard.Options and calls wireguard.NewDialer. Tests must inject a fake via
 // BuildDialer's optional override rather than calling this directly.
-func DefaultBuilder(ctx context.Context, parsed *wgconf.ParsedConfig, opLog *slog.Logger) (tunnel.DialerCloser, error) {
+func DefaultBuilder(ctx context.Context, parsed *wgconf.ParsedConfig, opLog *slog.Logger) (domain.DialerCloser, error) {
 	localAddrs := make([]netip.Addr, len(parsed.Interface.Addresses))
 	for i, prefix := range parsed.Interface.Addresses {
 		localAddrs[i] = prefix.Addr()
@@ -42,7 +42,7 @@ func DefaultBuilder(ctx context.Context, parsed *wgconf.ParsedConfig, opLog *slo
 }
 
 // BuildDialer resolves configPath against configDir when relative, parses the
-// wg-quick .conf file, and builds a live tunnel.DialerCloser using fn (or
+// wg-quick .conf file, and builds a live domain.DialerCloser using fn (or
 // DefaultBuilder when fn is nil). On success it logs tunnel_id, peer_endpoint,
 // and local_address — never key material. On failure it returns a plain wrapped
 // error.
@@ -50,7 +50,7 @@ func DefaultBuilder(ctx context.Context, parsed *wgconf.ParsedConfig, opLog *slo
 // This is the single choke point that both the streaming supervisor and the
 // on-demand scheduler call to bring a WireGuard device up. It enforces nothing
 // about the two-device cap; callers own that invariant.
-func BuildDialer(ctx context.Context, configPath, configDir string, opLog *slog.Logger, fn BuilderFn) (tunnel.DialerCloser, error) {
+func BuildDialer(ctx context.Context, configPath, configDir string, opLog *slog.Logger, fn BuilderFn) (domain.DialerCloser, error) {
 	if fn == nil {
 		fn = DefaultBuilder
 	}

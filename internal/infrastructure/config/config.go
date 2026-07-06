@@ -162,7 +162,7 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 				return Config{}, err
 			}
 			if err := probeRemovedKey(apiProbe, "async",
-				"config.api.async: moved to api.vpn.async (only storage_path survives; max_concurrent_jobs/pending_timeout/complete_ttl/tombstone_ttl are now built-in constants in internal/asyncjob)"); err != nil {
+				"config.api.async: moved to api.vpn.async (only storage_path survives; max_concurrent_jobs/pending_timeout/complete_ttl/tombstone_ttl are now built-in constants in internal/application/asyncjob)"); err != nil {
 				return Config{}, err
 			}
 
@@ -181,19 +181,19 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 							slog.String("err", err.Error()))
 					} else {
 						if err := probeRemovedKey(asyncProbe, "max_concurrent_jobs",
-							"config.api.vpn.async.max_concurrent_jobs: removed; now a built-in constant in internal/asyncjob"); err != nil {
+							"config.api.vpn.async.max_concurrent_jobs: removed; now a built-in constant in internal/application/asyncjob"); err != nil {
 							return Config{}, err
 						}
 						if err := probeRemovedKey(asyncProbe, "pending_timeout",
-							"config.api.vpn.async.pending_timeout: removed; now a built-in constant in internal/asyncjob"); err != nil {
+							"config.api.vpn.async.pending_timeout: removed; now a built-in constant in internal/application/asyncjob"); err != nil {
 							return Config{}, err
 						}
 						if err := probeRemovedKey(asyncProbe, "complete_ttl",
-							"config.api.vpn.async.complete_ttl: removed; now a built-in constant in internal/asyncjob"); err != nil {
+							"config.api.vpn.async.complete_ttl: removed; now a built-in constant in internal/application/asyncjob"); err != nil {
 							return Config{}, err
 						}
 						if err := probeRemovedKey(asyncProbe, "tombstone_ttl",
-							"config.api.vpn.async.tombstone_ttl: removed; now a built-in constant in internal/asyncjob"); err != nil {
+							"config.api.vpn.async.tombstone_ttl: removed; now a built-in constant in internal/application/asyncjob"); err != nil {
 							return Config{}, err
 						}
 					}

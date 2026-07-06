@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // NewEligibleSet builds the set of eligible config paths from rawConfigs
@@ -51,7 +51,7 @@ func NewEligibleSet(rawConfigs []string, configDir string, allowed []string) (*E
 // the caller should treat this as a fatal startup error.
 //
 // Keys in the full set are HMAC ids derived from hmacKey and the basename via
-// tunnel.TunnelID. Lookup/IsEligible take the HMAC id. hmacKey is key material
+// domain.TunnelID. Lookup/IsEligible take the HMAC id. hmacKey is key material
 // and must never be logged; it is not retained on the returned struct.
 func NewFullSet(rawConfigs []string, configDir string, hmacKey []byte) (*EligibleSet, error) {
 	if len(rawConfigs) == 0 {
@@ -61,7 +61,7 @@ func NewFullSet(rawConfigs []string, configDir string, hmacKey []byte) (*Eligibl
 		)
 	}
 	return newSet(rawConfigs, configDir, nil, func(b string) string {
-		return tunnel.TunnelID(hmacKey, b)
+		return domain.TunnelID(hmacKey, b)
 	})
 }
 
@@ -80,7 +80,7 @@ type CatalogEntry struct {
 // RandomPath.
 //
 // The map key is context-dependent: NewEligibleSet uses the basename; NewFullSet
-// uses the HMAC id from tunnel.TunnelID. Lookup, IsEligible, and all callers
+// uses the HMAC id from domain.TunnelID. Lookup, IsEligible, and all callers
 // must pass the appropriate key type for the set they hold.
 type EligibleSet struct {
 	byKey map[string]entry // key → entry (key meaning depends on constructor)
@@ -154,7 +154,7 @@ type entry struct {
 
 // newSet is the shared constructor used by both NewEligibleSet and NewFullSet.
 // keyFn maps a config basename to the map key to use (basename identity for the
-// streaming set; tunnel.TunnelID for the full set). allowed is an optional
+// streaming set; domain.TunnelID for the full set). allowed is an optional
 // country filter; nil/empty means accept all.
 func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(basename string) string) (*EligibleSet, error) {
 	// build a lookup set of allowed codes (normalised to lowercase for matching).
@@ -184,7 +184,7 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 		basename := strings.TrimSuffix(filepath.Base(path), ".conf")
 
 		if !allowAll {
-			cc := strings.ToLower(tunnel.CountryFromID(basename))
+			cc := strings.ToLower(domain.CountryFromID(basename))
 			if _, ok := allowedSet[cc]; !ok {
 				continue
 			}
@@ -198,7 +198,7 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 				// keys and the ?country= filter (which lowercases its tokens)
 				// are on the same case plane. The streaming filter above uses
 				// the same strings.ToLower wrap.
-				country: strings.ToLower(tunnel.CountryFromID(basename)),
+				country: strings.ToLower(domain.CountryFromID(basename)),
 				path:    path,
 			}
 			order = append(order, key)

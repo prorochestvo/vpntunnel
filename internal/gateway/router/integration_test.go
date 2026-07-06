@@ -26,12 +26,12 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
-	"vpntunnel/internal/tunnel"
 )
 
 // compile-time interface assertions for integration-test fakes.
@@ -45,7 +45,7 @@ var (
 	_ handlers.Router = (*fakeWorkingRouter)(nil)
 )
 
-// fakeWorkingDialer satisfies tunnel.Dialer + tunnel.Resolver so that
+// fakeWorkingDialer satisfies domain.Dialer + domain.Resolver so that
 // fakeWorkingRouter can return a live dialer without constructing a real WireGuard
 // device. DialContext and LookupHost are never actually called in integration tests
 // because the injected ProxyForwarder / asyncjob.Forwarder bypasses WireGuard.
@@ -65,7 +65,7 @@ func (fakeWorkingDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, 
 // dialer and resolver. directSyncForwarder ignores both, so this is safe.
 type fakeWorkingRouter struct{}
 
-func (fakeWorkingRouter) Route(_ context.Context, _ string) (tunnel.Dialer, tunnel.Resolver, func(), error) {
+func (fakeWorkingRouter) Route(_ context.Context, _ string) (domain.Dialer, domain.Resolver, func(), error) {
 	return fakeWorkingDialer{}, fakeWorkingDialer{}, func() {}, nil
 }
 
@@ -119,8 +119,8 @@ func (directSyncForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	_ string,
-	_ tunnel.Dialer,
-	_ tunnel.Resolver,
+	_ domain.Dialer,
+	_ domain.Resolver,
 ) error {
 	client := &http.Client{
 		Transport:     http.DefaultTransport,
@@ -152,8 +152,8 @@ func (f tlsTrustingForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	_ string,
-	_ tunnel.Dialer,
-	_ tunnel.Resolver,
+	_ domain.Dialer,
+	_ domain.Resolver,
 ) error {
 	client := &http.Client{
 		Transport:     f.rt,
@@ -187,8 +187,8 @@ func (f tlsTrustingRawForwarder) ForwardRaw(
 	ctx context.Context,
 	req *http.Request,
 	_ string,
-	_ tunnel.Dialer,
-	_ tunnel.Resolver,
+	_ domain.Dialer,
+	_ domain.Resolver,
 ) (asyncjob.UpstreamResponse, error) {
 	client := &http.Client{Transport: f.rt}
 	resp, err := client.Do(req.WithContext(ctx))
@@ -241,7 +241,7 @@ type integrationDaemon struct {
 	userToken string
 	// hmacKey is the fixed 32-byte test HMAC key used to derive tunnel ids for
 	// e2e path assertions. Tests compute the expected {id} via
-	// tunnel.TunnelID(daemon.hmacKey, basename).
+	// domain.TunnelID(daemon.hmacKey, basename).
 	hmacKey []byte
 	// store is exposed so tests can inspect bbolt state or wait for workers.
 	store asyncjob.Store
@@ -347,7 +347,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 
 	// build a real EligibleSet (HMAC-keyed) used as both ZoneChecker and TunnelCatalog.
 	// A fixed 32-byte test key is used so e2e tests can compute the expected {id} via
-	// tunnel.TunnelID(testHMACKey, basename) without hard-coding a hash.
+	// domain.TunnelID(testHMACKey, basename) without hard-coding a hash.
 	testHMACKey := bytes.Repeat([]byte{0x42}, 32)
 	tunnelsDir := filepath.Join(dir, "tunnels")
 	require.NoError(t, os.MkdirAll(tunnelsDir, 0o700))
@@ -359,7 +359,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 
 	// fake live health: streaming reports se-sto-wg-001 healthy; on-demand idle.
 	streaming := &fakeLiveHealther{
-		health: tunnel.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Now().Add(-5 * time.Second)},
+		health: domain.TunnelHealth{ID: "se-sto-wg-001", LastHandshake: time.Now().Add(-5 * time.Second)},
 		ok:     true,
 	}
 	onDemand := &fakeLiveHealther{ok: false}
@@ -475,7 +475,7 @@ func intProxyReq(t *testing.T, daemon *integrationDaemon, method, upstreamURL, t
 		hostPath += "?" + parsed.URL.RawQuery
 	}
 
-	tunnelID := tunnel.TunnelID(daemon.hmacKey, "se-sto-wg-001")
+	tunnelID := domain.TunnelID(daemon.hmacKey, "se-sto-wg-001")
 	target := daemon.baseURL + "/v1/tunnels/" + tunnelID + "/proxy/" + scheme + "/" + hostPath
 	req, err := http.NewRequestWithContext(context.Background(), method, target, nil)
 	require.NoError(t, err)
@@ -1161,7 +1161,7 @@ func TestProxyHMACRouting(t *testing.T) {
 	t.Run("hmac_id_in_full_set_routes_to_upstream", func(t *testing.T) {
 		t.Parallel()
 		// compute the id the same way the daemon did — must not hard-code the hash.
-		id := tunnel.TunnelID(daemon.hmacKey, "se-sto-wg-001")
+		id := domain.TunnelID(daemon.hmacKey, "se-sto-wg-001")
 		parsed, err := http.NewRequest(http.MethodGet, upstream.URL+"/check", nil)
 		require.NoError(t, err)
 

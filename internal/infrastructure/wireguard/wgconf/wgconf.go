@@ -1,5 +1,5 @@
 // Package wgconf parses wg-quick(8) .conf files into a ParsedConfig the
-// proxy can hand to internal/tunnel/wireguard. Supports vanilla
+// proxy can hand to internal/infrastructure/wireguard. Supports vanilla
 // [Interface]/[Peer] only; wg-quick fluff (PreUp, Table, ...) is
 // WARN-and-skip. Multi-peer (mesh) is rejected.
 package wgconf

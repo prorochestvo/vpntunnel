@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"vpntunnel/internal/application/asyncjob"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDefaults(t *testing.T) {

@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
-// compile-time assertion: WireGuardDialer satisfies tunnel.HealthReporter.
+// compile-time assertion: WireGuardDialer satisfies domain.HealthReporter.
 // The canonical assertion lives in dialer.go; this one targets the test stub.
 var _ ipcGetter = (*failingIpcGetter)(nil)
 
@@ -84,10 +84,10 @@ func TestWireGuardDialer_LastHandshake(t *testing.T) {
 	})
 }
 
-// compile-time assertion that WireGuardDialer satisfies tunnel.HealthReporter
+// compile-time assertion that WireGuardDialer satisfies domain.HealthReporter
 // (duplication of the canonical one in dialer.go is intentional here: it
 // verifies the assertion from the test package's perspective).
-var _ tunnel.HealthReporter = (*WireGuardDialer)(nil)
+var _ domain.HealthReporter = (*WireGuardDialer)(nil)
 
 func TestParseLastHandshake(t *testing.T) {
 	t.Parallel()

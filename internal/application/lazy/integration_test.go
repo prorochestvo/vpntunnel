@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
-// invariantDevice is a tunnel.DialerCloser tracked by the invariantBuilder. On
+// invariantDevice is a domain.DialerCloser tracked by the invariantBuilder. On
 // Close, it decrements the shared live counter and records the zone id so the
 // integration test can assert ordering.
 type invariantDevice struct {
@@ -47,8 +47,8 @@ func (d *invariantDevice) LastHandshake() (time.Time, error) {
 }
 
 // invariantDevice satisfies these interfaces at compile time.
-var _ tunnel.DialerCloser = (*invariantDevice)(nil)
-var _ tunnel.HealthReporter = (*invariantDevice)(nil)
+var _ domain.DialerCloser = (*invariantDevice)(nil)
+var _ domain.HealthReporter = (*invariantDevice)(nil)
 
 // eventLog is a concurrency-safe ordered log of string events.
 type eventLog struct {
@@ -130,7 +130,7 @@ func (b *invariantBuilder) failZone(zoneID string) {
 	b.mu.Unlock()
 }
 
-func (b *invariantBuilder) build(_ context.Context, configPath, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+func (b *invariantBuilder) build(_ context.Context, configPath, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 	zoneID := tunnelIDFromPath(configPath)
 
 	b.mu.Lock()
@@ -551,8 +551,8 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 		// does (streaming first, on-demand only when live). The aggregator itself and
 		// the /v1/admin/health body shape are covered by the handlers package tests;
 		// here we only prove the live-only set tracks the device lifecycle end to end.
-		liveReports := func() []tunnel.TunnelHealth {
-			var out []tunnel.TunnelHealth
+		liveReports := func() []domain.TunnelHealth {
+			var out []domain.TunnelHealth
 			if h, ok := sup.LiveHealth(); ok {
 				out = append(out, h)
 			}
@@ -706,7 +706,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 		// now prove the on-demand scheduler CAN route to us-nyc (excluded by
 		// the streaming filter but present in the full set).
 		// the full set is keyed by HMAC id, so derive the id from the basename.
-		usNycID := tunnel.TunnelID(integKey, "us-nyc-wg-001")
+		usNycID := domain.TunnelID(integKey, "us-nyc-wg-001")
 		routeUSCh := make(chan routeResult2, 1)
 		go func() {
 			d, _, rel, err := sched.Route(ctx, usNycID)
@@ -731,7 +731,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 
 		// prove the full set is not blanket-accept-all: de-fra is not in allConfigs.
 		// pass the HMAC id (not the basename) since the full set is keyed by HMAC id.
-		deFraID := tunnel.TunnelID(integKey, "de-fra-wg-001")
+		deFraID := domain.TunnelID(integKey, "de-fra-wg-001")
 		_, _, _, deErr := sched.Route(ctx, deFraID)
 		require.Error(t, deErr, "routing to an unknown zone must return an error")
 		pe, ok := publicerror.Is(deErr)
@@ -760,18 +760,18 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 
 // routeResult2 captures the return values of a single scheduler Route call.
 type routeResult2 struct {
-	d   tunnel.Dialer
+	d   domain.Dialer
 	rel func()
 	err error
 }
 
-// assertNoLeakedFields verifies that a []tunnel.TunnelHealth slice does not
+// assertNoLeakedFields verifies that a []domain.TunnelHealth slice does not
 // contain any fields that must not appear in external responses
 // (CLAUDE.md invariant: never expose Err text, key material, or peer endpoint
 // in any handler-visible output). Health entries from LiveHealthModel are
 // projected through the JSON encoder; we round-trip through JSON and check the
 // decoded map for forbidden keys.
-func assertNoLeakedFields(t *testing.T, reports []tunnel.TunnelHealth) {
+func assertNoLeakedFields(t *testing.T, reports []domain.TunnelHealth) {
 	t.Helper()
 	forbidden := []string{"peer_endpoint", "err", "peerPublicKey", "peer_public_key", "private_key"}
 	for _, rep := range reports {

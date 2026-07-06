@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // NewHealthHandler returns an http.Handler that serves GET requests with the
@@ -118,7 +118,7 @@ type AsyncJobCounter interface {
 // Unexported so callers can substitute fakes in tests without exposing a
 // wider abstraction.
 type tunnelPool interface {
-	Reports() []tunnel.TunnelHealth
+	Reports() []domain.TunnelHealth
 }
 
 // healthResponse is the top-level JSON body for the health endpoint.
@@ -140,7 +140,7 @@ type entry struct {
 // tunnelHealthEntry returns the response entry for one TunnelHealth at the
 // given now. Pure function; deterministic; trivially testable without touching
 // the handler or the pool.
-func tunnelHealthEntry(h tunnel.TunnelHealth, now time.Time, maxAge time.Duration) entry {
+func tunnelHealthEntry(h domain.TunnelHealth, now time.Time, maxAge time.Duration) entry {
 	ts := h.LastHandshake
 	if h.Err != nil || ts.IsZero() {
 		return entry{

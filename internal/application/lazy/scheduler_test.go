@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // compile-time check: fakeClock already declared in supervisor_test.go satisfies Clock.
@@ -59,7 +59,7 @@ func (b *schedulerDeviceBuilder) failZone(zoneID string) {
 }
 
 func (b *schedulerDeviceBuilder) builder(now time.Time) DeviceBuilderFn {
-	return func(_ context.Context, configPath, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+	return func(_ context.Context, configPath, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 		zoneID := tunnelIDFromPath(configPath)
 		b.mu.Lock()
 		fail := b.errFor[zoneID]
@@ -179,7 +179,7 @@ func TestOnDemandScheduler_Route(t *testing.T) {
 
 		// the first Route call triggers settle+build; advance past settle delay.
 		routeErrCh := make(chan error, 1)
-		var gotDialer tunnel.Dialer
+		var gotDialer domain.Dialer
 		var gotRelease func()
 		go func() {
 			d, _, rel, err := sched.Route(ctx, "us-nyc-wg-001")
@@ -233,7 +233,7 @@ func TestOnDemandScheduler_Route(t *testing.T) {
 
 		const n = 5
 		type routeResult struct {
-			d   tunnel.Dialer
+			d   domain.Dialer
 			rel func()
 			err error
 		}
@@ -467,7 +467,7 @@ func TestOnDemandScheduler_switch(t *testing.T) {
 
 // routeResult1 captures the return values of a single Route call.
 type routeResult1 struct {
-	d   tunnel.Dialer
+	d   domain.Dialer
 	rel func()
 	err error
 }

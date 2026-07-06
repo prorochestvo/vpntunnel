@@ -8,8 +8,8 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tunnel"
 )
 
 // NewZoneRoutingForwarder returns a ZoneRoutingForwarder that reads the tunnel
@@ -39,14 +39,14 @@ type Router interface {
 	// that the job is done so grace and idle timers remain accurate. Returns a
 	// *publicerror.Error for unknown zones (message prefix "unknown_zone:") or
 	// device bring-up failures (message prefix "zone_bring_up_failure:").
-	Route(ctx context.Context, zoneID string) (dialer tunnel.Dialer, resolver tunnel.Resolver, release func(), err error)
+	Route(ctx context.Context, zoneID string) (dialer domain.Dialer, resolver domain.Resolver, release func(), err error)
 }
 
 // RawForwarder is the minimal async-forwarding contract. *tunnelForwarder
 // satisfies it; a local interface keeps the dependency surface narrow and
 // allows tests to inject a fake without constructing a real tunnelForwarder.
 type RawForwarder interface {
-	ForwardRaw(ctx context.Context, req *http.Request, tunnelID string, dialer tunnel.Dialer, resolver tunnel.Resolver) (asyncjob.UpstreamResponse, error)
+	ForwardRaw(ctx context.Context, req *http.Request, tunnelID string, dialer domain.Dialer, resolver domain.Resolver) (asyncjob.UpstreamResponse, error)
 }
 
 // ZoneRoutingForwarder implements asyncjob.Forwarder by reading the tunnel id

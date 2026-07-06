@@ -32,8 +32,8 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/application/asyncjob"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/config"
-	"vpntunnel/internal/tunnel"
 )
 
 func TestResolveAuthToken(t *testing.T) {
@@ -192,9 +192,9 @@ func TestParseTLSOptions(t *testing.T) {
 
 // compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
 var (
-	_ tunnel.DialerCloser   = (*smokeDialer)(nil)
-	_ tunnel.HealthReporter = (*smokeDialer)(nil)
-	_ tunnel.Resolver       = (*smokeDialer)(nil)
+	_ domain.DialerCloser   = (*smokeDialer)(nil)
+	_ domain.HealthReporter = (*smokeDialer)(nil)
+	_ domain.Resolver       = (*smokeDialer)(nil)
 )
 
 // smokeDialer is a no-op test double for the full tunnel interface set.
@@ -217,7 +217,7 @@ func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error)
 }
 
 // smokeBuilder is a lazy.DeviceBuilderFn that returns a smokeDialer for any config path.
-func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
 	return &smokeDialer{}, nil
 }
 
@@ -758,7 +758,7 @@ func writeFixtureConfig(tb testing.TB, cfgPath string, cfg fixtureConfig) {
 	require.NoError(tb, os.MkdirAll(tunnelsDir, 0o700))
 	confContent := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.99.0.1/32\n\n[Peer]\nPublicKey = %s\nEndpoint = 203.0.113.1:51820\n",
 		genWGKey(tb), genWGPubKey(tb))
-	require.NoError(tb, os.WriteFile(filepath.Join(tunnelsDir, "tunnel.conf"), []byte(confContent), 0o600))
+	require.NoError(tb, os.WriteFile(filepath.Join(tunnelsDir, "domain.conf"), []byte(confContent), 0o600))
 
 	authDir := filepath.Join(dir, "auth")
 	require.NoError(tb, os.MkdirAll(authDir, 0o700))

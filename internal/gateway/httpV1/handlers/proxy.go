@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/domain"
 )
 
 // NewProxyHandler returns an http.Handler that validates, normalises, and
-// forwards proxy requests through the selected tunnel.
+// forwards proxy requests through the selected domain.
 //
 // maxBodyBytes caps the request body via http.MaxBytesReader. upstreamTimeout
 // is the default per-request deadline; clients may override it per-request via
@@ -85,7 +85,7 @@ var _ asyncPool = (*asyncjob.Pool)(nil)
 // alternative implementations (e.g. a plain net/http round-tripper that
 // bypasses the WireGuard dialer for localhost upstreams).
 type Forwarder interface {
-	Forward(w http.ResponseWriter, r *http.Request, tunnelID string, dialer tunnel.Dialer, resolver tunnel.Resolver) error
+	Forward(w http.ResponseWriter, r *http.Request, tunnelID string, dialer domain.Dialer, resolver domain.Resolver) error
 }
 
 // proxyHandler implements http.Handler for the /v1/tunnels/{id}/proxy/{scheme}/{rest...} route.

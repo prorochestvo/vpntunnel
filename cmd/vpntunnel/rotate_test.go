@@ -16,11 +16,11 @@ import (
 
 	"vpntunnel/internal/application"
 	lazy "vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/gateway/router"
-	"vpntunnel/internal/tunnel"
 )
 
-var _ tunnel.Dialer = (*blockingDialer)(nil)
+var _ domain.Dialer = (*blockingDialer)(nil)
 
 // blockingDialer's DialContext blocks until release is closed or ctx is
 // cancelled, then always fails. It lets a test hold a ProxyService session
@@ -37,7 +37,7 @@ func (d *blockingDialer) DialContext(ctx context.Context, _, _ string) (net.Conn
 	return nil, errors.New("blockingDialer: refused after release")
 }
 
-var _ tunnel.DialerCloser = (*closeSignalDevice)(nil)
+var _ domain.DialerCloser = (*closeSignalDevice)(nil)
 
 // closeSignalDevice is a minimal DialerCloser whose Close runs an optional
 // callback, letting a test observe the exact moment the supervisor tears the
@@ -145,7 +145,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 
 	t.Run("maps RotateUnavailable when no device is live", func(t *testing.T) {
 		t.Parallel()
-		alwaysFail := func(context.Context, string, string, *slog.Logger) (tunnel.DialerCloser, error) {
+		alwaysFail := func(context.Context, string, string, *slog.Logger) (domain.DialerCloser, error) {
 			return nil, errors.New("build always fails")
 		}
 		sup := newAdapterTestSupervisor(t, alwaysFail, 5*time.Millisecond)
@@ -176,7 +176,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 		// not the degenerate pre-Start case.
 		torn := make(chan struct{})
 		var once sync.Once
-		builder := func(context.Context, string, string, *slog.Logger) (tunnel.DialerCloser, error) {
+		builder := func(context.Context, string, string, *slog.Logger) (domain.DialerCloser, error) {
 			return &closeSignalDevice{onClose: func() { once.Do(func() { close(torn) }) }}, nil
 		}
 		sup := newAdapterTestSupervisor(t, builder, 50*time.Millisecond)
