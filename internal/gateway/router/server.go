@@ -14,6 +14,7 @@ import (
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/gateway/httpV1/routes"
 	"vpntunnel/internal/infrastructure/observability"
 )
 
@@ -211,11 +212,11 @@ func (s *Server) buildMux() http.Handler {
 	// /v1/tunnels/{id}/... (covered by the more-specific proxy pattern below);
 	// a future /v1/tunnels/{id} detail route must be added carefully to avoid
 	// shadowing this listing route or the proxy wildcard.
-	mux.HandleFunc("GET /v1/tunnels",
+	mux.HandleFunc("GET "+routes.Tunnels,
 		s.requireRole(RoleProxy, RoleAdmin)(s.tunnelsHandler.ServeHTTP))
 
 	// GET /v1/admin/health — admin only.
-	mux.HandleFunc("GET /v1/admin/health",
+	mux.HandleFunc("GET "+routes.AdminHealth,
 		s.requireRole(RoleAdmin)(s.handleHealth))
 
 	// /v1/admin/rotate — admin only. Registered methodless (not
@@ -223,7 +224,7 @@ func (s *Server) buildMux() http.Handler {
 	// automatic 405 for method-scoped patterns (a non-POST would otherwise
 	// fall through to the catch-all's 404); handleRotate checks the method
 	// itself and replies 405 with Allow: POST.
-	mux.HandleFunc("/v1/admin/rotate",
+	mux.HandleFunc(routes.AdminRotate,
 		s.requireRole(RoleAdmin)(s.handleRotate))
 
 	// /v1/tunnels/{id}/proxy/{scheme}/{rest...} — user or admin. Access logging wraps
@@ -232,13 +233,13 @@ func (s *Server) buildMux() http.Handler {
 	// Body cap (http.MaxBytesReader) is applied inside the proxy handler.
 	proxyInner := s.requireRole(RoleProxy, RoleAdmin)(s.proxyHandler.ServeHTTP)
 	if s.opts.Access != nil {
-		mux.Handle("/v1/tunnels/{id}/proxy/{scheme}/{rest...}", s.withAccessLog(http.HandlerFunc(proxyInner)))
+		mux.Handle(routes.TunnelProxy, s.withAccessLog(http.HandlerFunc(proxyInner)))
 	} else {
-		mux.HandleFunc("/v1/tunnels/{id}/proxy/{scheme}/{rest...}", proxyInner)
+		mux.HandleFunc(routes.TunnelProxy, proxyInner)
 	}
 
 	// catch-all 404 with JSON envelope (overrides the plain-text ServeMux default).
-	mux.Handle("/", s.notFoundHandler())
+	mux.Handle(routes.CatchAll, s.notFoundHandler())
 
 	return s.withRequestID(s.withAuth(mux))
 }
