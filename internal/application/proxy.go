@@ -36,7 +36,7 @@ const ErrFallbackMessage = "Something went wrong. Try again later."
 // is nil, as the dialer is the service's core dependency.
 func NewProxyService(opts ProxyServiceOptions) *ProxyService {
 	if opts.Dialer == nil {
-		panic("service: NewProxyService requires a non-nil Dialer")
+		panic("application: NewProxyService requires a non-nil Dialer")
 	}
 
 	transport := &http.Transport{

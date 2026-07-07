@@ -1373,7 +1373,7 @@ func TestLoad(t *testing.T) {
 // or a valid v6 key was accidentally probed as removed (false-positive).
 func TestProxyExampleJSON(t *testing.T) {
 	t.Parallel()
-	// test package cwd is internal/config; the example is two dirs up.
+	// test package cwd is internal/infrastructure/config; the example is three dirs up.
 	examplePath := filepath.Join("..", "..", "..", "configs", "proxy.example.json")
 	cfg, err := config.Load(examplePath)
 	require.NoError(t, err, "configs/proxy.example.json failed to load — schema drift detected")

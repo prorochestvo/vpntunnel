@@ -1,5 +1,5 @@
 package application
 
 // IsLoopbackRemote exposes isLoopbackRemote for white-box table tests in the
-// service_test package.
+// application_test package.
 var IsLoopbackRemote = isLoopbackRemote
