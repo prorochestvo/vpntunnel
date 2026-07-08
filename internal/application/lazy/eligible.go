@@ -138,13 +138,6 @@ func (e *EligibleSet) Entries() []CatalogEntry {
 	return out
 }
 
-// setRNG replaces the PRNG used by RandomPath. It is intended for use in tests
-// only, to inject a deterministic source. Must not be called concurrently with
-// RandomPath.
-func (e *EligibleSet) setRNG(r *mrand.Rand) {
-	e.rng = r
-}
-
 // entry holds the per-config fields stored in byKey.
 type entry struct {
 	basename string

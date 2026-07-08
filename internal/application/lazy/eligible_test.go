@@ -374,3 +374,10 @@ func TestEligibleSet_RandomPath(t *testing.T) {
 		}
 	})
 }
+
+// setRNG replaces the PRNG used by RandomPath. It is intended for use in tests
+// only, to inject a deterministic source. Must not be called concurrently with
+// RandomPath.
+func (e *EligibleSet) setRNG(r *mrand.Rand) {
+	e.rng = r
+}
