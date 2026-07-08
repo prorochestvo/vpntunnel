@@ -73,24 +73,6 @@ type runOptions struct {
 	shutdownCtx context.Context
 }
 
-// withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the streaming supervisor. Intended for tests only.
-func withSupervisorBuilder(b lazy.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.supervisorBuilder = b }
-}
-
-// withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the on-demand scheduler. Intended for tests only.
-func withSchedulerBuilder(b lazy.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.schedulerBuilder = b }
-}
-
-// withShutdownCtx returns a runOpt that replaces signal.NotifyContext with the
-// caller-owned context as the shutdown trigger. Test-only seam.
-func withShutdownCtx(ctx context.Context) runOpt {
-	return func(o *runOptions) { o.shutdownCtx = ctx }
-}
-
 // tlsOptions carries the TLS settings sourced from CLI flags, parsed and
 // validated before runWithOpts is called. Relative cert-dir paths are resolved
 // against the process cwd during parsing; production default is absolute.

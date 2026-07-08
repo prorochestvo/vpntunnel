@@ -32,9 +32,28 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/application/asyncjob"
+	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/config"
 )
+
+// withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
+// into the streaming supervisor. Intended for tests only.
+func withSupervisorBuilder(b lazy.DeviceBuilderFn) runOpt {
+	return func(o *runOptions) { o.supervisorBuilder = b }
+}
+
+// withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
+// into the on-demand scheduler. Intended for tests only.
+func withSchedulerBuilder(b lazy.DeviceBuilderFn) runOpt {
+	return func(o *runOptions) { o.schedulerBuilder = b }
+}
+
+// withShutdownCtx returns a runOpt that replaces signal.NotifyContext with the
+// caller-owned context as the shutdown trigger. Test-only seam.
+func withShutdownCtx(ctx context.Context) runOpt {
+	return func(o *runOptions) { o.shutdownCtx = ctx }
+}
 
 func TestResolveAuthToken(t *testing.T) {
 	t.Parallel()
