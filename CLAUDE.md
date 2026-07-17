@@ -252,106 +252,17 @@ make run              # go run ./cmd/vpntunnel -config ./configs/proxy.json
 make clean            # rm -rf ./build ./tmp/*.tmp
 ```
 
-Run one-off tests with the standard `go test -race -run 'TestName/subtest' ./<pkg>/` forms. Pin `CGO_ENABLED=0` for `go build`/`go vet` and always pass `-o ./build/<name>`; leave `CGO_ENABLED` unset for `-race` (see Constraints).
+Run one-off tests with the standard `go test -race -run 'TestName/subtest' ./<pkg>/` forms. Pin `CGO_ENABLED=0` for `go build`/`go vet` and always pass `-o ./build/<name>`; leave `CGO_ENABLED` unset for `-race` (see Conventions).
 
-## Code Organization Principles
+## Conventions
 
-These rules govern *where code lives*. Apply them by default; treat a violation as
-something to flag, not silently accept.
-
-### Package placement follows consumption, not aspiration
-
-- Code shared by **multiple** binaries/entry points belongs in the shared tree
-  (`internal/`).
-- Code with **exactly one** consumer belongs **next to that consumer**
-  (`cmd/<binary>/`), not in the shared tree.
-- Prefer the private location (`internal/`) over a public one (`pkg/`) unless there
-  is a **real external (out-of-module) consumer**. Don't promise a public API
-  surface the project doesn't actually provide.
-- **Why:** the shared tree is for genuinely shared layers; one consumer means co-locate, no external importer means keep it private.
-
-### Deduplication is not a goal in itself
-
-- Distinguish **coincidental similarity** (looks alike today but must be free to
-  diverge) from a **genuine cross-cutting invariant**. Coincidental similarity →
-  duplicate the few trivial lines and let each site evolve. A true invariant →
-  centralize it once, where it belongs.
-- Do **not** build a shared `bootstrap` / `startup` / `wiring` layer for multiple
-  binaries just because their startup looks similar — inline it per entry point
-  (`cmd/<binary>/main.go`) so each stays free to diverge (different DBs,
-  dependencies, config).
-- Before extracting a helper, check whether the only thing being shared is already
-  captured elsewhere (e.g. already a one-line call) — if so, don't wrap it. An
-  abstraction can re-introduce the very complexity it pretends to hide (e.g. a
-  returning constructor needs error-cleanup that an inline fatal-and-exit path
-  simply doesn't).
-- **Why:** premature extraction imposes a contract where code should be free to diverge; centralize only for a named invariant or real divergence risk.
-
-### Business logic is organized by concern, not by launcher
-
-- Business-logic packages are judged by being **simple and isolated**, regardless of
-  which binary runs them or how they are launched ("how it starts is not the
-  package's concern"). Keep a flat, per-concern split.
-- Do **not** reorganize business logic by runtime-vs-operator, by deployment, or by
-  consuming binary.
-- **Why:** grouping by launcher couples code to deployment (which changes); cohesion by concern is stabler.
-
-## File Declaration Order
-
-Order the top-level declarations in each `*.go` file so the important, public surface
-is at the top and private internals are hidden at the bottom. A reader should see
-everything important first; scanning the file should not require digging.
-
-For a file built around one object:
-
-1. Exported `const` and `var`, plus the `New<Object>` constructor(s). These come first
-   because they are what you need to create and use the object — the first thing a
-   reader looks for.
-2. The object's struct definition.
-3. The object's methods (prefer alphabetical order; not mandatory).
-4. Unexported `const` and `var`.
-5. Auxiliary/helper structs (unexported support types) — placed between the unexported
-   vars/consts and the unexported methods.
-6. Unexported methods/functions (prefer alphabetical order; not mandatory).
-
-- **Multiple structs in one file:** keep the same layout but put the primary ("main")
-  struct first. A combined layout is acceptable but very rare — two large objects in one
-  file usually means the file should be split into two.
-- **Files with no object** (free functions plus a config/data type): apply the same
-  spirit — exported type(s) and function(s) on top, then unexported consts/vars, then
-  auxiliary structs, then unexported helper functions.
-
-Treat a file that violates this order as something to fix.
-
-## Error Handling
-
-The project's contract: separate user-facing errors from internal failures via a
-dedicated `PublicError` wrapper type (typically `internal.PublicError`). Any error
-message that is **safe to show** to a user is wrapped with `internal.NewPublicError(...)`
-at the point where the error is created (typically in the service layer).
-
-**Rule**: if a function can fail in a way that meaningfully communicates something to
-the user, return a public error. For all other failures (DB down, unexpected nil,
-upstream proxy unreachable, etc.) return a plain error — the controller will send a
-generic fallback.
-
-#### Creating a public error (service layer)
-
-```go
-import "<module>/internal"
-
-// user should know about this
-return internal.NewPublicError("Invalid input. <specific guidance>")
-
-// internal failure — user gets generic message
-return fmt.Errorf("db query failed: %w", err)
-```
-
-### Testing the error path
-
-Every controller error-branch test must assert a response was actually sent, equal to `PublicError.Details()` when the error is a `PublicError`, else equal to the fallback constant.
-
-## Constraints
+Generic Go conventions (style, file declaration order, test structure, test-only
+code placement, godoc, error discipline, code organization) come from the
+`stack-go` plugin skills — they are not restated here. Error handling follows the
+standard `PublicError` contract via the cross-cutting `internal/publicerror`
+package: construct with `publicerror.New(...)`, match with `publicerror.Is`; every
+controller error-branch test asserts the response text (public message when the
+error is public, generic fallback otherwise). Project-specific constraints:
 
 - **Never log WireGuard key material**: the private key and pre-shared key (PSK)
   must NEVER appear in any log call, error message, or string format. The private
@@ -372,32 +283,12 @@ Every controller error-branch test must assert a response was actually sent, equ
   and everything parsed out of it are secret material and must NEVER appear in any log call,
   error message, or string format. Startup/status logs may include only `token_len` and
   whether the notifier is enabled/disabled.
-- **Forbidden imports**: enforced by `make lint`; nothing is currently banned. Add a module here (and to the lint check) only when the team rejects one.
-- **Testing**: use `github.com/stretchr/testify`; run with `-race`; prefer parallel subtests where there's no shared mutable state. `make test`'s `-race` step deliberately does NOT pin `CGO_ENABLED` — Go 1.26's race detector links libtsan via cgo and refuses under `CGO_ENABLED=0`, so the runner default is let through (Linux picks cgo, darwin uses its built-in detector).
-- **One `Test*` per method, scenarios as subtests**: each tested method/function gets
-  exactly one top-level test function named after it (e.g. `TestEncode` for `Encode`),
-  and every scenario for that method lives as a `t.Run("descriptive name", ...)`
-  subtest inside it. Do **not** create separate top-level tests like
-  `TestEncode_EmptyInput`, `TestEncode_Unicode`, `TestEncode_Error` — these belong
-  as subtests of a single `TestEncode`. Methods on a type follow the same rule with
-  the standard `TestType_Method` form (e.g. `TestUser_Validate`).
-- **No CGO in production**: `go build`/`go vet` always pin `CGO_ENABLED=0` (static binary, no libc link); we never force `CGO_ENABLED=1` for production — the `-race` exception is in the Testing entry above.
-- **Compile-time interface checks**: Every mock/stub struct in test files must have a
-  `var _ interfaceName = &mockStruct{}` assertion at the top of the file.
-- **No section-divider comments**: Do not use `// --- section ---` or `// ----` style
-  separator comments. Let the code structure speak for itself.
-- **No skipped errors**: Never use `_` to discard error return values in production or
-  test code. Always capture the error and assert/check it. The only exceptions are
-  `fmt.Fprint*` writes to loggers, `Rollback()` calls in error-recovery paths, and
-  resource `.Close()` in `t.Cleanup` / `defer`.
-- **Comments**: lowercase first word (e.g. `// wrap the driver error so callers can match on it`).
-- **Godoc**: every exported identifier gets a doc comment starting with its name and ending with a period; skip it if it would only restate the signature. One `// Package <name>` per package (`cmd/*` uses `// Command <name>`). Document the non-obvious: concurrency guarantees, which methods return `PublicError` vs plain errors, lifecycle contracts ("caller must Close"), and error-sentinel conditions. Never overwrite a substantive WHY-comment with a generic restatement; don't bulk-comment private helpers.
-- **Build outputs live in `./build/`, scratch in `./tmp/`, logs in `./logs/`**:
-  Never run `go build` without `-o ./build/<name>` — bare `go build ./cmd/<binary>`
-  drops a binary in the project root, which is **not** in `.gitignore` and
-  would be picked up by `git add .`. The same applies to any throwaway artifacts,
-  fixtures, or intermediate files: use `./tmp/` rather than the repo root. Runtime /
-  cyclic logs go to `./logs/`. Only these three directories are gitignored at the root.
+- **Forbidden imports**: enforced by `make lint`; nothing is currently banned. Add a module
+  here (and to the lint check) only when the team rejects one.
+- **Race + CGO**: `make test`'s `-race` step deliberately does NOT pin `CGO_ENABLED` —
+  Go 1.26's race detector links libtsan via cgo and refuses under `CGO_ENABLED=0`
+  (Linux picks cgo, darwin uses its built-in detector). Production builds always pin
+  `CGO_ENABLED=0` (static binary, no libc link).
 - **`/v1/admin/health` response body is fixed**: top-level `{status, tunnels: [...]}`;
   each tunnel entry is `{id, healthy, handshake_age_seconds}`. Never include
   `peer_endpoint`, key material, peer public key, or `TunnelHealth.Err` text.
@@ -410,66 +301,24 @@ Every controller error-branch test must assert a response was actually sent, equ
   — there is no pinned host fingerprint). The SSH port lives in the env-scoped
   `SSH_HOSTPORT` variable, so non-standard ports are supported without code changes.
 
-## Planning Workflow
+## Working agreement
 
-All non-trivial work is tracked as a Markdown plan file before implementation begins.
+All non-trivial work follows the plan-first pipeline:
 
-### Directory layout
+1. **Plan** — the `architect` agent writes `plans/NNN-slug.md` (create via the
+   `pipeline:new-plan` skill). No source edits before a plan exists.
+2. **Implement** — the `engineer` agent executes the plan's tasks with tests.
+3. **Review** — three `reviewer` agents launched in parallel in ONE message, each
+   prompt naming its lens (A: correctness & tests, B: security & operations,
+   C: performance & architecture) and the changed files. Full three-lens fan-out is
+   mandatory on the first review; the post-fix re-review is ONE solo reviewer scoped
+   to the changed lines.
+4. **Gate** — `make test` must be green before review; a red tree goes to the
+   `testdoctor` agent first, at any stage.
+5. **Complete** — the orchestrator merges the three reports, deduplicates, resolves
+   conflicting verdicts (naming what was rejected and why; the user has final say).
+   P0/P1 findings loop back to the engineer. Only when every P0/P1 is fixed or
+   explicitly accepted: move the plan via the `pipeline:complete-plan` skill.
 
-```
-plans/
-├── NNN-task-slug.md     # active / in-progress plans (e.g. 001-fix-auth.md)
-├── completed/           # plans for fully shipped tasks (e.g. 260422.0001.fix-auth.md)
-└── history/             # archived / cancelled plans
-```
-
-### File naming
-
-- **Active plans (`plans/`)** — zero-padded sequential index + kebab-case slug:
-  `NNN-description.md` (e.g. `001-fix-unauthorized-middleware.md`, `002-add-rate-limiting.md`).
-  Pick the next number by checking the highest existing prefix across `plans/`, `plans/completed/`,
-  and `plans/history/`.
-
-- **Completed plans (`plans/completed/`)** — date prefix + zero-padded daily index (4 digits) + slug:
-  `YYMMDD.NNNN.description.md` (e.g. `260422.0001.fix-unauthorized-middleware.md`).
-  `NNNN` resets to `0001` each day and increments for each additional completion on that day.
-
-- **Archived plans (`plans/history/`)** — keep the original `NNN-` filename from `plans/`.
-
-### Lifecycle
-
-1. **Create** — before touching code, produce a plan file in `plans/` using the `NNN-slug.md`
-   naming convention described above.
-2. **Implement** — work through the tasks defined in the plan. The plan file stays in
-   `plans/` while work is in progress.
-3. **Complete** — once every acceptance criterion is met and the test suite passes, move
-   the file to `plans/completed/` using the date-based naming above.
-4. **Archive** — if a plan is abandoned or superseded without being fully implemented or
-   if we need to save intermediate data or task execution logs, move it to `plans/history/` instead.
-
-### Plan file format
-
-One line: Overview; Assumptions; Tasks (Description / Acceptance Criteria / Pitfalls / Complexity); Execution Order; Risks; Trade-offs.
-
-### Rules
-
-- **One plan per concern.** Don't bundle unrelated changes in a single plan file.
-- **Plan before code.** Claude must create (or confirm an existing) plan file before
-  writing or modifying any source files.
-- **Keep plans honest.** If implementation diverges from the plan, update the plan file
-  before moving it to `completed/`.
-- **Slug matches intent.** The description part of the filename should be readable at a glance:
-  `002-add-rate-limiting.md`, `003-migrate-sqlite-to-postgres.md`, not `004-task.md`.
-
-## Agent Pipeline
-
-Every non-trivial task runs a three-stage pipeline; `gocode-testdoctor` is invoked on-demand whenever tests fail at any stage.
-
-1. **gocode-architect** — creates the plan file at `plans/NNN-slug.md` (see Planning Workflow) before any code is written; update an existing plan rather than adding one.
-2. **gocode-engineer** — implements the plan's tasks plus tests for new code.
-3. **gocode-reviewer x3, in parallel (one message, three tool calls)** — each prompt self-contained (lens name, focus, what to SKIP, file list, deliverable `file:line` + patch sketch + word cap, priorities P0-P3):
-   - **A correctness & tests** — bugs, races, edge/error paths, context propagation, resource cleanup, coverage + test structure (one `Test*` per method with subtests).
-   - **B security & operations** — input validation, auth boundaries, secrets handling, injection, observability, log volume, operator/runbook UX.
-   - **C performance & architecture** — allocations, blocking I/O, goroutine/resource leaks, layer boundaries, dependency direction, API-contract/exported-surface stability.
-
-The orchestrator (main session) merges the three reports, dedupes, and resolves conflicting verdicts explicitly (it chooses, names the rejected suggestion, explains — user has final say). Tests must be green before review; a red tree goes to `gocode-testdoctor` first (minimal fix, no redesign). The full three-lens fan-out is mandatory on the FIRST review; after a P0/P1 fix the orchestrator runs ONE pass scoped to the changed lines. The plan moves to `plans/completed/` only once every P0/P1 is fixed or explicitly accepted with rationale.
+Plans live in `plans/` (active), `plans/completed/` (shipped, `YYMMDD.NNNN.slug.md`),
+`plans/history/` (abandoned/superseded). One plan per concern.

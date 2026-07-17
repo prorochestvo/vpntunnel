@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "extraKnownMarketplaces": {
+    "starterkit": {
+      "source": {
+        "source": "github",
+        "repo": "prorochestvo/starterkit"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "pipeline@starterkit": true,
+    "stack-go@starterkit": true,
+    "knowledge@starterkit": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(sed -n:*)",
+      "Bash(awk:*)",
+      "Bash(diff:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git restore:*)",
+      "Bash(git mv:*)",
+      "Bash(git branch:*)",
+      "Bash(git switch:*)",
+      "Bash(git stash:*)",
+      "Bash(git push:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(cp:*)",
+      "Bash(touch:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go fmt:*)",
+      "Bash(go mod:*)",
+      "Bash(go run:*)",
+      "Bash(go env:*)",
+      "Bash(go doc:*)",
+      "Bash(go list:*)",
+      "Bash(go tool:*)",
+      "Bash(go version)",
+      "Bash(CGO_ENABLED=0 go build:*)",
+      "Bash(CGO_ENABLED=0 go test:*)",
+      "Bash(CGO_ENABLED=0 go vet:*)",
+      "Bash(CGO_ENABLED=0 go run:*)",
+      "Bash(CGO_ENABLED=1 go test:*)",
+      "Bash(gofmt:*)",
+      "Bash(goimports:*)",
+      "Bash(golangci-lint:*)",
+      "Bash(staticcheck:*)",
+      "Bash(make:*)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(*.env)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Edit(*.env)",
+      "Write(**/.env)",
+      "Write(**/.env.*)",
+      "Write(*.env)",
+      "Read(**/.idea/**)",
+      "Edit(**/.idea/**)",
+      "Write(**/.idea/**)",
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)"
+    ]
+  }
+}
