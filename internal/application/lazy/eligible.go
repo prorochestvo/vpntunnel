@@ -176,9 +176,12 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 
 		basename := strings.TrimSuffix(filepath.Base(path), ".conf")
 
+		// countryFromBasename already normalizes to lowercase, matching the
+		// lowercased ?country= filter tokens and the allowedSet keys built above.
+		cc := countryFromBasename(basename)
+
 		if !allowAll {
-			cc := strings.ToLower(domain.CountryFromID(basename))
-			if _, ok := allowedSet[cc]; !ok {
+			if _, ok := allowedSet[string(cc)]; !ok {
 				continue
 			}
 		}
@@ -187,12 +190,8 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 		if _, dup := byKey[key]; !dup {
 			byKey[key] = entry{
 				basename: basename,
-				// CountryFromID returns UPPERCASE; store lowercase so catalog
-				// keys and the ?country= filter (which lowercases its tokens)
-				// are on the same case plane. The streaming filter above uses
-				// the same strings.ToLower wrap.
-				country: strings.ToLower(domain.CountryFromID(basename)),
-				path:    path,
+				country:  string(cc),
+				path:     path,
 			}
 			order = append(order, key)
 		}
@@ -213,6 +212,30 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 	}
 
 	return &EligibleSet{byKey: byKey, order: order, rng: newCryptoSeededRand()}, nil
+}
+
+// countryFromBasename extracts the tunnel country from a config basename that
+// follows the Mullvad ("mullvad-<cc>-<city>-wg-<N>") or legacy
+// ("<cc>-<city>-wg-<N>") naming convention: it returns the first hyphen segment
+// that is a valid two-letter code, preferring the first segment (legacy form)
+// over the second (Mullvad form). The result is a normalized lowercase
+// domain.Country, or "" when neither candidate segment is a two-letter code.
+//
+// This is tunnel-naming logic — it parses a filename convention, not a country
+// — so it lives here rather than on the domain.Country value type. Validation
+// and lowercase-normalization are delegated to domain.ParseCountry.
+func countryFromBasename(basename string) domain.Country {
+	parts := strings.SplitN(basename, "-", 3)
+	if cc, err := domain.ParseCountry(parts[0]); err == nil {
+		return cc
+	}
+	if len(parts) < 2 {
+		return ""
+	}
+	if cc, err := domain.ParseCountry(parts[1]); err == nil {
+		return cc
+	}
+	return ""
 }
 
 // newCryptoSeededRand seeds a PCG-backed Rand from two crypto/rand uint64s.

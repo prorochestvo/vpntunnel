@@ -98,30 +98,3 @@ func TestLiveHealthModel_Reports(t *testing.T) {
 		assert.Nil(t, reports[0].Err)
 	})
 }
-
-func TestCountryFromTunnelID(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		id   string
-		want string
-	}{
-		{"se-sto-wg-001", "SE"},
-		{"mullvad-ch-zrh-wg-001", "CH"},
-		{"mullvad-us-nyc-wg-501", "US"},
-		{"mullvad-gb-lon-wg-001", "GB"},
-		{"12-foo", ""},
-		{"XY-foo", ""},
-		{"", ""},
-		{"a", ""},
-		{"ab-foo", "AB"},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.id, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.want, domain.CountryFromID(tc.id))
-		})
-	}
-}

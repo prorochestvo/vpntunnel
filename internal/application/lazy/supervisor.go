@@ -529,9 +529,9 @@ func (s *StreamingSupervisor) handleRotate(loopCtx context.Context, req rotateRe
 	s.device, s.deviceID, s.reporter = newDev, id, rep // swap in — no re-check (adding, not tearing down)
 	s.mu.Unlock()
 
-	newCountry := strings.ToLower(domain.CountryFromID(id))
+	newCountry := string(countryFromBasename(id))
 	s.logger().Info("streaming supervisor: rotated tunnel",
-		slog.String("old_country", strings.ToLower(domain.CountryFromID(oldID))),
+		slog.String("old_country", string(countryFromBasename(oldID))),
 		slog.String("new_country", newCountry),
 		slog.String("new_tunnel_id", id),
 	)
@@ -637,7 +637,7 @@ func (s *StreamingSupervisor) notifyChange(title, id string, d domain.Dialer) {
 	s.notifier.Notify(context.Background(), notify.Event{
 		Source:   notify.SourceStreaming,
 		Title:    title,
-		Country:  strings.ToLower(domain.CountryFromID(id)),
+		Country:  string(countryFromBasename(id)),
 		Filename: id + ".conf",
 		Dialer:   d,
 	})

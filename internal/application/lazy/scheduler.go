@@ -520,7 +520,7 @@ func (s *OnDemandScheduler) logger() *slog.Logger {
 // finishSwitch, after the new device is already live.
 func (s *OnDemandScheduler) notifyChange(configPath string, d domain.Dialer) {
 	base := filepath.Base(configPath)
-	cc := strings.ToLower(domain.CountryFromID(strings.TrimSuffix(base, ".conf")))
+	cc := string(countryFromBasename(strings.TrimSuffix(base, ".conf")))
 	title := "on-demand: " + cc
 	if cc == "" {
 		title = "on-demand: " + base

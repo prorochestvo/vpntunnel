@@ -13,7 +13,7 @@ import (
 
 // sampleConfigs is a helper that returns a slice of fake .conf filenames
 // for use in eligible-set tests. The names follow Mullvad naming convention
-// so CountryFromID can extract the country code.
+// so countryFromBasename can extract the country code.
 func sampleConfigs() []string {
 	return []string{
 		"mullvad-us-nyc-wg-001.conf",
@@ -380,4 +380,31 @@ func TestEligibleSet_RandomPath(t *testing.T) {
 // RandomPath.
 func (e *EligibleSet) setRNG(r *mrand.Rand) {
 	e.rng = r
+}
+
+func TestCountryFromBasename(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		basename string
+		want     domain.Country
+	}{
+		{"se-sto-wg-001", "se"},         // legacy form: first segment
+		{"mullvad-ch-zrh-wg-001", "ch"}, // Mullvad form: second segment
+		{"mullvad-us-nyc-wg-501", "us"}, //
+		{"se", "se"},                    // bare code
+		{"XY-foo", "xy"},                // uppercase segment is normalized
+		{"12-foo", ""},                  // first segment not letters, second too long
+		{"", ""},                        // empty basename
+		{"a-b", ""},                     // single-letter segments
+		{"unparseable-123-wg-001", ""},  // no two-letter segment in first two positions
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.basename, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, countryFromBasename(tc.basename))
+		})
+	}
 }

@@ -1,46 +1,30 @@
 package domain
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
-// CountryFromID extracts the two-letter country code from a Mullvad-style or
-// legacy-style config basename. The returned code is uppercase.
-//
-// Mullvad naming: "mullvad-<cc>-<city>-wg-<N>" — the second hyphen-separated
-// segment is the country code.
-// Legacy naming: "<cc>-<city>-wg-<N>" — the first segment is the country code.
-//
-// In both cases the segment that carries the code must be exactly two lowercase
-// ASCII letters; anything else returns "". A first segment that is exactly two
-// lowercase ASCII letters is used directly (legacy form). When the first segment
-// is not two lowercase letters, the second segment is examined.
-//
-// Examples:
-//
-//	"se-sto-wg-001"          → "SE"
-//	"mullvad-ch-zrh-wg-001"  → "CH"
-//	"mullvad-us-nyc-wg-501"  → "US"
-//	"12-foo"                 → ""
-//	"XY-foo"                 → ""
-func CountryFromID(id string) string {
-	parts := strings.SplitN(id, "-", 3)
-	if cc := twoLowerLetters(parts[0]); cc != "" {
-		return cc
+// Country is a validated two-letter country code, normalized to lowercase.
+// The zero value "" means "no/unknown country". Non-empty values are
+// constructed only via ParseCountry, so a Country is always either empty or a
+// well-formed two-letter lowercase code — callers never need to re-validate or
+// re-lowercase it.
+type Country string
+
+// ParseCountry validates that s is exactly two ASCII letters (either case) and
+// returns it normalized to lowercase. It returns an error otherwise, so an
+// ill-formed Country cannot be constructed. The two-ASCII-letter rule is the
+// only invariant enforced; ParseCountry does not check the code against any ISO
+// registry.
+func ParseCountry(s string) (Country, error) {
+	if len(s) != 2 || !isASCIILetter(s[0]) || !isASCIILetter(s[1]) {
+		return "", fmt.Errorf("domain: %q is not a two-letter country code", s)
 	}
-	if len(parts) < 2 {
-		return ""
-	}
-	return twoLowerLetters(parts[1])
+	return Country(strings.ToLower(s)), nil
 }
 
-// twoLowerLetters returns the uppercase form of s when s is exactly two
-// lowercase ASCII letters, and "" otherwise.
-func twoLowerLetters(s string) string {
-	if len(s) != 2 {
-		return ""
-	}
-	a, b := s[0], s[1]
-	if a < 'a' || a > 'z' || b < 'a' || b > 'z' {
-		return ""
-	}
-	return strings.ToUpper(s)
+// isASCIILetter reports whether b is an ASCII letter (a–z or A–Z).
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }

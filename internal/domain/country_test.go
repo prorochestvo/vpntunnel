@@ -4,30 +4,35 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestCountryFromID(t *testing.T) {
+func TestParseCountry(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		id   string
-		want string
-	}{
-		{"se-sto-wg-001", "SE"},
-		{"mullvad-ch-zrh-wg-001", "CH"},
-		{"mullvad-us-nyc-wg-501", "US"},
-		{"12-foo", ""},
-		{"XY-foo", ""},
-		{"se", "SE"},
-		{"", ""},
-		{"a-b", ""},
-	}
+	t.Run("valid two-letter codes normalize to lowercase", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			in   string
+			want Country
+		}{
+			{"se", "se"},
+			{"SE", "se"},
+			{"Ch", "ch"},
+			{"uS", "us"},
+		}
+		for _, tc := range cases {
+			got, err := ParseCountry(tc.in)
+			require.NoError(t, err, "ParseCountry(%q)", tc.in)
+			assert.Equal(t, tc.want, got)
+		}
+	})
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.id, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.want, CountryFromID(tc.id))
-		})
-	}
+	t.Run("rejects input that is not two ASCII letters", func(t *testing.T) {
+		t.Parallel()
+		for _, in := range []string{"", "a", "abc", "12", "s1", "a-", " s", "s "} {
+			_, err := ParseCountry(in)
+			assert.Error(t, err, "ParseCountry(%q) must fail", in)
+		}
+	})
 }
