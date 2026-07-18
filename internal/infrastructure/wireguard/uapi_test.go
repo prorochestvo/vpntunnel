@@ -2,7 +2,6 @@ package wireguard
 
 import (
 	"net/netip"
-	"os"
 	"strings"
 	"testing"
 
@@ -60,6 +59,17 @@ func TestResolveEndpoint(t *testing.T) {
 	})
 }
 
+// wantCanonicalIpcSet is the exact key=value UAPI payload buildIpcSet emits for
+// testOpts()+knownEndpoint. Kept inline rather than in testdata/ because the
+// test exercises the encoder, not disk reads.
+const wantCanonicalIpcSet = `private_key=0000000000000000000000000000000000000000000000000000000000000000
+public_key=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+endpoint=192.0.2.1:51820
+persistent_keepalive_interval=25
+allowed_ip=0.0.0.0/0
+allowed_ip=::/0
+`
+
 func TestBuildIpcSet(t *testing.T) {
 	t.Parallel()
 
@@ -69,9 +79,7 @@ func TestBuildIpcSet(t *testing.T) {
 		got, err := buildIpcSet(opts, knownEndpoint)
 		require.NoError(t, err)
 
-		want, err := os.ReadFile("testdata/uapi_canonical.txt")
-		require.NoError(t, err)
-		assert.Equal(t, string(want), got)
+		assert.Equal(t, wantCanonicalIpcSet, got)
 	})
 
 	t.Run("emits one allowed_ip line per prefix in order", func(t *testing.T) {
