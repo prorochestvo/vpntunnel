@@ -61,7 +61,7 @@ import (
 // notification (see notify.NewTelegram). It is non-secret and safe to log.
 const telegramAppTag = "#VPNTUNNEL"
 
-// runOpt is a functional option for runWithOpts, used to override internals in
+// runOpt is a functional option for run, used to override internals in
 // tests without altering the production code path.
 type runOpt func(*runOptions)
 
@@ -77,12 +77,12 @@ type runOptions struct {
 	// shutdownCtx, when non-nil, replaces signal.NotifyContext as the
 	// cancellation source. Test-only seam — production omits this to get the
 	// default signal-handling behaviour. The matching cancel func is held by
-	// the caller; runWithOpts never calls it.
+	// the caller; run never calls it.
 	shutdownCtx context.Context
 }
 
 // tlsOptions carries the TLS settings sourced from CLI flags, parsed and
-// validated before runWithOpts is called. Relative cert-dir paths are resolved
+// validated before run is called. Relative cert-dir paths are resolved
 // against the process cwd during parsing; production default is absolute.
 type tlsOptions struct {
 	// CertDir is the directory holding the API TLS cert/key. Always absolute.
@@ -143,41 +143,49 @@ func parseTLSOptions(certDir, hostname, ipSANsRaw string) (tlsOptions, error) {
 	}, nil
 }
 
-func main() {
-	var configPath string
-	var tlsCertDir string
-	var tlsHostname string
-	var tlsIPSANsRaw string
-	flag.StringVar(&configPath, "config", "./configs/proxy.json", "path to JSON config file")
+// parseFlags defines and parses the process CLI flags, resolving the config
+// path to an absolute path (so configDir, tunnelsDir, and every operator-facing
+// error message are cwd-independent) and validating the TLS settings into a
+// tlsOptions. It is called only from main: keeping flag.Parse out of init lets
+// this package's tests run without flag.Parse hitting the -test.* flags and
+// aborting the process.
+func parseFlags() (configPath string, tlsOpts tlsOptions, err error) {
+	var (
+		rawConfigPath string
+		tlsCertDir    string
+		tlsHostname   string
+		tlsIPSANsRaw  string
+	)
+	flag.StringVar(&rawConfigPath, "config", "./configs/proxy.json", "path to JSON config file")
 	flag.StringVar(&tlsCertDir, "tls-cert-dir", "", "directory holding the API TLS cert/key; empty runs the API as plain HTTP (loopback/dev only). Relative resolves against CWD.")
 	flag.StringVar(&tlsHostname, "tls-hostname", "localhost", "TLS server name embedded in the API certificate")
 	flag.StringVar(&tlsIPSANsRaw, "tls-ip-sans", "", "comma-separated list of IP Subject Alternative Names")
 	flag.Parse()
 
-	// resolve to an absolute path immediately so that configDir, tunnelsDir, and
-	// every operator-facing error message are absolute and cwd-independent.
-	absPath, err := filepath.Abs(configPath)
+	configPath, err = filepath.Abs(rawConfigPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, fmt.Errorf("resolve config path %q: %w", configPath, err))
-		os.Exit(1)
+		return "", tlsOptions{}, fmt.Errorf("resolve config path %q: %w", rawConfigPath, err)
 	}
 
-	tlsOpts, err := parseTLSOptions(tlsCertDir, tlsHostname, tlsIPSANsRaw)
+	tlsOpts, err = parseTLSOptions(tlsCertDir, tlsHostname, tlsIPSANsRaw)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return "", tlsOptions{}, err
 	}
 
-	if err := run(absPath, tlsOpts); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return configPath, tlsOpts, nil
 }
 
-// run is the production entry point. It delegates to runWithOpts with no
-// option overrides.
-func run(configPath string, tlsOpts tlsOptions) error {
-	return runWithOpts(configPath, tlsOpts)
+func main() {
+	configPath, tlsOpts, err := parseFlags()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	if err := run(configPath, tlsOpts); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 // resolveAuthToken returns the Bearer token to enforce. An empty string means
@@ -209,10 +217,10 @@ func resolveAuthToken(a config.Auth, configDir string) (string, error) {
 	return tok, nil
 }
 
-// runWithOpts is the full startup / run / shutdown path. tlsOpts carries the TLS
+// run is the full startup / run / shutdown path. tlsOpts carries the TLS
 // settings resolved from CLI flags. opts allow tests to inject fakes (e.g. a
 // fake device builder) without altering the production path.
-func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
+func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	var ro runOptions
 	for _, o := range opts {
 		o(&ro)
