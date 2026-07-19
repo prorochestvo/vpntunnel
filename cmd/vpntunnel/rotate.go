@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"vpntunnel/internal/application"
-	lazy "vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/tools/rotation"
 )
 

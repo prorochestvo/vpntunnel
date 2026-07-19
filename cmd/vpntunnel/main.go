@@ -44,7 +44,7 @@ import (
 
 	"vpntunnel/internal/application"
 	"vpntunnel/internal/application/asyncjob"
-	lazy "vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/httpserver"
 	"vpntunnel/internal/gateway/middleware"

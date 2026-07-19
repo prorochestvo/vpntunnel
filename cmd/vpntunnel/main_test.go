@@ -32,7 +32,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/application/asyncjob"
-	lazy "vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
 )

@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application"
-	lazy "vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/tools/rotation"
 )
