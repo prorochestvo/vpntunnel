@@ -1,7 +1,6 @@
 package router
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,75 +8,16 @@ import (
 
 	"vpntunnel/internal/gateway/httpV1/dto"
 	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/tools/rotation"
 )
 
-// RotationOutcome enumerates the possible results of a Rotator.Rotate call.
-type RotationOutcome int
-
-const (
-	// RotationRotated means the streaming device was torn down and rebuilt
-	// against a fresh random exit; RotationResult.Country is set.
-	RotationRotated RotationOutcome = iota
-	// RotationSkippedActive means the rotation was gated because active
-	// streaming sessions were in flight (force was false);
-	// RotationResult.ActiveSessions is set.
-	RotationSkippedActive
-	// RotationUnavailable means no live device could be rotated — no device
-	// was live, the post-teardown build failed, or the attempt was aborted by
-	// shutdown. Nothing changed observably beyond the normal reconnect path.
-	RotationUnavailable
-)
-
-// RotationResult is the transport-local outcome of a Rotate call. It never
-// carries endpoint, key material, PSK, or peer public key — only the fields
-// the /v1/admin/rotate response contract allows: the outcome (mapped to
-// "status"), the 2-letter country code (on RotationRotated), and the active
-// session count (on RotationSkippedActive).
-type RotationResult struct {
-	// Outcome selects which of Country / ActiveSessions is meaningful.
-	Outcome RotationOutcome
-	// Country is the lowercase 2-letter country code of the newly built
-	// exit. Set only when Outcome == RotationRotated.
-	Country string
-	// ActiveSessions is the number of in-flight streaming sessions that
-	// caused the rotation to be skipped. Set only when
-	// Outcome == RotationSkippedActive.
-	ActiveSessions int64
-}
-
-// Rotator triggers a graceful streaming-tunnel rotation. Implementations live
-// outside this package — the cmd/vpntunnel adapter bridges to
-// *lazy.StreamingSupervisor.RotateIfIdle — so the transport layer never
-// imports lazy, mirroring how Router/ZoneChecker/TunnelCatalog keep lazy out
-// of the handlers package.
-type Rotator interface {
-	// Rotate triggers a graceful streaming rotation. force=false gates the
-	// rotation on active sessions (see RotationSkippedActive); force=true
-	// rotates unconditionally, still via break-before-make + settle. err is
-	// non-nil only when ctx was cancelled before the attempt completed.
-	Rotate(ctx context.Context, force bool) (RotationResult, error)
-}
-
-// compile-time assertion: noopRotator must satisfy Rotator.
-var _ Rotator = noopRotator{}
-
-// noopRotator is the zero-allocation default used when Options.Rotator is
-// nil. It always reports RotationUnavailable so /v1/admin/rotate answers with
-// a clean 503 instead of a nil-pointer panic when no rotator is wired.
-type noopRotator struct{}
-
-// Rotate implements Rotator by always reporting RotationUnavailable.
-func (noopRotator) Rotate(context.Context, bool) (RotationResult, error) {
-	return RotationResult{Outcome: RotationUnavailable}, nil
-}
-
-// rotator returns the configured Rotator, defaulting to noopRotator{} so
-// handleRotate never needs to nil-check Options.Rotator.
-func (s *Server) rotator() Rotator {
+// rotator returns the configured Rotator, defaulting to rotation.NoopRotator{}
+// so handleRotate never needs to nil-check Options.Rotator.
+func (s *Server) rotator() rotation.Rotator {
 	if s.opts.Rotator != nil {
 		return s.opts.Rotator
 	}
-	return noopRotator{}
+	return rotation.NoopRotator{}
 }
 
 // handleRotate serves /v1/admin/rotate. The route is registered methodless
@@ -116,20 +56,20 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 	var resp dto.RotateResponse
 	status := http.StatusOK
 	switch result.Outcome {
-	case RotationRotated:
+	case rotation.RotationRotated:
 		resp = dto.RotateResponse{Status: "rotated", Country: result.Country}
 		s.log.Info("rotate: streaming tunnel rotated",
 			slog.String("request_id", reqID),
 			slog.String("country", result.Country),
 		)
-	case RotationSkippedActive:
+	case rotation.RotationSkippedActive:
 		active := result.ActiveSessions
 		resp = dto.RotateResponse{Status: "skipped_active", ActiveSessions: &active}
 		s.log.Info("rotate: skipped, sessions active",
 			slog.String("request_id", reqID),
 			slog.Int64("active_sessions", result.ActiveSessions),
 		)
-	case RotationUnavailable:
+	case rotation.RotationUnavailable:
 		status = http.StatusServiceUnavailable
 		resp = dto.RotateResponse{Status: "unavailable"}
 		s.log.Info("rotate: unavailable", slog.String("request_id", reqID))

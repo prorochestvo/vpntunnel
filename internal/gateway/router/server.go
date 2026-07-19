@@ -23,6 +23,7 @@ import (
 	"vpntunnel/internal/gateway/httpV1/routes"
 	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/infrastructure/observability"
+	"vpntunnel/internal/tools/rotation"
 )
 
 // Options carries everything Server needs to start.
@@ -85,10 +86,10 @@ type Options struct {
 	// startup when this is non-nil so the misconfiguration is loud.
 	ProxyForwarder handlers.Forwarder
 	// Rotator triggers a graceful streaming-tunnel rotation for
-	// POST /v1/admin/rotate. Optional — when nil, a noopRotator is used so
-	// the endpoint answers with a clean 503 "unavailable" instead of a
+	// POST /v1/admin/rotate. Optional — when nil, a rotation.NoopRotator is
+	// used so the endpoint answers with a clean 503 "unavailable" instead of a
 	// nil-pointer panic.
-	Rotator Rotator
+	Rotator rotation.Rotator
 }
 
 // New constructs a Server from opts and log. Server is safe for concurrent

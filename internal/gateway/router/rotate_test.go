@@ -11,22 +11,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/gateway/router"
+	"vpntunnel/internal/tools/rotation"
 )
 
-var _ router.Rotator = (*stubRotator)(nil)
+var _ rotation.Rotator = (*stubRotator)(nil)
 
-// stubRotator is a recording test double for router.Rotator: it always
+// stubRotator is a recording test double for rotation.Rotator: it always
 // returns the configured result/err and records every force value it was
 // called with, so tests can assert both the response body and that ?force
 // reached the rotator unchanged.
 type stubRotator struct {
 	mu     sync.Mutex
-	result router.RotationResult
+	result rotation.RotationResult
 	err    error
 	forces []bool
 }
 
-func (s *stubRotator) Rotate(_ context.Context, force bool) (router.RotationResult, error) {
+func (s *stubRotator) Rotate(_ context.Context, force bool) (rotation.RotationResult, error) {
 	s.mu.Lock()
 	s.forces = append(s.forces, force)
 	s.mu.Unlock()
@@ -102,7 +103,7 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("rotated outcome returns 200 with status and country", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		stub := &stubRotator{result: rotation.RotationResult{Outcome: rotation.RotationRotated, Country: "se"}}
 		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
@@ -116,7 +117,7 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("skipped_active outcome returns 200 with status and active_sessions", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationSkippedActive, ActiveSessions: 3}}
+		stub := &stubRotator{result: rotation.RotationResult{Outcome: rotation.RotationSkippedActive, ActiveSessions: 3}}
 		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
@@ -130,7 +131,7 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("unavailable outcome returns 503", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationUnavailable}}
+		stub := &stubRotator{result: rotation.RotationResult{Outcome: rotation.RotationUnavailable}}
 		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
@@ -140,7 +141,7 @@ func TestServer_handleRotate(t *testing.T) {
 		assert.Equal(t, "unavailable", body["status"])
 	})
 
-	t.Run("no rotator configured defaults to noopRotator and returns 503", func(t *testing.T) {
+	t.Run("no rotator configured defaults to NoopRotator and returns 503", func(t *testing.T) {
 		t.Parallel()
 		// no mutate func — Options.Rotator stays nil.
 		f := startServerMode(t, false)
@@ -154,7 +155,7 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("force=true reaches the rotator", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		stub := &stubRotator{result: rotation.RotationResult{Outcome: rotation.RotationRotated, Country: "se"}}
 		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
@@ -165,7 +166,7 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("no force param defaults to false", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		stub := &stubRotator{result: rotation.RotationResult{Outcome: rotation.RotationRotated, Country: "se"}}
 		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
@@ -176,7 +177,7 @@ func TestServer_handleRotate(t *testing.T) {
 
 	t.Run("responses carry X-Request-Id", func(t *testing.T) {
 		t.Parallel()
-		stub := &stubRotator{result: router.RotationResult{Outcome: router.RotationRotated, Country: "se"}}
+		stub := &stubRotator{result: rotation.RotationResult{Outcome: rotation.RotationRotated, Country: "se"}}
 		f := startServerMode(t, false, func(o *router.Options) { o.Rotator = stub })
 		t.Cleanup(f.shutdown)
 
