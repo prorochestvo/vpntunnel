@@ -1,4 +1,4 @@
-package auth_test
+package bearerauth_test
 
 import (
 	"testing"
@@ -6,14 +6,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/infrastructure/auth"
+	"vpntunnel/internal/tools/bearerauth"
 )
 
 func TestBearerVerifier_Verify(t *testing.T) {
 	t.Parallel()
 
 	const token = "super-secret-xk3m9v"
-	var v auth.Verifier = auth.NewBearerVerifier(token)
+	v := bearerauth.NewBearerVerifier(token)
 
 	t.Run("valid token returns true", func(t *testing.T) {
 		t.Parallel()
@@ -87,13 +87,13 @@ func TestNewBearerVerifier(t *testing.T) {
 	t.Run("panics on empty token", func(t *testing.T) {
 		t.Parallel()
 		require.Panics(t, func() {
-			auth.NewBearerVerifier("")
+			bearerauth.NewBearerVerifier("")
 		})
 	})
 
 	t.Run("returns non-nil verifier for non-empty token", func(t *testing.T) {
 		t.Parallel()
-		v := auth.NewBearerVerifier("tok")
+		v := bearerauth.NewBearerVerifier("tok")
 		require.NotNil(t, v)
 	})
 }

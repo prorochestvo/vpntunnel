@@ -47,10 +47,10 @@ import (
 	"vpntunnel/internal/gateway/httpserver"
 	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/gateway/router/apitls"
-	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/infrastructure/observability"
+	"vpntunnel/internal/tools/bearerauth"
 )
 
 // runOpt is a functional option for runWithOpts, used to override internals in
@@ -427,9 +427,9 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		return fmt.Errorf("resolve auth token: %w", err)
 	}
 
-	var verifier auth.Verifier
+	var verifier application.Verifier
 	if authToken != "" {
-		verifier = auth.NewBearerVerifier(authToken)
+		verifier = bearerauth.NewBearerVerifier(authToken)
 		source := "inline"
 		if cfg.VPNStream.Auth.TokenFile != "" {
 			source = "file=" + filepath.Base(cfg.VPNStream.Auth.TokenFile)

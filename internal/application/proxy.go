@@ -24,7 +24,6 @@ import (
 
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
-	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/publicerror"
 )
@@ -81,14 +80,23 @@ type ProxyServiceOptions struct {
 	DialTimeout time.Duration
 	// Verifier authenticates incoming proxy requests via Proxy-Authorization.
 	// Optional — when nil, auth is disabled and all requests pass through.
-	Verifier auth.Verifier
+	Verifier Verifier
+}
+
+// Verifier checks a Proxy-Authorization header value and reports whether it
+// carries valid credentials. It is defined here, in the sole consumer, so the
+// forward-proxy logic does not depend on any concrete verifier implementation;
+// the composition root supplies one (e.g. bearerauth.BearerVerifier). The
+// argument is the raw single value of the Proxy-Authorization header.
+type Verifier interface {
+	Verify(header string) bool
 }
 
 // ProxyService implements forward HTTP proxying (HandleHTTP) and HTTPS
 // tunnelling (HandleCONNECT). Methods are safe for concurrent use.
 type ProxyService struct {
 	dialer      egress.Dialer
-	verifier    auth.Verifier
+	verifier    Verifier
 	httpClient  *http.Client
 	access      *observability.AccessLogger
 	opLog       *slog.Logger

@@ -23,19 +23,20 @@ import (
 
 	"vpntunnel/internal/application"
 	"vpntunnel/internal/egress"
-	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
+	"vpntunnel/internal/tools/bearerauth"
 )
 
 var _ egress.Dialer = (*mockDialer)(nil)
-var _ auth.Verifier = (*mockVerifier)(nil)
+var _ application.Verifier = (*mockVerifier)(nil)
+var _ application.Verifier = (*bearerauth.BearerVerifier)(nil)
 var _ net.Conn = fakeConn{}
 var _ net.Addr = fakeAddr{}
 var _ http.ResponseWriter = (*fakeHijackWriter)(nil)
 var _ http.Hijacker = (*fakeHijackWriter)(nil)
 
-// mockVerifier is a test double for auth.Verifier.
+// mockVerifier is a test double for application.Verifier.
 type mockVerifier struct {
 	verifyFn func(string) bool
 }
@@ -367,7 +368,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		}))
 		t.Cleanup(upstream.Close)
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
@@ -411,7 +412,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 	t.Run("auth enabled with wrong token returns 407", func(t *testing.T) {
 		t.Parallel()
 		const secretToken = "test-secret-wrong-xk3m9v"
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
@@ -451,7 +452,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		}))
 		t.Cleanup(upstream.Close)
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
@@ -472,7 +473,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
@@ -497,7 +498,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
@@ -520,7 +521,7 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
@@ -987,7 +988,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 			_, _ = io.Copy(conn, conn)
 		}()
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
@@ -1045,7 +1046,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 	t.Run("auth enabled with wrong token returns 407 without hijacking", func(t *testing.T) {
 		t.Parallel()
 		const secretToken = "connect-wrong-xk3m9v"
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
@@ -1075,7 +1076,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 	t.Run("auth enabled with Basic scheme returns 407 without hijacking", func(t *testing.T) {
 		t.Parallel()
 		const secretToken = "connect-basic-scheme-xk3m9v"
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 		})
@@ -1109,7 +1110,7 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		v := auth.NewBearerVerifier(secretToken)
+		v := bearerauth.NewBearerVerifier(secretToken)
 		svc := newTestService(t, directDialer(), func(o *application.ProxyServiceOptions) {
 			o.Verifier = v
 			o.OpLog = logger
