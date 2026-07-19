@@ -1,7 +1,9 @@
-// Package hmackey derives stable, non-secret identifiers from a secret HMAC key.
-// It is a reusable primitive: given key material and a name, DeriveID returns a
-// deterministic lowercase-hex digest suitable for use as a public identifier.
-// The key is secret material and must never be logged; the derived id is not.
+// Package hmackey manages the lifecycle of a secret HMAC key and derives
+// stable, non-secret identifiers from it. LoadOrGenerate loads the key file
+// (generating and persisting a fresh key at mode 0600 on first run); DeriveID
+// turns key material plus a name into a deterministic lowercase-hex digest
+// suitable for use as a public identifier. The key is secret material and must
+// never be logged; the derived id is not.
 package hmackey
 
 import (

@@ -1,4 +1,4 @@
-package main
+package hmackey
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/publicerror"
-	"vpntunnel/internal/tools/hmackey"
 )
 
 // newBufLog returns a slog.Logger that writes JSON to buf and the *bytes.Buffer
@@ -22,7 +21,7 @@ func newBufLog(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
+func TestLoadOrGenerate(t *testing.T) {
 	t.Parallel()
 
 	t.Run("generates 64-byte 0600 file when absent", func(t *testing.T) {
@@ -32,9 +31,9 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		key, err := loadOrGenerateTunnelIDKey(path, dir, log)
+		key, err := LoadOrGenerate(path, dir, log)
 		require.NoError(t, err)
-		assert.Len(t, key, tunnelIDKeyLen, "returned key must be 64 bytes")
+		assert.Len(t, key, keyLen, "returned key must be 64 bytes")
 
 		// file must exist and be readable.
 		info, err := os.Stat(path)
@@ -55,7 +54,7 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "tunnel-id.key")
 
-		want := make([]byte, tunnelIDKeyLen)
+		want := make([]byte, keyLen)
 		for i := range want {
 			want[i] = byte(i + 1)
 		}
@@ -64,7 +63,7 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		key, err := loadOrGenerateTunnelIDKey(path, dir, log)
+		key, err := LoadOrGenerate(path, dir, log)
 		require.NoError(t, err)
 		assert.Equal(t, want, key, "loaded key must match written bytes")
 
@@ -76,13 +75,13 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "tunnel-id.key")
 
-		want := make([]byte, tunnelIDKeyLen)
+		want := make([]byte, keyLen)
 		require.NoError(t, os.WriteFile(path, want, 0o644))
 
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		_, err := loadOrGenerateTunnelIDKey(path, dir, log)
+		_, err := LoadOrGenerate(path, dir, log)
 		require.Error(t, err)
 
 		var pe *publicerror.Error
@@ -104,7 +103,7 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		_, err := loadOrGenerateTunnelIDKey(path, dir, log)
+		_, err := LoadOrGenerate(path, dir, log)
 		require.Error(t, err)
 
 		var pe *publicerror.Error
@@ -128,31 +127,31 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		key, err := loadOrGenerateTunnelIDKey(relPath, dir, log)
+		key, err := LoadOrGenerate(relPath, dir, log)
 		require.NoError(t, err)
-		assert.Len(t, key, tunnelIDKeyLen)
+		assert.Len(t, key, keyLen)
 
 		expectedPath := filepath.Join(dir, "auth", "tunnel-id.key")
 		_, err = os.Stat(expectedPath)
 		require.NoError(t, err, "key file must be created at the joined path")
 	})
 
-	t.Run("generated key is usable by hmackey.DeriveID", func(t *testing.T) {
+	t.Run("generated key is usable by DeriveID", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "tunnel-id.key")
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		key, err := loadOrGenerateTunnelIDKey(path, dir, log)
+		key, err := LoadOrGenerate(path, dir, log)
 		require.NoError(t, err)
 
-		id := hmackey.DeriveID(key, "se-sto-wg-001")
-		assert.Len(t, id, 64, "TunnelID must return a 64-char hex string")
+		id := DeriveID(key, "se-sto-wg-001")
+		assert.Len(t, id, 64, "DeriveID must return a 64-char hex string")
 
 		matched, err := regexp.MatchString(`^[0-9a-f]{64}$`, id)
 		require.NoError(t, err)
-		assert.True(t, matched, "TunnelID output must be lowercase hex")
+		assert.True(t, matched, "DeriveID output must be lowercase hex")
 	})
 
 	t.Run("slog output never contains the key bytes", func(t *testing.T) {
@@ -162,7 +161,7 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		var logBuf bytes.Buffer
 		log := newBufLog(&logBuf)
 
-		key, err := loadOrGenerateTunnelIDKey(path, dir, log)
+		key, err := LoadOrGenerate(path, dir, log)
 		require.NoError(t, err)
 
 		assertKeyNotLogged(t, &logBuf, key)

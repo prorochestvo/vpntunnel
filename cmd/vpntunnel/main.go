@@ -52,6 +52,7 @@ import (
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/tools/bearerauth"
+	"vpntunnel/internal/tools/hmackey"
 )
 
 // runOpt is a functional option for runWithOpts, used to override internals in
@@ -290,7 +291,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		slog.Int("count", len(discovered)),
 	)
 
-	hmacKey, err := loadOrGenerateTunnelIDKey(cfg.TunnelIDHMACKeyFile, configDir, opLog)
+	hmacKey, err := hmackey.LoadOrGenerate(cfg.TunnelIDHMACKeyFile, configDir, opLog)
 	if err != nil {
 		return fmt.Errorf("load tunnel-id hmac key: %w", err)
 	}

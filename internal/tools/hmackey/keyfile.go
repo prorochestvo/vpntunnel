@@ -1,4 +1,4 @@
-package main
+package hmackey
 
 import (
 	"crypto/rand"
@@ -12,23 +12,22 @@ import (
 	"vpntunnel/internal/publicerror"
 )
 
-// tunnelIDKeyLen is the length in bytes of the tunnel-id HMAC key. 64 is the
-// SHA-256 block size: HMAC uses a key up to the block size directly, whereas a
-// longer key is first hashed down to 32 bytes — no security gain and one extra
-// hash. 64 is therefore the longest key that adds entropy without an extra
-// hashing step. The key is HMAC'd once per tunnel at startup, never per
-// request, so its length has no effect on request-path performance.
-const tunnelIDKeyLen = 64
+// keyLen is the length in bytes of the HMAC key. 64 is the SHA-256 block size:
+// HMAC uses a key up to the block size directly, whereas a longer key is first
+// hashed down to 32 bytes — no security gain and one extra hash. 64 is
+// therefore the longest key that adds entropy without an extra hashing step.
+// The key is HMAC'd once per name at startup, never per request, so its length
+// has no effect on request-path performance.
+const keyLen = 64
 
-// loadOrGenerateTunnelIDKey returns the 64-byte HMAC key for tunnel-id
-// derivation. If the file at path does not exist, a fresh 64-byte random key
-// is generated, written to path at mode 0600, and returned. If the file
-// already exists, it is stat-checked (must be 0600), read, and length-checked
-// (must be exactly 64 bytes). The key bytes are never logged.
+// LoadOrGenerate returns the 64-byte HMAC key at path. If the file does not
+// exist, a fresh 64-byte random key is generated, written to path at mode 0600,
+// and returned. If the file already exists, it is stat-checked (must be 0600),
+// read, and length-checked (must be exactly 64 bytes). The key bytes are never
+// logged — only the file basename and key_len appear in log records.
 //
-// path is resolved relative to configDir when it is not absolute, mirroring
-// the resolution rule used by resolveAuthToken and LoadTokens.
-func loadOrGenerateTunnelIDKey(path, configDir string, opLog *slog.Logger) ([]byte, error) {
+// path is resolved relative to configDir when it is not absolute.
+func LoadOrGenerate(path, configDir string, opLog *slog.Logger) ([]byte, error) {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(configDir, path)
 	}
@@ -43,7 +42,7 @@ func loadOrGenerateTunnelIDKey(path, configDir string, opLog *slog.Logger) ([]by
 	}
 
 	// file was created — generate and write a fresh key.
-	var k [tunnelIDKeyLen]byte
+	var k [keyLen]byte
 	if _, err := rand.Read(k[:]); err != nil {
 		// close and remove the empty placeholder we just created.
 		_ = f.Close()
@@ -61,7 +60,7 @@ func loadOrGenerateTunnelIDKey(path, configDir string, opLog *slog.Logger) ([]by
 
 	opLog.Info("tunnel id hmac key generated",
 		slog.String("source", filepath.Base(path)),
-		slog.Int("key_len", tunnelIDKeyLen),
+		slog.Int("key_len", keyLen),
 	)
 	return k[:], nil
 }
@@ -86,16 +85,16 @@ func loadExistingKey(path string, opLog *slog.Logger) ([]byte, error) {
 		return nil, fmt.Errorf("read tunnel-id hmac key file %q: %w", path, err)
 	}
 
-	if len(raw) != tunnelIDKeyLen {
+	if len(raw) != keyLen {
 		return nil, publicerror.New(fmt.Sprintf(
 			"tunnel_id_hmac_key_file: %q contains %d bytes; must be exactly %d bytes",
-			filepath.Base(path), len(raw), tunnelIDKeyLen,
+			filepath.Base(path), len(raw), keyLen,
 		))
 	}
 
 	opLog.Info("tunnel id hmac key loaded",
 		slog.String("source", filepath.Base(path)),
-		slog.Int("key_len", tunnelIDKeyLen),
+		slog.Int("key_len", keyLen),
 	)
 	return raw, nil
 }
