@@ -1,10 +1,11 @@
-// Package router implements the HTTPS API listener for the vpntunnel
-// daemon: TLS setup, request-ID middleware, Bearer-token auth, role-based
-// routing, and the UUIDv7 request-ID generator. Tokens and Role types are
-// defined in this file; the server skeleton lives in server.go; handlers
-// for /v1/admin/health, /v1/tunnels, and /v1/proxy/... live in the
-// handlers package under the sibling httpV1 directory.
-package router
+// Package middleware provides the cross-cutting, version-agnostic HTTP
+// primitives shared by the vpntunnel API listener: UUIDv7 request-ID
+// generation (NewRequestID) and role-based Bearer-token authentication —
+// loading, hashing, and constant-time matching of the admin/proxy tokens.
+// Token plaintext is never logged or retained; only SHA-512 hashes are kept
+// in memory. The per-server middleware chain that consumes these primitives
+// lives in the sibling gateway/router package.
+package middleware
 
 import (
 	"bytes"

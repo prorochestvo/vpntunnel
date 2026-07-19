@@ -45,6 +45,7 @@ import (
 	lazy "vpntunnel/internal/application/lazy"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/httpserver"
+	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
@@ -443,12 +444,12 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	}
 
 	// wire the API tokens and TLS certificate for the HTTPS API listener.
-	tokens, err := router.LoadTokens(cfg.API.Auth, configDir)
+	tokens, err := middleware.LoadTokens(cfg.API.Auth, configDir)
 	if err != nil {
 		return fmt.Errorf("load api tokens: %w", err)
 	}
 	// log token count (never values, never individual lengths beyond the count).
-	opLog.Info("api tokens loaded", slog.Int("token_count", router.TokenRoleCount))
+	opLog.Info("api tokens loaded", slog.Int("token_count", middleware.TokenRoleCount))
 
 	var cert *tls.Certificate
 	if tlsOpts.CertDir == "" {

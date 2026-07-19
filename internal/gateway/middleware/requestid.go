@@ -1,4 +1,4 @@
-package router
+package middleware
 
 import (
 	"crypto/rand"
@@ -7,14 +7,14 @@ import (
 	"time"
 )
 
-// newRequestID returns a UUIDv7 string in canonical 8-4-4-4-12 hex format.
+// NewRequestID returns a UUIDv7 string in canonical 8-4-4-4-12 hex format.
 //
 // Layout per RFC 9562:
 //   - bytes 0-5:  big-endian Unix milliseconds (48 bits)
 //   - bytes 6-7:  version (4 bits = 0x7) + 12 random bits
 //   - bytes 8-9:  variant (2 bits = 0b10) + 14 random bits
 //   - bytes 10-15: random
-func newRequestID() string {
+func NewRequestID() string {
 	var b [16]byte
 
 	// encode the 48-bit millisecond timestamp in the top 6 bytes of the

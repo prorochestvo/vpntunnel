@@ -29,6 +29,7 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
@@ -336,7 +337,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 		AdminTokenFile: writeToken("admin.token", adminPlain),
 		ProxyTokenFile: writeToken("user.token", userPlain),
 	}
-	tokens, err := router.LoadTokens(apiAuth, dir)
+	tokens, err := middleware.LoadTokens(apiAuth, dir)
 	require.NoError(t, err)
 
 	// load or generate a TLS cert only when running in HTTPS mode.

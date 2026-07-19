@@ -1,6 +1,6 @@
 //go:build !unix
 
-package router
+package middleware
 
 import "os"
 

@@ -1,3 +1,9 @@
+// Package router implements the HTTPS API listener for the vpntunnel daemon:
+// TLS setup, role-based routing, graceful shutdown, and the per-server
+// middleware chain that wraps the v1 API mux. The cross-cutting request-ID and
+// Bearer-token primitives it consumes live in the sibling gateway/middleware
+// package; handlers for /v1/admin/health, /v1/tunnels, and /v1/proxy/... live in
+// the handlers package under the sibling httpV1 directory.
 package router
 
 import (
@@ -15,6 +21,7 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/httpV1/routes"
+	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/infrastructure/observability"
 )
 
@@ -39,7 +46,7 @@ type Options struct {
 	// construction.
 	Cert *tls.Certificate
 	// Tokens is the loaded role-token map. Required.
-	Tokens *Tokens
+	Tokens *middleware.Tokens
 	// LiveHealth is the aggregated live health source. Required. It feeds only
 	// the /v1/admin/health handler; tunnel catalog data comes from TunnelCatalog.
 	LiveHealth *handlers.LiveHealthModel
@@ -213,11 +220,11 @@ func (s *Server) buildMux() http.Handler {
 	// a future /v1/tunnels/{id} detail route must be added carefully to avoid
 	// shadowing this listing route or the proxy wildcard.
 	mux.HandleFunc("GET "+routes.Tunnels,
-		s.requireRole(RoleProxy, RoleAdmin)(s.tunnelsHandler.ServeHTTP))
+		s.requireRole(middleware.RoleProxy, middleware.RoleAdmin)(s.tunnelsHandler.ServeHTTP))
 
 	// GET /v1/admin/health — admin only.
 	mux.HandleFunc("GET "+routes.AdminHealth,
-		s.requireRole(RoleAdmin)(s.handleHealth))
+		s.requireRole(middleware.RoleAdmin)(s.handleHealth))
 
 	// /v1/admin/rotate — admin only. Registered methodless (not
 	// "POST /v1/admin/rotate") because the "/" catch-all defeats Go's
@@ -225,13 +232,13 @@ func (s *Server) buildMux() http.Handler {
 	// fall through to the catch-all's 404); handleRotate checks the method
 	// itself and replies 405 with Allow: POST.
 	mux.HandleFunc(routes.AdminRotate,
-		s.requireRole(RoleAdmin)(s.handleRotate))
+		s.requireRole(middleware.RoleAdmin)(s.handleRotate))
 
 	// /v1/tunnels/{id}/proxy/{scheme}/{rest...} — user or admin. Access logging wraps
 	// the route when opts.Access is configured; the sanitiser patterns are applied
 	// inside AccessLogger.Log before the JSONL line is written.
 	// Body cap (http.MaxBytesReader) is applied inside the proxy handler.
-	proxyInner := s.requireRole(RoleProxy, RoleAdmin)(s.proxyHandler.ServeHTTP)
+	proxyInner := s.requireRole(middleware.RoleProxy, middleware.RoleAdmin)(s.proxyHandler.ServeHTTP)
 	if s.opts.Access != nil {
 		mux.Handle(routes.TunnelProxy, s.withAccessLog(http.HandlerFunc(proxyInner)))
 	} else {
@@ -262,7 +269,7 @@ func (s *Server) notFoundHandler() http.Handler {
 // X-Request-Id, and stores it in the request context for downstream handlers.
 func (s *Server) withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := newRequestID()
+		id := middleware.NewRequestID()
 		w.Header().Set("X-Request-Id", id)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -305,11 +312,11 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 //
 // Panics if allowed is empty — this is a programmer error caught at wiring
 // time, not runtime.
-func (s *Server) requireRole(allowed ...Role) func(http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requireRole(allowed ...middleware.Role) func(http.HandlerFunc) http.HandlerFunc {
 	if len(allowed) == 0 {
 		panic("requireRole: at least one role must be specified")
 	}
-	set := make(map[Role]struct{}, len(allowed))
+	set := make(map[middleware.Role]struct{}, len(allowed))
 	for _, r := range allowed {
 		set[r] = struct{}{}
 	}
@@ -419,8 +426,8 @@ func requestIDFromContext(ctx context.Context) string {
 
 // roleFromContext returns the Role stored by withAuth and a boolean indicating
 // whether the key was present. ok is false when the auth middleware did not run.
-func roleFromContext(ctx context.Context) (Role, bool) {
-	v, ok := ctx.Value(ctxKeyRole).(Role)
+func roleFromContext(ctx context.Context) (middleware.Role, bool) {
+	v, ok := ctx.Value(ctxKeyRole).(middleware.Role)
 	return v, ok
 }
 

@@ -25,6 +25,7 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/gateway/router"
 	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
@@ -117,7 +118,7 @@ func startServerMode(t *testing.T, tlsEnabled bool, mutate ...func(*router.Optio
 		ProxyTokenFile: userFile,
 	}
 
-	tokens, err := router.LoadTokens(apiAuth, dir)
+	tokens, err := middleware.LoadTokens(apiAuth, dir)
 	require.NoError(t, err)
 
 	// load or generate a TLS cert only when TLS is enabled.
@@ -544,7 +545,7 @@ func TestServer_HTTPMode(t *testing.T) {
 			AdminTokenFile: writeTokenFn("admin.token", adminPlain),
 			ProxyTokenFile: writeTokenFn("user.token", userPlain),
 		}
-		tokens, err := router.LoadTokens(apiAuth, dir)
+		tokens, err := middleware.LoadTokens(apiAuth, dir)
 		require.NoError(t, err)
 
 		streaming := &fakeLiveHealther{
@@ -646,7 +647,7 @@ func startAuthServer(t *testing.T) *authServerFixture {
 		ProxyTokenFile: userFile,
 	}
 
-	tokens, err := router.LoadTokens(apiAuth, dir)
+	tokens, err := middleware.LoadTokens(apiAuth, dir)
 	require.NoError(t, err)
 
 	certDir := filepath.Join(dir, "tls")

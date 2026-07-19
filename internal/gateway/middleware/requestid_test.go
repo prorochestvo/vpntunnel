@@ -1,4 +1,4 @@
-package router
+package middleware
 
 import (
 	"regexp"
@@ -15,13 +15,13 @@ func TestNewRequestID(t *testing.T) {
 
 	t.Run("format_is_canonical_uuid_8_4_4_4_12", func(t *testing.T) {
 		t.Parallel()
-		id := newRequestID()
+		id := NewRequestID()
 		assert.Regexp(t, uuidv7Regex, id, "UUIDv7 must match 8-4-4-4-12 canonical hex format")
 	})
 
 	t.Run("version_is_7", func(t *testing.T) {
 		t.Parallel()
-		id := newRequestID()
+		id := NewRequestID()
 		// canonical form: xxxxxxxx-xxxx-Mxxx-xxxx-xxxxxxxxxxxx
 		// M is at index 14 (0-indexed): "00000000-0000-7xxx-..."
 		require.Len(t, id, 36)
@@ -30,7 +30,7 @@ func TestNewRequestID(t *testing.T) {
 
 	t.Run("variant_is_rfc9562", func(t *testing.T) {
 		t.Parallel()
-		id := newRequestID()
+		id := NewRequestID()
 		// variant byte is at index 19: "xxxxxxxx-xxxx-xxxx-Nxxx-..."
 		// RFC 9562 variant means top 2 bits are 0b10, so hex digit is 8, 9, a, or b.
 		require.Len(t, id, 36)
@@ -43,7 +43,7 @@ func TestNewRequestID(t *testing.T) {
 		const n = 1000
 		seen := make(map[string]struct{}, n)
 		for range n {
-			id := newRequestID()
+			id := NewRequestID()
 			_, dup := seen[id]
 			assert.False(t, dup, "duplicate UUIDv7 generated: %s", id)
 			seen[id] = struct{}{}
@@ -55,8 +55,8 @@ func TestNewRequestID(t *testing.T) {
 		// the first 12 hex chars encode the 48-bit millisecond timestamp.
 		// two IDs generated in succession must have lhs <= rhs lexicographically
 		// (same millisecond → equal prefixes; later millisecond → larger prefix).
-		id1 := newRequestID()
-		id2 := newRequestID()
+		id1 := NewRequestID()
+		id2 := NewRequestID()
 
 		prefix1 := id1[0:8] + id1[9:13] // remove the first hyphen
 		prefix2 := id2[0:8] + id2[9:13]

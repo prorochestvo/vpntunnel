@@ -1,4 +1,4 @@
-package router
+package middleware
 
 import (
 	"crypto/sha512"
