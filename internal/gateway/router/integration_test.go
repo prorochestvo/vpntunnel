@@ -33,6 +33,7 @@ import (
 	"vpntunnel/internal/gateway/router/apitls"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
+	"vpntunnel/internal/tools/hmackey"
 )
 
 // compile-time interface assertions for integration-test fakes.
@@ -242,7 +243,7 @@ type integrationDaemon struct {
 	userToken string
 	// hmacKey is the fixed 32-byte test HMAC key used to derive tunnel ids for
 	// e2e path assertions. Tests compute the expected {id} via
-	// domain.TunnelID(daemon.hmacKey, basename).
+	// hmackey.DeriveID(daemon.hmacKey, basename).
 	hmacKey []byte
 	// store is exposed so tests can inspect bbolt state or wait for workers.
 	store asyncjob.Store
@@ -348,7 +349,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 
 	// build a real EligibleSet (HMAC-keyed) used as both ZoneChecker and TunnelCatalog.
 	// A fixed 32-byte test key is used so e2e tests can compute the expected {id} via
-	// domain.TunnelID(testHMACKey, basename) without hard-coding a hash.
+	// hmackey.DeriveID(testHMACKey, basename) without hard-coding a hash.
 	testHMACKey := bytes.Repeat([]byte{0x42}, 32)
 	tunnelsDir := filepath.Join(dir, "tunnels")
 	require.NoError(t, os.MkdirAll(tunnelsDir, 0o700))
@@ -476,7 +477,7 @@ func intProxyReq(t *testing.T, daemon *integrationDaemon, method, upstreamURL, t
 		hostPath += "?" + parsed.URL.RawQuery
 	}
 
-	tunnelID := domain.TunnelID(daemon.hmacKey, "se-sto-wg-001")
+	tunnelID := hmackey.DeriveID(daemon.hmacKey, "se-sto-wg-001")
 	target := daemon.baseURL + "/v1/tunnels/" + tunnelID + "/proxy/" + scheme + "/" + hostPath
 	req, err := http.NewRequestWithContext(context.Background(), method, target, nil)
 	require.NoError(t, err)
@@ -1162,7 +1163,7 @@ func TestProxyHMACRouting(t *testing.T) {
 	t.Run("hmac_id_in_full_set_routes_to_upstream", func(t *testing.T) {
 		t.Parallel()
 		// compute the id the same way the daemon did — must not hard-code the hash.
-		id := domain.TunnelID(daemon.hmacKey, "se-sto-wg-001")
+		id := hmackey.DeriveID(daemon.hmacKey, "se-sto-wg-001")
 		parsed, err := http.NewRequest(http.MethodGet, upstream.URL+"/check", nil)
 		require.NoError(t, err)
 

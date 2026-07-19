@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/domain"
 	"vpntunnel/internal/publicerror"
+	"vpntunnel/internal/tools/hmackey"
 )
 
 // newBufLog returns a slog.Logger that writes JSON to buf and the *bytes.Buffer
@@ -137,7 +137,7 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		require.NoError(t, err, "key file must be created at the joined path")
 	})
 
-	t.Run("generated key is usable by domain.TunnelID", func(t *testing.T) {
+	t.Run("generated key is usable by hmackey.DeriveID", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "tunnel-id.key")
@@ -147,7 +147,7 @@ func TestLoadOrGenerateTunnelIDKey(t *testing.T) {
 		key, err := loadOrGenerateTunnelIDKey(path, dir, log)
 		require.NoError(t, err)
 
-		id := domain.TunnelID(key, "se-sto-wg-001")
+		id := hmackey.DeriveID(key, "se-sto-wg-001")
 		assert.Len(t, id, 64, "TunnelID must return a 64-char hex string")
 
 		matched, err := regexp.MatchString(`^[0-9a-f]{64}$`, id)

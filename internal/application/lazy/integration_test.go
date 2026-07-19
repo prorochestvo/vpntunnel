@@ -16,6 +16,7 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/publicerror"
+	"vpntunnel/internal/tools/hmackey"
 )
 
 // invariantDevice is an egress.DialerCloser tracked by the invariantBuilder. On
@@ -707,7 +708,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 		// now prove the on-demand scheduler CAN route to us-nyc (excluded by
 		// the streaming filter but present in the full set).
 		// the full set is keyed by HMAC id, so derive the id from the basename.
-		usNycID := domain.TunnelID(integKey, "us-nyc-wg-001")
+		usNycID := hmackey.DeriveID(integKey, "us-nyc-wg-001")
 		routeUSCh := make(chan routeResult2, 1)
 		go func() {
 			d, _, rel, err := sched.Route(ctx, usNycID)
@@ -732,7 +733,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 
 		// prove the full set is not blanket-accept-all: de-fra is not in allConfigs.
 		// pass the HMAC id (not the basename) since the full set is keyed by HMAC id.
-		deFraID := domain.TunnelID(integKey, "de-fra-wg-001")
+		deFraID := hmackey.DeriveID(integKey, "de-fra-wg-001")
 		_, _, _, deErr := sched.Route(ctx, deFraID)
 		require.Error(t, deErr, "routing to an unknown zone must return an error")
 		pe, ok := publicerror.Is(deErr)
