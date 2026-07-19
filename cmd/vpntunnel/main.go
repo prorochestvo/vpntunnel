@@ -40,6 +40,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prorochestvo/dsninjector"
+
 	"vpntunnel/internal/application"
 	"vpntunnel/internal/application/asyncjob"
 	lazy "vpntunnel/internal/application/lazy"
@@ -54,6 +56,10 @@ import (
 	"vpntunnel/internal/tools/bearerauth"
 	"vpntunnel/internal/tools/hmackey"
 )
+
+// telegramAppTag is the app-identity prefix injected into every Telegram
+// notification (see notify.NewTelegram). It is non-secret and safe to log.
+const telegramAppTag = "#VPNTUNNEL"
 
 // runOpt is a functional option for runWithOpts, used to override internals in
 // tests without altering the production code path.
@@ -232,10 +238,17 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	var notifier notify.Notifier = notify.Nop{}
 	var tgNotifier *notify.TelegramNotifier
 	if dsn := os.Getenv("VPNTUNNEL_TELEGRAMBOT_DSN"); dsn != "" {
-		tn, err := notify.NewTelegram(dsn, opLog)
-		if err != nil {
-			// NewTelegram returns a redacted error (never the DSN or the bot
-			// token); warn and keep running with notifications disabled.
+		// dsninjector.Parse embeds its raw input — which IS the bot token — in
+		// its error text, so a parse failure must NEVER log or format that error;
+		// it warns with a generic message only. The DataSource is built here (not
+		// inside notify) so the token-bearing parse error never crosses into the
+		// notify package.
+		ds, perr := dsninjector.Parse(dsn)
+		if perr != nil {
+			opLog.Warn("telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN")
+		} else if tn, err := notify.NewTelegram(ds, telegramAppTag, opLog); err != nil {
+			// NewTelegram returns a safe error (never the DSN or the bot token);
+			// warn and keep running with notifications disabled.
 			opLog.Warn("telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN",
 				slog.String("err", err.Error()),
 			)

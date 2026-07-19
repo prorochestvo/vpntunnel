@@ -11,24 +11,29 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prorochestvo/dsninjector"
 )
 
 // compile-time assertion that *TelegramNotifier satisfies Notifier.
 var _ Notifier = (*TelegramNotifier)(nil)
 
-// NewTelegram parses dsn (format tbot://<adminChatID>:@<botToken>/, where
-// <botToken> is <bot-id>:<secret>), starts the notifier's asynchronous sender
-// goroutine, and returns a ready TelegramNotifier. The caller must Close it
-// on shutdown. The returned error is safe to log — it never contains the DSN
-// or the bot token (see parseDSN). No identity probe (getMe) is performed at
-// construction; a bad token only surfaces as a redacted warning on the first
-// failed send.
-func NewTelegram(dsn string, opLog *slog.Logger) (*TelegramNotifier, error) {
-	adminChatID, token, err := parseDSN(dsn)
+// NewTelegram builds a Telegram notifier from a DataSource (parsed by the
+// caller from a DSN of the form tbot://<adminChatID>:@<botToken>/, where
+// <botToken> is <bot-id>:<secret>). tag is the non-secret app identity prefixed
+// to every message (e.g. "#VPNTUNNEL"), supplied by the caller so a different
+// app reusing this package can brand its own notifications. NewTelegram starts
+// the notifier's asynchronous sender goroutine and returns a ready
+// TelegramNotifier; the caller must Close it on shutdown. The returned error is
+// safe to log — it never contains the DSN or the bot token (see
+// extractIdentity). No identity probe (getMe) is performed at construction; a
+// bad token only surfaces as a redacted warning on the first failed send.
+func NewTelegram(ds dsninjector.DataSource, tag string, opLog *slog.Logger) (*TelegramNotifier, error) {
+	adminChatID, token, err := extractIdentity(ds)
 	if err != nil {
 		return nil, err
 	}
-	return newTelegramNotifier(adminChatID, token, "", "", nil, opLog), nil
+	return newTelegramNotifier(adminChatID, token, tag, "", "", nil, opLog), nil
 }
 
 // TelegramNotifier is a Notifier that posts tunnel-change events to a
@@ -40,6 +45,7 @@ func NewTelegram(dsn string, opLog *slog.Logger) (*TelegramNotifier, error) {
 type TelegramNotifier struct {
 	adminChatID int64
 	token       string
+	tag         string
 	apiBase     string
 	probeURL    string
 	now         func() time.Time
@@ -104,7 +110,7 @@ func (tn *TelegramNotifier) handle(ev Event) {
 		}
 	}
 
-	text := formatMessage(ev.Title, ev.Country, exit, ev.Filename)
+	text := formatMessage(tn.tag, ev.Title, ev.Country, exit, ev.Filename)
 	if err := sendMessage(tn.ctx, tn.apiBase, tn.token, tn.adminChatID, text); err != nil {
 		tn.opLog.Warn("notify: telegram send failed", slog.String("err", err.Error()))
 	}
@@ -188,7 +194,7 @@ type notifyJob struct {
 // defaults to time.Now; opLog defaults to slog.Default(). This is the shared
 // construction path for both NewTelegram and tests, which inject apiBase/
 // probeURL pointed at httptest servers and a fake now for the dedup window.
-func newTelegramNotifier(adminChatID int64, token, apiBase, probeURL string, now func() time.Time, opLog *slog.Logger) *TelegramNotifier {
+func newTelegramNotifier(adminChatID int64, token, tag, apiBase, probeURL string, now func() time.Time, opLog *slog.Logger) *TelegramNotifier {
 	if apiBase == "" {
 		apiBase = defaultAPIBase
 	}
@@ -203,6 +209,7 @@ func newTelegramNotifier(adminChatID int64, token, apiBase, probeURL string, now
 	tn := &TelegramNotifier{
 		adminChatID: adminChatID,
 		token:       token,
+		tag:         tag,
 		apiBase:     apiBase,
 		probeURL:    probeURL,
 		now:         now,

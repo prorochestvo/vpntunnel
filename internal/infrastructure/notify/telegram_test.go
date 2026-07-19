@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prorochestvo/dsninjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,7 +87,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		srv, calls := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
@@ -102,7 +103,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 
 		now := time.Now()
 		clk := &manualClock{t: now}
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", clk.now, discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
@@ -121,7 +122,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 
 		now := time.Now()
 		clk := &manualClock{t: now}
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", clk.now, discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
@@ -149,7 +150,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{
@@ -170,6 +171,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		defer mu.Unlock()
 		assert.NotContains(t, gotText, "exit")
 		assert.Contains(t, gotText, "se-sto-wg-001.conf")
+		assert.Contains(t, gotText, testTag, "the injected app tag must reach the sent message")
 	})
 
 	t.Run("telegram 500 does not panic and the sender survives", func(t *testing.T) {
@@ -179,7 +181,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
 		assert.NotPanics(t, func() {
@@ -202,7 +204,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		srv, _ := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		tn.Close()
 
 		select {
@@ -217,7 +219,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		srv, _ := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		tn.Close()
 		assert.NotPanics(t, func() { tn.Close() })
 	})
@@ -227,7 +229,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		srv, _ := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		tn.Close()
 
 		assert.NotPanics(t, func() {
@@ -244,7 +246,9 @@ func TestNewTelegram(t *testing.T) {
 		var buf strings.Builder
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-		tn, err := NewTelegram("tbot://987654321:@"+validToken+"/", logger)
+		ds, err := dsninjector.Parse("tbot://987654321:@" + validToken + "/")
+		require.NoError(t, err)
+		tn, err := NewTelegram(ds, testTag, logger)
 		require.NoError(t, err)
 		defer tn.Close()
 
@@ -254,14 +258,23 @@ func TestNewTelegram(t *testing.T) {
 		assert.NotContains(t, out, "987654321")
 	})
 
-	t.Run("malformed dsn returns a redacted error", func(t *testing.T) {
+	t.Run("data source without a valid token returns a safe error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewTelegram("not-a-valid-dsn-at-all", discardLogger())
+		ds, err := dsninjector.Parse("tbot://987654321:@not-a-token/")
+		require.NoError(t, err)
+
+		_, err = NewTelegram(ds, testTag, discardLogger())
 		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "not-a-token")
 	})
 }
 
 const validToken = "123456789:AAAAaaaaBBBBbbbbCCCCccccDDDDdddd123"
+
+// testTag is a stand-in app identity used by the notifier tests. It differs
+// from the production "#VPNTUNNEL" so a message asserting on it proves the tag
+// was threaded from the constructor rather than a leftover hardcoded prefix.
+const testTag = "#TESTAPP"
 
 // discardLogger returns a slog.Logger that drops everything, for tests that
 // don't assert on log output.

@@ -8,18 +8,24 @@ import (
 // formatMessage renders the HTML notification body Telegram sends with
 // parse_mode=HTML:
 //
-//	#VPNTUNNEL {title}
+//	{tag} {title}
 //	{details}                 (omitted when empty)
 //	<pre>{filename}</pre>     (omitted when filename == "")
 //
-// details is "{country} · exit {ip} ({city})" when exit is non-nil and has a
-// non-empty IP (the "({city})" segment and the leading "{country} · " prefix
-// are each dropped when empty); it falls back to just country when there is
-// no exit info; the line is omitted entirely when neither is available. Every
-// interpolated value is HTML-escaped; the literal "#VPNTUNNEL" prefix and the
+// tag is the caller-supplied, non-secret app identity (e.g. "#VPNTUNNEL"); the
+// leading "{tag} " prefix is dropped when tag is empty. details is
+// "{country} · exit {ip} ({city})" when exit is non-nil and has a non-empty IP
+// (the "({city})" segment and the leading "{country} · " prefix are each
+// dropped when empty); it falls back to just country when there is no exit
+// info; the line is omitted entirely when neither is available. Every
+// interpolated value is HTML-escaped; the caller-supplied tag prefix and the
 // <pre> tags are not.
-func formatMessage(title, country string, exit *exitInfo, filename string) string {
-	lines := []string{"#VPNTUNNEL " + html.EscapeString(title)}
+func formatMessage(tag, title, country string, exit *exitInfo, filename string) string {
+	head := html.EscapeString(title)
+	if tag != "" {
+		head = tag + " " + head
+	}
+	lines := []string{head}
 
 	if details := formatDetails(country, exit); details != "" {
 		lines = append(lines, details)
