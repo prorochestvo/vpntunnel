@@ -1,4 +1,15 @@
-package domain
+// Package egress defines the outbound-connection port interfaces shared across
+// the vpntunnel internal packages. These are hexagonal egress ports: they
+// appear in the signatures of cross-package interfaces (a router returns a
+// Dialer and Resolver; a forwarder accepts them), so they must be one shared
+// named contract each rather than redeclared per consumer.
+//
+// Callers use Dialer exclusively; implementations that own resources (e.g. a
+// userspace WireGuard device) also implement DialerCloser; implementations that
+// report tunnel health also implement HealthReporter; those that support DNS
+// resolution inside the tunnel also implement Resolver. The package has no I/O
+// and no imports beyond the standard library.
+package egress
 
 import (
 	"context"

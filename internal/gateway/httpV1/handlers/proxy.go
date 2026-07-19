@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 )
 
 // NewProxyHandler returns an http.Handler that validates, normalises, and
@@ -85,7 +85,7 @@ var _ asyncPool = (*asyncjob.Pool)(nil)
 // alternative implementations (e.g. a plain net/http round-tripper that
 // bypasses the WireGuard dialer for localhost upstreams).
 type Forwarder interface {
-	Forward(w http.ResponseWriter, r *http.Request, tunnelID string, dialer domain.Dialer, resolver domain.Resolver) error
+	Forward(w http.ResponseWriter, r *http.Request, tunnelID string, dialer egress.Dialer, resolver egress.Resolver) error
 }
 
 // proxyHandler implements http.Handler for the /v1/tunnels/{id}/proxy/{scheme}/{rest...} route.

@@ -14,10 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/publicerror"
 )
 
-// invariantDevice is a domain.DialerCloser tracked by the invariantBuilder. On
+// invariantDevice is an egress.DialerCloser tracked by the invariantBuilder. On
 // Close, it decrements the shared live counter and records the zone id so the
 // integration test can assert ordering.
 type invariantDevice struct {
@@ -47,8 +48,8 @@ func (d *invariantDevice) LastHandshake() (time.Time, error) {
 }
 
 // invariantDevice satisfies these interfaces at compile time.
-var _ domain.DialerCloser = (*invariantDevice)(nil)
-var _ domain.HealthReporter = (*invariantDevice)(nil)
+var _ egress.DialerCloser = (*invariantDevice)(nil)
+var _ egress.HealthReporter = (*invariantDevice)(nil)
 
 // eventLog is a concurrency-safe ordered log of string events.
 type eventLog struct {
@@ -130,7 +131,7 @@ func (b *invariantBuilder) failZone(zoneID string) {
 	b.mu.Unlock()
 }
 
-func (b *invariantBuilder) build(_ context.Context, configPath, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
+func (b *invariantBuilder) build(_ context.Context, configPath, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
 	zoneID := tunnelIDFromPath(configPath)
 
 	b.mu.Lock()
@@ -760,7 +761,7 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 
 // routeResult2 captures the return values of a single scheduler Route call.
 type routeResult2 struct {
-	d   domain.Dialer
+	d   egress.Dialer
 	rel func()
 	err error
 }

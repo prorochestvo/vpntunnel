@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/publicerror"
 )
@@ -59,7 +59,7 @@ func (b *schedulerDeviceBuilder) failZone(zoneID string) {
 }
 
 func (b *schedulerDeviceBuilder) builder(now time.Time) DeviceBuilderFn {
-	return func(_ context.Context, configPath, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
+	return func(_ context.Context, configPath, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
 		zoneID := tunnelIDFromPath(configPath)
 		b.mu.Lock()
 		fail := b.errFor[zoneID]
@@ -179,7 +179,7 @@ func TestOnDemandScheduler_Route(t *testing.T) {
 
 		// the first Route call triggers settle+build; advance past settle delay.
 		routeErrCh := make(chan error, 1)
-		var gotDialer domain.Dialer
+		var gotDialer egress.Dialer
 		var gotRelease func()
 		go func() {
 			d, _, rel, err := sched.Route(ctx, "us-nyc-wg-001")
@@ -233,7 +233,7 @@ func TestOnDemandScheduler_Route(t *testing.T) {
 
 		const n = 5
 		type routeResult struct {
-			d   domain.Dialer
+			d   egress.Dialer
 			rel func()
 			err error
 		}
@@ -467,7 +467,7 @@ func TestOnDemandScheduler_switch(t *testing.T) {
 
 // routeResult1 captures the return values of a single Route call.
 type routeResult1 struct {
-	d   domain.Dialer
+	d   egress.Dialer
 	rel func()
 	err error
 }

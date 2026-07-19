@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/ipdeny"
 )
 
@@ -50,8 +50,8 @@ func (f *tunnelForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	tunnelID string,
-	dialer domain.Dialer,
-	resolver domain.Resolver,
+	dialer egress.Dialer,
+	resolver egress.Resolver,
 ) error {
 	// recover from any panic; map to 500 internal_error so the request does not hang.
 	defer func() {
@@ -100,8 +100,8 @@ func (f *tunnelForwarder) ForwardRaw(
 	ctx context.Context,
 	req *http.Request,
 	tunnelID string,
-	dialer domain.Dialer,
-	resolver domain.Resolver,
+	dialer egress.Dialer,
+	resolver egress.Resolver,
 ) (asyncjob.UpstreamResponse, error) {
 	transport := f.transportFor(tunnelID, dialer, resolver)
 
@@ -155,7 +155,7 @@ func (f *tunnelForwarder) classifyRawError(err error) error {
 // transportFor returns the cached *http.Transport for tunnelID, building and
 // storing one on first access. The transport's DialContext enforces the IP
 // deny-list before dialing through the tunnel.
-func (f *tunnelForwarder) transportFor(id string, dialer domain.Dialer, resolver domain.Resolver) *http.Transport {
+func (f *tunnelForwarder) transportFor(id string, dialer egress.Dialer, resolver egress.Resolver) *http.Transport {
 	if existing, ok := f.transports.Load(id); ok {
 		return existing.(*http.Transport)
 	}
@@ -181,7 +181,7 @@ func (f *tunnelForwarder) transportFor(id string, dialer domain.Dialer, resolver
 // would otherwise reach into private space. .Unmap() is called on each
 // resolved address so IPv4-mapped IPv6 addresses (::ffff:10.x.x.x) correctly
 // match their IPv4 entries in DefaultDeny.
-func (f *tunnelForwarder) denyAwareDial(dialer domain.Dialer, resolver domain.Resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
+func (f *tunnelForwarder) denyAwareDial(dialer egress.Dialer, resolver egress.Resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {

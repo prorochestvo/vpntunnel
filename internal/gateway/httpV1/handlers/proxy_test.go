@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 )
 
@@ -28,7 +28,7 @@ import (
 var (
 	_ handlers.ZoneChecker = (*fakeChecker)(nil)
 	_ handlers.Router      = (*fakeRouter)(nil)
-	_ domain.Resolver      = (*fakeResolver)(nil)
+	_ egress.Resolver      = (*fakeResolver)(nil)
 )
 
 // fakeChecker implements handlers.ZoneChecker. It accepts any zone in its
@@ -45,19 +45,19 @@ func (c *fakeChecker) IsEligible(zoneID string) bool {
 // fakeRouter implements handlers.Router. On Route it returns the configured
 // dialer and resolver, or an error if err is non-nil.
 type fakeRouter struct {
-	dialer   domain.Dialer
-	resolver domain.Resolver
+	dialer   egress.Dialer
+	resolver egress.Resolver
 	err      error
 }
 
-func (r *fakeRouter) Route(_ context.Context, _ string) (domain.Dialer, domain.Resolver, func(), error) {
+func (r *fakeRouter) Route(_ context.Context, _ string) (egress.Dialer, egress.Resolver, func(), error) {
 	if r.err != nil {
 		return nil, nil, nil, r.err
 	}
 	return r.dialer, r.resolver, func() {}, nil
 }
 
-// fakeResolver satisfies domain.Resolver for tests.
+// fakeResolver satisfies egress.Resolver for tests.
 type fakeResolver struct {
 	addrs []netip.Addr
 	err   error
@@ -78,7 +78,7 @@ type fakeForwarder struct {
 
 var _ handlers.Forwarder = (*fakeForwarder)(nil)
 
-func (f *fakeForwarder) Forward(w http.ResponseWriter, r *http.Request, tunnelID string, _ domain.Dialer, _ domain.Resolver) error {
+func (f *fakeForwarder) Forward(w http.ResponseWriter, r *http.Request, tunnelID string, _ egress.Dialer, _ egress.Resolver) error {
 	f.captured = r
 	f.capturedID = tunnelID
 	if r.Body != nil {
@@ -126,7 +126,7 @@ func defaultTestRouter() *fakeRouter {
 	}
 }
 
-// noopDialer satisfies domain.Dialer but is never called in proxy unit tests
+// noopDialer satisfies egress.Dialer but is never called in proxy unit tests
 // because fakeForwarder ignores the dialer argument entirely.
 type noopDialer struct{}
 

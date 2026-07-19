@@ -19,7 +19,7 @@ type ipcGetter interface {
 // LastHandshake reports the most recent moment the WireGuard device
 // completed a handshake with the peer, by parsing IpcGet output. A
 // zero time.Time means no handshake has yet completed since
-// NewDialer returned. See domain.HealthReporter for the contract.
+// NewDialer returned. See egress.HealthReporter for the contract.
 //
 // LastHandshake is safe for concurrent use: IpcGet acquires the
 // device's internal lock. It is O(peers) and allocates one string

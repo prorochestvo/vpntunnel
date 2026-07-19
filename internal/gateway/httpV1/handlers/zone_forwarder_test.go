@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/publicerror"
 )
 
@@ -25,11 +25,11 @@ type fakeRouter struct {
 	// releaseCount records how many times release() was called.
 	releaseCount int
 	// dialer and resolver to return on success.
-	dialer   domain.Dialer
-	resolver domain.Resolver
+	dialer   egress.Dialer
+	resolver egress.Resolver
 }
 
-func (f *fakeRouter) Route(_ context.Context, _ string) (domain.Dialer, domain.Resolver, func(), error) {
+func (f *fakeRouter) Route(_ context.Context, _ string) (egress.Dialer, egress.Resolver, func(), error) {
 	if f.routeErr != nil {
 		return nil, nil, nil, f.routeErr
 	}
@@ -47,7 +47,7 @@ type fakeRawForwarder struct {
 	capturedReq *http.Request
 }
 
-func (f *fakeRawForwarder) ForwardRaw(_ context.Context, req *http.Request, _ string, _ domain.Dialer, _ domain.Resolver) (asyncjob.UpstreamResponse, error) {
+func (f *fakeRawForwarder) ForwardRaw(_ context.Context, req *http.Request, _ string, _ egress.Dialer, _ egress.Resolver) (asyncjob.UpstreamResponse, error) {
 	f.capturedReq = req
 	if f.err != nil {
 		return asyncjob.UpstreamResponse{}, f.err
@@ -58,7 +58,7 @@ func (f *fakeRawForwarder) ForwardRaw(_ context.Context, req *http.Request, _ st
 // panicForwarder panics inside ForwardRaw to verify release() is deferred.
 type panicForwarder struct{}
 
-func (p *panicForwarder) ForwardRaw(_ context.Context, _ *http.Request, _ string, _ domain.Dialer, _ domain.Resolver) (asyncjob.UpstreamResponse, error) {
+func (p *panicForwarder) ForwardRaw(_ context.Context, _ *http.Request, _ string, _ egress.Dialer, _ egress.Resolver) (asyncjob.UpstreamResponse, error) {
 	panic("test panic from ForwardRaw")
 }
 

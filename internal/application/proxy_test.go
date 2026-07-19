@@ -22,13 +22,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application"
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/auth"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
 )
 
-var _ domain.Dialer = (*mockDialer)(nil)
+var _ egress.Dialer = (*mockDialer)(nil)
 var _ auth.Verifier = (*mockVerifier)(nil)
 var _ net.Conn = fakeConn{}
 var _ net.Addr = fakeAddr{}
@@ -47,7 +47,7 @@ func (m *mockVerifier) Verify(header string) bool {
 	return false
 }
 
-// mockDialer is a test double for domain.Dialer.
+// mockDialer is a test double for egress.Dialer.
 type mockDialer struct {
 	dialFn func(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -87,7 +87,7 @@ func directDialer() *mockDialer {
 	}}
 }
 
-func newTestService(t *testing.T, dialer domain.Dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
+func newTestService(t *testing.T, dialer egress.Dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
 	t.Helper()
 	o := application.ProxyServiceOptions{
 		Dialer:      dialer,

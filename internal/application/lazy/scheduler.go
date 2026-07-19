@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
 	"vpntunnel/internal/publicerror"
 )
@@ -142,7 +143,7 @@ type OnDemandScheduler struct {
 	// LiveHealth. Using a mutex (not atomic) because reporter is an interface.
 	snapMu       sync.RWMutex
 	snapID       string
-	snapReporter domain.HealthReporter
+	snapReporter egress.HealthReporter
 }
 
 // Route acquires a dialer/resolver for the given tunnel and returns a release
@@ -151,7 +152,7 @@ type OnDemandScheduler struct {
 //
 // Returns a *publicerror.Error for unknown tunnels or device bring-up failures.
 // Returns ctx.Err() when ctx is cancelled while waiting.
-func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer domain.Dialer, resolver domain.Resolver, release func(), err error) {
+func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer egress.Dialer, resolver egress.Resolver, release func(), err error) {
 	configPath, ok := s.eligible.Lookup(tunnelID)
 	if !ok {
 		// tunnelID is an opaque string (HMAC id or basename) chosen by the operator
@@ -220,8 +221,8 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 
 	var (
 		currentZone     string
-		currentDevice   domain.DialerCloser
-		currentResolver domain.Resolver
+		currentDevice   egress.DialerCloser
+		currentResolver egress.Resolver
 
 		activeJobs int
 
@@ -243,19 +244,19 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 		settleTimer      <-chan time.Time
 	)
 
-	setSnapshot := func(id string, rep domain.HealthReporter) {
+	setSnapshot := func(id string, rep egress.HealthReporter) {
 		s.snapMu.Lock()
 		s.snapID = id
 		s.snapReporter = rep
 		s.snapMu.Unlock()
 	}
 
-	grant := func(req routeRequest, d domain.DialerCloser, res domain.Resolver) {
+	grant := func(req routeRequest, d egress.DialerCloser, res egress.Resolver) {
 		activeJobs++
 		req.replyCh <- routeReply{dialer: d, resolver: res}
 	}
 
-	grantAll := func(reqs []routeRequest, d domain.DialerCloser, res domain.Resolver) {
+	grantAll := func(reqs []routeRequest, d egress.DialerCloser, res egress.Resolver) {
 		for _, req := range reqs {
 			grant(req, d, res)
 		}
@@ -392,8 +393,8 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 			return
 		}
 
-		res, _ := d.(domain.Resolver)
-		rep, _ := d.(domain.HealthReporter)
+		res, _ := d.(egress.Resolver)
+		rep, _ := d.(egress.HealthReporter)
 		currentZone = tunnelID
 		currentDevice = d
 		currentResolver = res
@@ -518,7 +519,7 @@ func (s *OnDemandScheduler) logger() *slog.Logger {
 // the .conf basename, so the filename/country must be derived from
 // configPath instead. It is called only on the success branch of
 // finishSwitch, after the new device is already live.
-func (s *OnDemandScheduler) notifyChange(configPath string, d domain.Dialer) {
+func (s *OnDemandScheduler) notifyChange(configPath string, d egress.Dialer) {
 	base := filepath.Base(configPath)
 	cc := string(countryFromBasename(strings.TrimSuffix(base, ".conf")))
 	title := "on-demand: " + cc
@@ -544,8 +545,8 @@ type routeRequest struct {
 
 // routeReply is the Run loop's response to a routeRequest.
 type routeReply struct {
-	dialer   domain.Dialer
-	resolver domain.Resolver
+	dialer   egress.Dialer
+	resolver egress.Resolver
 	err      error
 }
 

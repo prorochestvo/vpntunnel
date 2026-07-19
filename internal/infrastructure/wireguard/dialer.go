@@ -1,4 +1,4 @@
-// Package wireguard provides a domain.Dialer backed by a userspace WireGuard
+// Package wireguard provides an egress.Dialer backed by a userspace WireGuard
 // device (wireguard-go) routed through a gVisor netstack TUN. The dialer
 // owns the device's lifecycle and must be Close()d on shutdown.
 //
@@ -18,19 +18,19 @@ import (
 	"net/netip"
 	"sync"
 
+	"vpntunnel/internal/egress"
+
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
-
-	"vpntunnel/internal/domain"
 )
 
 // compile-time assertions that WireGuardDialer satisfies all four interfaces.
 var (
-	_ domain.Dialer         = (*WireGuardDialer)(nil)
-	_ domain.DialerCloser   = (*WireGuardDialer)(nil)
-	_ domain.HealthReporter = (*WireGuardDialer)(nil)
-	_ domain.Resolver       = (*WireGuardDialer)(nil)
+	_ egress.Dialer         = (*WireGuardDialer)(nil)
+	_ egress.DialerCloser   = (*WireGuardDialer)(nil)
+	_ egress.HealthReporter = (*WireGuardDialer)(nil)
+	_ egress.Resolver       = (*WireGuardDialer)(nil)
 )
 
 // NewDialer builds the WireGuard device and brings it up administratively.
@@ -116,7 +116,7 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// WireGuardDialer implements domain.Dialer and domain.DialerCloser.
+// WireGuardDialer implements egress.Dialer and egress.DialerCloser.
 // It routes all outbound connections through a userspace WireGuard device.
 // It is safe for concurrent use after construction. The caller must call
 // Close() on shutdown to release the wireguard-go goroutines and UDP port.

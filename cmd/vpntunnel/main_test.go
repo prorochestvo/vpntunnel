@@ -33,7 +33,7 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	lazy "vpntunnel/internal/application/lazy"
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
 )
 
@@ -211,9 +211,9 @@ func TestParseTLSOptions(t *testing.T) {
 
 // compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
 var (
-	_ domain.DialerCloser   = (*smokeDialer)(nil)
-	_ domain.HealthReporter = (*smokeDialer)(nil)
-	_ domain.Resolver       = (*smokeDialer)(nil)
+	_ egress.DialerCloser   = (*smokeDialer)(nil)
+	_ egress.HealthReporter = (*smokeDialer)(nil)
+	_ egress.Resolver       = (*smokeDialer)(nil)
 )
 
 // smokeDialer is a no-op test double for the full tunnel interface set.
@@ -236,7 +236,7 @@ func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error)
 }
 
 // smokeBuilder is a lazy.DeviceBuilderFn that returns a smokeDialer for any config path.
-func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (domain.DialerCloser, error) {
+func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
 	return &smokeDialer{}, nil
 }
 

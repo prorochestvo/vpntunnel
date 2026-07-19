@@ -13,15 +13,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/domain"
+	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 	"vpntunnel/internal/publicerror"
 )
 
-// compile-time assertion: fakeDialer must satisfy domain.DialerCloser.
-var _ domain.DialerCloser = (*fakeDialer)(nil)
+// compile-time assertion: fakeDialer must satisfy egress.DialerCloser.
+var _ egress.DialerCloser = (*fakeDialer)(nil)
 
-// fakeDialer is a minimal in-memory domain.DialerCloser for build tests.
+// fakeDialer is a minimal in-memory egress.DialerCloser for build tests.
 type fakeDialer struct {
 	closeCount atomic.Int32
 }
@@ -66,7 +66,7 @@ func TestBuildDialer(t *testing.T) {
 		confPath := writeFakeConfBuild(t, dir, "mullvad-se-sto-wg-001")
 
 		fake := &fakeDialer{}
-		fn := BuilderFn(func(_ context.Context, parsed *wgconf.ParsedConfig, _ *slog.Logger) (domain.DialerCloser, error) {
+		fn := BuilderFn(func(_ context.Context, parsed *wgconf.ParsedConfig, _ *slog.Logger) (egress.DialerCloser, error) {
 			// verify parsed content was passed correctly
 			assert.NotEmpty(t, parsed.Interface.PrivateKey)
 			assert.NotEmpty(t, parsed.Peer.Endpoint)
@@ -106,7 +106,7 @@ func TestBuildDialer(t *testing.T) {
 		require.NoError(t, os.WriteFile(badPath, []byte("not a conf\n"), 0o600))
 
 		called := false
-		fn := BuilderFn(func(_ context.Context, _ *wgconf.ParsedConfig, _ *slog.Logger) (domain.DialerCloser, error) {
+		fn := BuilderFn(func(_ context.Context, _ *wgconf.ParsedConfig, _ *slog.Logger) (egress.DialerCloser, error) {
 			called = true
 			return nil, nil
 		})
@@ -123,7 +123,7 @@ func TestBuildDialer(t *testing.T) {
 		confPath := writeFakeConfBuild(t, dir, "mullvad-de-fra-wg-001")
 
 		injectedErr := errors.New("injected build failure")
-		fn := BuilderFn(func(_ context.Context, _ *wgconf.ParsedConfig, _ *slog.Logger) (domain.DialerCloser, error) {
+		fn := BuilderFn(func(_ context.Context, _ *wgconf.ParsedConfig, _ *slog.Logger) (egress.DialerCloser, error) {
 			return nil, injectedErr
 		})
 
@@ -139,7 +139,7 @@ func TestBuildDialer(t *testing.T) {
 		writeFakeConfBuild(t, dir, "mullvad-gb-lon-wg-001")
 
 		fake := &fakeDialer{}
-		fn := BuilderFn(func(_ context.Context, _ *wgconf.ParsedConfig, _ *slog.Logger) (domain.DialerCloser, error) {
+		fn := BuilderFn(func(_ context.Context, _ *wgconf.ParsedConfig, _ *slog.Logger) (egress.DialerCloser, error) {
 			return fake, nil
 		})
 
@@ -156,7 +156,7 @@ func TestBuildDialer(t *testing.T) {
 		confPath := writeFakeConfBuild(t, dir, "mullvad-ua-kiv-wg-001")
 
 		var capturedParsed *wgconf.ParsedConfig
-		fn := BuilderFn(func(_ context.Context, p *wgconf.ParsedConfig, _ *slog.Logger) (domain.DialerCloser, error) {
+		fn := BuilderFn(func(_ context.Context, p *wgconf.ParsedConfig, _ *slog.Logger) (egress.DialerCloser, error) {
 			capturedParsed = p
 			return &fakeDialer{}, nil
 		})
