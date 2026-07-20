@@ -18,19 +18,9 @@ import (
 	"net/netip"
 	"sync"
 
-	"vpntunnel/internal/egress"
-
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
-)
-
-// compile-time assertions that WireGuardDialer satisfies all four interfaces.
-var (
-	_ egress.Dialer         = (*WireGuardDialer)(nil)
-	_ egress.DialerCloser   = (*WireGuardDialer)(nil)
-	_ egress.HealthReporter = (*WireGuardDialer)(nil)
-	_ egress.Resolver       = (*WireGuardDialer)(nil)
 )
 
 // NewDialer builds the WireGuard device and brings it up administratively.

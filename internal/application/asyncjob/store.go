@@ -9,9 +9,6 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-// compile-time assertion that *bboltStore satisfies Store.
-var _ Store = (*bboltStore)(nil)
-
 // ErrNotFound is returned by CompareAndSwapStatus when the tag does not exist
 // in the store.
 var ErrNotFound = errors.New("asyncjob: tag not found")

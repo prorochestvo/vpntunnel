@@ -8,9 +8,6 @@ import (
 	"vpntunnel/internal/tools/rotation"
 )
 
-// compile-time assertion: rotateAdapter must satisfy rotation.Rotator.
-var _ rotation.Rotator = rotateAdapter{}
-
 // rotateAdapter bridges *lazy.StreamingSupervisor.RotateIfIdle and
 // *application.ProxyService.ActiveSessions to the transport-local
 // rotation.Rotator interface, so the router package never imports lazy

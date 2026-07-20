@@ -15,9 +15,6 @@ import (
 	"github.com/prorochestvo/dsninjector"
 )
 
-// compile-time assertion that *TelegramNotifier satisfies Notifier.
-var _ Notifier = (*TelegramNotifier)(nil)
-
 // NewTelegram builds a Telegram notifier from a DataSource (parsed by the
 // caller from a DSN of the form tbot://<adminChatID>:@<botToken>/, where
 // <botToken> is <bot-id>:<secret>). tag is the non-secret app identity prefixed

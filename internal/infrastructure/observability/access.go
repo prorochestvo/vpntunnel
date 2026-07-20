@@ -29,9 +29,6 @@ type PathSanitizePattern struct {
 	Replacement string
 }
 
-// compile-time assertion: lumberjack.Logger implements io.WriteCloser.
-var _ io.WriteCloser = (*lumberjack.Logger)(nil)
-
 // NewAccessLogger constructs an AccessLogger that writes JSONL records to a
 // rotating file described by cfg. It creates the parent directory with mode
 // 0o755 if it does not exist. Returns a plain error on mkdir or file-open

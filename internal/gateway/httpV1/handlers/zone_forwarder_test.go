@@ -16,6 +16,10 @@ import (
 
 // compile-time assertions: fakes must satisfy their target interfaces.
 var _ Router = (*fakeRouter)(nil)
+
+// compile-time contract assertions: the concrete forwarders satisfy their interfaces.
+var _ asyncjob.Forwarder = (*ZoneRoutingForwarder)(nil)
+var _ RawForwarder = (*tunnelForwarder)(nil)
 var _ RawForwarder = (*fakeRawForwarder)(nil)
 
 // fakeRouter is a test double for Router.

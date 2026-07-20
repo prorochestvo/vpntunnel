@@ -13,6 +13,9 @@ import (
 // compile-time assertion: fakeLiveHealther must satisfy liveHealther.
 var _ liveHealther = (*fakeLiveHealther)(nil)
 
+// compile-time contract assertion: LiveHealthModel must satisfy tunnelPool.
+var _ tunnelPool = (*LiveHealthModel)(nil)
+
 // fakeLiveHealther is a test double for liveHealther.
 type fakeLiveHealther struct {
 	health domain.TunnelHealth

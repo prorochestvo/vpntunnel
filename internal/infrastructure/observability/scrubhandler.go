@@ -70,9 +70,6 @@ var (
 	// captured by ReplaceAllStringFunc and preserved in the replacement.
 	reHostnamePort  = regexp.MustCompile(`(?:^|[\s"'=,(])[a-zA-Z][\w.-]*\.[a-zA-Z]{2,}:\d+\b`)
 	reLocalhostPort = regexp.MustCompile(`\blocalhost:\d+\b`)
-
-	// compile-time assertion that scrubHandler implements slog.Handler.
-	_ slog.Handler = (*scrubHandler)(nil)
 )
 
 const scrubReplacement = "<HOST:PORT>"

@@ -75,9 +75,6 @@ func (f ForwarderFunc) Forward(ctx context.Context, req *http.Request) (Upstream
 	return f(ctx, req)
 }
 
-// compile-time assertion: ForwarderFunc must satisfy Forwarder.
-var _ Forwarder = (ForwarderFunc)(nil)
-
 // Pool is a semaphore-bounded async job executor. It accepts inbound HTTP
 // requests keyed by a retry-tag, dispatches them to a Forwarder on a
 // background goroutine, and persists the result in a Store. Callers retrieve

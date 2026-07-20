@@ -103,9 +103,6 @@ type proxyHandler interface {
 	WaitTunnels(ctx context.Context) error
 }
 
-// compile-time assertion: *application.ProxyService satisfies proxyHandler.
-var _ proxyHandler = (*application.ProxyService)(nil)
-
 func rootHandler(h proxyHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {

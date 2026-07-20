@@ -432,9 +432,6 @@ func roleFromContext(ctx context.Context) (middleware.Role, bool) {
 	return v, ok
 }
 
-// compile-time assertion: noopCounter must satisfy handlers.AsyncJobCounter.
-var _ handlers.AsyncJobCounter = noopCounter{}
-
 // noopCounter is a zero-allocation stand-in used when Options.JobCounter is nil.
 // It always returns zero counts.
 type noopCounter struct{}

@@ -22,6 +22,9 @@ import (
 
 var _ egress.Dialer = (*blockingDialer)(nil)
 
+// compile-time contract assertion: rotateAdapter must satisfy rotation.Rotator.
+var _ rotation.Rotator = rotateAdapter{}
+
 // blockingDialer's DialContext blocks until release is closed or ctx is
 // cancelled, then always fails. It lets a test hold a ProxyService session
 // "in flight" long enough to observe ActiveSessions() > 0.

@@ -88,6 +88,9 @@ func TestWireGuardDialer_LastHandshake(t *testing.T) {
 // (duplication of the canonical one in dialer.go is intentional here: it
 // verifies the assertion from the test package's perspective).
 var _ egress.HealthReporter = (*WireGuardDialer)(nil)
+var _ egress.Dialer = (*WireGuardDialer)(nil)
+var _ egress.DialerCloser = (*WireGuardDialer)(nil)
+var _ egress.Resolver = (*WireGuardDialer)(nil)
 
 func TestParseLastHandshake(t *testing.T) {
 	t.Parallel()

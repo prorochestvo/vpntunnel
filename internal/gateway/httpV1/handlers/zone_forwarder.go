@@ -91,10 +91,6 @@ func (z *ZoneRoutingForwarder) Forward(ctx context.Context, req *http.Request) (
 	return z.base.ForwardRaw(ctx, req, zoneID, dialer, resolver)
 }
 
-// compile-time assertions: the concrete types must satisfy their interfaces.
-var _ asyncjob.Forwarder = (*ZoneRoutingForwarder)(nil)
-var _ RawForwarder = (*tunnelForwarder)(nil)
-
 // classifyRouteError maps a Route error to the stored UpstreamResponse the
 // async client will see when polling the job result.
 func classifyRouteError(err error) asyncjob.UpstreamResponse {

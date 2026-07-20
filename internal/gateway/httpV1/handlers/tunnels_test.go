@@ -19,6 +19,9 @@ type fakeCatalog struct {
 
 var _ tunnelCatalog = (*fakeCatalog)(nil)
 
+// compile-time contract assertion: *lazy.EligibleSet must implement TunnelCatalog.
+var _ TunnelCatalog = (*lazy.EligibleSet)(nil)
+
 func (f *fakeCatalog) Entries() []lazy.CatalogEntry { return f.entries }
 
 // threeEntryCatalog returns a catalog with two SE entries and one DE entry;

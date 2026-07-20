@@ -60,6 +60,3 @@ type Nop struct{}
 
 // Notify implements Notifier by doing nothing.
 func (Nop) Notify(context.Context, Event) {}
-
-// compile-time interface check.
-var _ Notifier = Nop{}

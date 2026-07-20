@@ -55,7 +55,3 @@ func (m *LiveHealthModel) Reports() []domain.TunnelHealth {
 		return []domain.TunnelHealth{}
 	}
 }
-
-// compile-time assertion: LiveHealthModel must satisfy the tunnelPool interface
-// that healthHandler depends on.
-var _ tunnelPool = (*LiveHealthModel)(nil)

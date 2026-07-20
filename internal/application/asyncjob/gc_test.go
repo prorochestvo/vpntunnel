@@ -16,6 +16,7 @@ import (
 )
 
 // compile-time assertions: panicStore and errorTransitionStore satisfy Store.
+var _ Store = (*bboltStore)(nil)
 var _ Store = (*panicStore)(nil)
 var _ Store = (*errorTransitionStore)(nil)
 

@@ -74,9 +74,6 @@ type asyncPool interface {
 	SubmitOrFetch(ctx context.Context, tag string, req *http.Request) (asyncjob.Outcome, error)
 }
 
-// compile-time assertion: *asyncjob.Pool must satisfy asyncPool.
-var _ asyncPool = (*asyncjob.Pool)(nil)
-
 // Forwarder dispatches a constructed *http.Request to the upstream and streams
 // the response back. The tunnelID, dialer, and resolver are passed so the
 // implementation can cache a per-tunnel http.Transport and enforce the IP

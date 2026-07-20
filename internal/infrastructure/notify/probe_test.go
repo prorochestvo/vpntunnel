@@ -19,6 +19,10 @@ import (
 
 var _ egress.Dialer = (*fakeDialer)(nil)
 
+// compile-time contract assertions: both Notifier implementations satisfy it.
+var _ Notifier = Nop{}
+var _ Notifier = (*TelegramNotifier)(nil)
+
 // fakeDialer is an egress.Dialer test double. When err is set, DialContext
 // always fails; otherwise it dials address for real over loopback, letting
 // tests point it at an httptest.Server without a real WireGuard device.

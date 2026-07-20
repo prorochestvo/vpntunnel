@@ -103,9 +103,6 @@ type tunnelCatalog interface {
 	Entries() []lazy.CatalogEntry
 }
 
-// compile-time check: *lazy.EligibleSet must implement TunnelCatalog.
-var _ TunnelCatalog = (*lazy.EligibleSet)(nil)
-
 // groupByCountry builds a map[country][]id from catalog entries. Entries with
 // an empty Country are grouped under "zz". Each id slice is sorted ascending.
 // Always returns an initialised (non-nil) map so the caller marshals "{}" for
