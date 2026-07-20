@@ -33,6 +33,7 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/constants"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
 )
@@ -715,7 +716,7 @@ func TestRun(t *testing.T) {
 		})
 
 		const malformedDSN = "tbot://not-a-valid-dsn"
-		t.Setenv("VPNTUNNEL_TELEGRAMBOT_DSN", malformedDSN)
+		t.Setenv(constants.EnvTelegramBotDSN, malformedDSN)
 
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
