@@ -1,0 +1,79 @@
+# Plan T01 — replace `cmd/generatevpnconfig` with a shell script
+
+Status: **OPEN — awaiting owner decision.** Source: review `tmp/review_20260717.txt`
+(item 1). This is the one review item deferred rather than executed.
+
+---
+
+## ⚠️ RECOMMENDATION: CANCEL THIS PLAN (do not implement)
+
+I recommend **not** converting `cmd/generatevpnconfig` to a bash script and
+**keeping the Go command**. Reasons, top to bottom:
+
+1. **The review's premise is factually wrong about the current code.** The item
+   reads "всё что он делает — вызываем генерацию ключа и меняет файлы" (all it does
+   is call key generation and edit files). The actual command is **942 lines of Go
+   + 1758 lines of tests** and does far more than that (see § What it actually
+   does). A bash script that only shells out to `wg genkey` and rewrites files is a
+   different, much smaller program.
+
+2. **A faithful bash rewrite would drop tested, security-relevant behavior:**
+   - Mullvad **zip ingest** (`archive/zip`): parse a downloaded `.zip` of wg-quick
+     `.conf` files and write one `.conf` per server. Reproducing archive parsing +
+     per-entry rewrite robustly in bash is error-prone.
+   - **Public-key-per-zip validation:** it derives the public key of every entry and
+     **refuses to write if the zip resolves to more than one public key** (a mixed-
+     device zip), printing the common key for cross-check against Mullvad. This is a
+     real correctness guard, not "edit a file."
+   - **Private-key injection** into keyless entries (the fan-out flow where one
+     locally-held keypair is reused across many servers without burning Mullvad's
+     device limit).
+   - **"The private key never appears in any log or terminal output"** — a security
+     invariant the Go code enforces; a shell pipeline is far easier to leak through
+     (set -x, error messages, `echo`).
+   - **Refuses to run without a TTY** so it cannot hang in CI or systemd.
+   - Interactive per-field manual mode (Address / Peer PublicKey / Endpoint / DNS /
+     AllowedIPs) and the optional name-prefix prompt.
+
+3. **Cost vs benefit is inverted.** The benefit ("it's just a script") does not
+   exist because the behavior is not script-shaped. The cost is losing
+   `plans/completed/260621.0001.generate-vpn-config.md` +
+   `260621.0002.ingest-mullvad-zip.md` worth of designed, tested functionality.
+
+Per the working rule "before deleting working code that contradicts how it was
+described, surface it": this contradiction is surfaced here for the owner's call.
+
+---
+
+## What it actually does (grounding for the re-read)
+
+`cmd/generatevpnconfig/main.go` package doc, verbatim summary:
+
+- Interactive operator CLI. Generates a WireGuard keypair locally, prints the
+  public key with Mullvad onboarding instructions.
+- Two modes: **Manual** (prompts each wg-quick field) and **Zip ingest** (reads a
+  Mullvad `.zip`, writes one `.conf` per server into `configs/tunnels/`, injecting
+  the local private key only into keyless entries; refuses a mixed-device zip).
+- Private key never logged; refuses without a TTY.
+- Wired into `make generate-vpn-config` (`Makefile`).
+
+## If the owner still wants it as a script
+
+Then it is a **scoped rewrite, not a mechanical conversion**, and the plan must
+first enumerate the current behavior (the two completed plans above are the spec)
+and decide, explicitly, which guarantees are dropped:
+
+- Keep manual mode only, and drop zip ingest? (loses the main convenience.)
+- Keep zip ingest in bash (unzip + per-file `awk`/`sed` rewrite + `wg pubkey`
+  dedupe)? (reproduces the pubkey-per-zip guard in shell — feasible but fragile.)
+- Accept that the "never log the private key" guarantee is weaker in a shell
+  pipeline, or invest to keep it (no `set -x`, careful redirection).
+
+Only after that enumeration and an explicit acceptance of the dropped guarantees
+should implementation start.
+
+## Decision
+
+- [ ] **Cancel** (keep the Go command) — recommended; move this file to
+  `plans/history/`.
+- [ ] **Proceed** as a scoped rewrite — then flesh the task list per § above.
