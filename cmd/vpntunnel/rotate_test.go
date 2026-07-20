@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application"
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/tools/rotation"
 )
@@ -60,17 +60,17 @@ func (d *closeSignalDevice) Close() error {
 	return nil
 }
 
-// newAdapterTestSupervisor builds a real *lazy.StreamingSupervisor wired with
+// newAdapterTestSupervisor builds a real *tunnelpool.StreamingSupervisor wired with
 // builder and a short rotateSettle, so rotateAdapter's outcome mapping can be
 // exercised without a real WireGuard build. rotateAdapter closes over the
-// concrete *lazy.StreamingSupervisor type (see rotate.go), so an
+// concrete *tunnelpool.StreamingSupervisor type (see rotate.go), so an
 // interface-level fake is not an option here — smokeBuilder (main_test.go) is
 // reused where a builder that always succeeds is enough.
-func newAdapterTestSupervisor(t *testing.T, builder lazy.DeviceBuilderFn, rotateSettle time.Duration) *lazy.StreamingSupervisor {
+func newAdapterTestSupervisor(t *testing.T, builder tunnelpool.DeviceBuilderFn, rotateSettle time.Duration) *tunnelpool.StreamingSupervisor {
 	t.Helper()
-	es, err := lazy.NewEligibleSet([]string{"/fake/se-sto-wg-001.conf"}, "/fake", nil)
+	es, err := tunnelpool.NewEligibleSet([]string{"/fake/se-sto-wg-001.conf"}, "/fake", nil)
 	require.NoError(t, err)
-	return lazy.NewStreamingSupervisor(lazy.SupervisorOptions{
+	return tunnelpool.NewStreamingSupervisor(tunnelpool.SupervisorOptions{
 		Eligible:        es,
 		DeviceBuilder:   builder,
 		HandshakeMaxAge: time.Hour,
@@ -84,7 +84,7 @@ func newAdapterTestSupervisor(t *testing.T, builder lazy.DeviceBuilderFn, rotate
 }
 
 // TestRotateAdapter_Rotate covers rotateAdapter's outcome mapping: each
-// lazy.Rotate* maps to the matching rotation.Rotation*, the ctx-cancel error
+// tunnelpool.Rotate* maps to the matching rotation.Rotation*, the ctx-cancel error
 // passes through unchanged, and ActiveSessions is populated only on the
 // skipped branch.
 func TestRotateAdapter_Rotate(t *testing.T) {

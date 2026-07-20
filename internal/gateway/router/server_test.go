@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
@@ -43,8 +43,8 @@ var (
 // real EligibleSet.
 type fakeCatalog struct{}
 
-func (fakeCatalog) Entries() []lazy.CatalogEntry {
-	return []lazy.CatalogEntry{
+func (fakeCatalog) Entries() []tunnelpool.CatalogEntry {
+	return []tunnelpool.CatalogEntry{
 		{ID: "se-sto-wg-001-hmac", Basename: "se-sto-wg-001", Country: "se"},
 		{ID: "de-fra-wg-001-hmac", Basename: "de-fra-wg-001", Country: "de"},
 	}

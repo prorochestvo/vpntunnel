@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import (
 	"errors"
@@ -35,7 +35,7 @@ func DiscoverConfigs(tunnelsDir string) ([]string, error) {
 				tunnelsDir,
 			))
 		}
-		return nil, fmt.Errorf("lazy: read tunnels dir %s: %w", tunnelsDir, err)
+		return nil, fmt.Errorf("tunnelpool: read tunnels dir %s: %w", tunnelsDir, err)
 	}
 
 	var paths []string
@@ -59,7 +59,7 @@ func DiscoverConfigs(tunnelsDir string) ([]string, error) {
 
 		abs, err := filepath.Abs(filepath.Join(tunnelsDir, name))
 		if err != nil {
-			return nil, fmt.Errorf("lazy: resolve config path %q: %w", name, err)
+			return nil, fmt.Errorf("tunnelpool: resolve config path %q: %w", name, err)
 		}
 		paths = append(paths, abs)
 	}

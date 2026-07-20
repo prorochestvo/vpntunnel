@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
@@ -357,7 +357,7 @@ func startIntegrationDaemon(t *testing.T, opts integrationDaemonOpts) *integrati
 	// write a minimal but parseable WireGuard conf so NewFullSet can discover it.
 	confContent := "[Interface]\nPrivateKey = 6M3/R+JW0JbIxcpBhGJJdBkobJlp2y1TJVqJEWZfvkE=\nAddress = 10.0.0.1/32\n\n[Peer]\nPublicKey = hiRT7pDuZWF4K7HRuSr5o0wT/T1xyEJRv3z3I71WYAk=\nEndpoint = 185.213.155.1:51820\nAllowedIPs = 0.0.0.0/0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tunnelsDir, "se-sto-wg-001.conf"), []byte(confContent), 0o600))
-	fullSet, err := lazy.NewFullSet([]string{filepath.Join(tunnelsDir, "se-sto-wg-001.conf")}, tunnelsDir, testHMACKey)
+	fullSet, err := tunnelpool.NewFullSet([]string{filepath.Join(tunnelsDir, "se-sto-wg-001.conf")}, tunnelsDir, testHMACKey)
 	require.NoError(t, err)
 
 	// fake live health: streaming reports se-sto-wg-001 healthy; on-demand idle.

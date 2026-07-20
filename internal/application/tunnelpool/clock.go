@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import "time"
 

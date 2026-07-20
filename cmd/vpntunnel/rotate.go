@@ -4,18 +4,18 @@ import (
 	"context"
 
 	"vpntunnel/internal/application"
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/tools/rotation"
 )
 
-// rotateAdapter bridges *lazy.StreamingSupervisor.RotateIfIdle and
+// rotateAdapter bridges *tunnelpool.StreamingSupervisor.RotateIfIdle and
 // *application.ProxyService.ActiveSessions to the transport-local
-// rotation.Rotator interface, so the router package never imports lazy
-// (mirroring how the handlers package keeps lazy out via Router/ZoneChecker/
+// rotation.Rotator interface, so the router package never imports tunnelpool
+// (mirroring how the handlers package keeps tunnelpool out via Router/ZoneChecker/
 // TunnelCatalog). It has exactly one consumer — this binary — so it lives
 // under cmd/ rather than internal/, per the project's package-placement rule.
 type rotateAdapter struct {
-	sup *lazy.StreamingSupervisor
+	sup *tunnelpool.StreamingSupervisor
 	svc *application.ProxyService
 }
 
@@ -34,12 +34,12 @@ func (a rotateAdapter) Rotate(ctx context.Context, force bool) (rotation.Rotatio
 
 	out := rotation.RotationResult{Country: res.Country}
 	switch res.Outcome {
-	case lazy.RotateRotated:
+	case tunnelpool.RotateRotated:
 		out.Outcome = rotation.RotationRotated
-	case lazy.RotateSkippedActive:
+	case tunnelpool.RotateSkippedActive:
 		out.Outcome = rotation.RotationSkippedActive
 		out.ActiveSessions = a.svc.ActiveSessions()
-	case lazy.RotateUnavailable:
+	case tunnelpool.RotateUnavailable:
 		out.Outcome = rotation.RotationUnavailable
 	}
 	return out, nil

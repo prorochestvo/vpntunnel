@@ -58,7 +58,7 @@ func NewProxyHandler(
 }
 
 // ZoneChecker validates whether a zone ID is eligible for routing. It is
-// satisfied by *lazy.EligibleSet and allows tests to inject a fake without
+// satisfied by *tunnelpool.EligibleSet and allows tests to inject a fake without
 // constructing a real EligibleSet.
 type ZoneChecker interface {
 	// IsEligible reports whether zoneID is in the eligible set. Safe for

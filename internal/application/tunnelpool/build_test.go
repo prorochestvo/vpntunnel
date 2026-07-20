@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import (
 	"context"
@@ -114,7 +114,7 @@ func TestBuildDialer(t *testing.T) {
 		_, err := BuildDialer(t.Context(), badPath, dir, log, fn)
 		require.Error(t, err)
 		assert.False(t, called, "builder must not be called when parse fails")
-		assert.Contains(t, err.Error(), "lazy: parse")
+		assert.Contains(t, err.Error(), "tunnelpool: parse")
 	})
 
 	t.Run("build error returns wrapped plain error", func(t *testing.T) {
@@ -130,7 +130,7 @@ func TestBuildDialer(t *testing.T) {
 		_, err := BuildDialer(t.Context(), confPath, dir, log, fn)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, injectedErr)
-		assert.Contains(t, err.Error(), "lazy: build")
+		assert.Contains(t, err.Error(), "tunnelpool: build")
 	})
 
 	t.Run("relative configPath resolved against configDir", func(t *testing.T) {

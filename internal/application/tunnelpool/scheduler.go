@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import (
 	"context"
@@ -56,19 +56,19 @@ type SchedulerOptions struct {
 // if any required field is zero/nil. Call Run to begin the device lifecycle loop.
 func NewOnDemandScheduler(opts SchedulerOptions) *OnDemandScheduler {
 	if opts.Eligible == nil {
-		panic("lazy: OnDemandScheduler requires a non-nil EligibleSet")
+		panic("tunnelpool: OnDemandScheduler requires a non-nil EligibleSet")
 	}
 	if opts.SettleDelay <= 0 {
-		panic("lazy: OnDemandScheduler requires SettleDelay > 0")
+		panic("tunnelpool: OnDemandScheduler requires SettleDelay > 0")
 	}
 	if opts.Grace <= 0 {
-		panic("lazy: OnDemandScheduler requires Grace > 0")
+		panic("tunnelpool: OnDemandScheduler requires Grace > 0")
 	}
 	if opts.IdleTTL <= 0 {
-		panic("lazy: OnDemandScheduler requires IdleTTL > 0")
+		panic("tunnelpool: OnDemandScheduler requires IdleTTL > 0")
 	}
 	if opts.ConfigDir == "" {
-		panic("lazy: OnDemandScheduler requires non-empty ConfigDir")
+		panic("tunnelpool: OnDemandScheduler requires non-empty ConfigDir")
 	}
 
 	deviceBuilder := opts.DeviceBuilder

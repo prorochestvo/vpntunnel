@@ -6,8 +6,8 @@ import (
 
 // NewLiveHealthModel returns a LiveHealthModel that aggregates health from the
 // streaming supervisor and the on-demand scheduler. Both sources are required.
-// *lazy.StreamingSupervisor satisfies streaming and *lazy.OnDemandScheduler
-// satisfies onDemand; local interfaces avoid importing the lazy package upward.
+// *tunnelpool.StreamingSupervisor satisfies streaming and *tunnelpool.OnDemandScheduler
+// satisfies onDemand; local interfaces avoid importing the tunnelpool package upward.
 func NewLiveHealthModel(streaming liveHealther, onDemand liveHealther) *LiveHealthModel {
 	return &LiveHealthModel{streaming: streaming, onDemand: onDemand}
 }

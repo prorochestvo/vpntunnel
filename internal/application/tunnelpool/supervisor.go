@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import (
 	"context"
@@ -106,22 +106,22 @@ type SupervisorOptions struct {
 // if any required field is zero/nil. Call Start to begin the health-poll loop.
 func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 	if opts.Eligible == nil {
-		panic("lazy: StreamingSupervisor requires a non-nil EligibleSet")
+		panic("tunnelpool: StreamingSupervisor requires a non-nil EligibleSet")
 	}
 	if opts.HandshakeMaxAge <= 0 {
-		panic("lazy: StreamingSupervisor requires HandshakeMaxAge > 0")
+		panic("tunnelpool: StreamingSupervisor requires HandshakeMaxAge > 0")
 	}
 	if opts.ReconnectMin <= 0 {
-		panic("lazy: StreamingSupervisor requires ReconnectMin > 0")
+		panic("tunnelpool: StreamingSupervisor requires ReconnectMin > 0")
 	}
 	if opts.ReconnectMax < opts.ReconnectMin {
-		panic("lazy: StreamingSupervisor requires ReconnectMax >= ReconnectMin")
+		panic("tunnelpool: StreamingSupervisor requires ReconnectMax >= ReconnectMin")
 	}
 	if opts.RotateSettle <= 0 {
-		panic("lazy: StreamingSupervisor requires RotateSettle > 0")
+		panic("tunnelpool: StreamingSupervisor requires RotateSettle > 0")
 	}
 	if opts.ConfigDir == "" {
-		panic("lazy: StreamingSupervisor requires non-empty ConfigDir")
+		panic("tunnelpool: StreamingSupervisor requires non-empty ConfigDir")
 	}
 
 	deviceBuilder := opts.DeviceBuilder

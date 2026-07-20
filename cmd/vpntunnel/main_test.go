@@ -32,7 +32,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/constants"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
@@ -40,13 +40,13 @@ import (
 
 // withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
 // into the streaming supervisor. Intended for tests only.
-func withSupervisorBuilder(b lazy.DeviceBuilderFn) runOpt {
+func withSupervisorBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
 	return func(o *runOptions) { o.supervisorBuilder = b }
 }
 
 // withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
 // into the on-demand scheduler. Intended for tests only.
-func withSchedulerBuilder(b lazy.DeviceBuilderFn) runOpt {
+func withSchedulerBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
 	return func(o *runOptions) { o.schedulerBuilder = b }
 }
 
@@ -236,7 +236,7 @@ func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error)
 	return nil, fmt.Errorf("smokeDialer: DNS not implemented")
 }
 
-// smokeBuilder is a lazy.DeviceBuilderFn that returns a smokeDialer for any config path.
+// smokeBuilder is a tunnelpool.DeviceBuilderFn that returns a smokeDialer for any config path.
 func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
 	return &smokeDialer{}, nil
 }

@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import (
 	"crypto/sha256"
@@ -41,7 +41,7 @@ func VerifySingleKey(configPaths []string, configDir string, opLog *slog.Logger)
 		parsed, err := wgconf.Parse(path, opLog)
 		if err != nil {
 			parseFailures++
-			lastParseErr = fmt.Errorf("lazy: parse %s: %w", filepath.Base(cfgPath), err)
+			lastParseErr = fmt.Errorf("tunnelpool: parse %s: %w", filepath.Base(cfgPath), err)
 			opLog.Warn("VerifySingleKey: skipping unparseable config",
 				slog.String("config", filepath.Base(cfgPath)),
 				slog.String("error", err.Error()),
@@ -54,7 +54,7 @@ func VerifySingleKey(configPaths []string, configDir string, opLog *slog.Logger)
 	}
 
 	if parseFailures == len(configPaths) && len(configPaths) > 0 {
-		return fmt.Errorf("lazy: all configs failed to parse: %w", lastParseErr)
+		return fmt.Errorf("tunnelpool: all configs failed to parse: %w", lastParseErr)
 	}
 
 	if len(fingerprints) > 1 {

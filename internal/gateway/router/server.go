@@ -52,14 +52,14 @@ type Options struct {
 	// the /v1/admin/health handler; tunnel catalog data comes from TunnelCatalog.
 	LiveHealth *handlers.LiveHealthModel
 	// TunnelCatalog is the full discovered tunnel set, keyed by HMAC id.
-	// Required. *lazy.EligibleSet (NewFullSet) satisfies handlers.TunnelCatalog
+	// Required. *tunnelpool.EligibleSet (NewFullSet) satisfies handlers.TunnelCatalog
 	// via Entries(). It feeds the /v1/tunnels handler.
 	TunnelCatalog handlers.TunnelCatalog
 	// ZoneChecker validates zone eligibility at admission. Required.
-	// *lazy.EligibleSet satisfies handlers.ZoneChecker.
+	// *tunnelpool.EligibleSet satisfies handlers.ZoneChecker.
 	ZoneChecker handlers.ZoneChecker
 	// ZoneRouter routes on-demand proxy requests. Required.
-	// *lazy.OnDemandScheduler satisfies handlers.Router.
+	// *tunnelpool.OnDemandScheduler satisfies handlers.Router.
 	ZoneRouter handlers.Router
 	// MaxRequestBodyBytes caps the request body size. Applied inside the
 	// proxy handler; stored here for handler construction.

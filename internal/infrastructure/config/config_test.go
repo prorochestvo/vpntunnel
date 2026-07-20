@@ -241,7 +241,7 @@ func TestLoad(t *testing.T) {
 		require.Error(t, err)
 		var pe *publicerror.Error
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
-		assert.Equal(t, "config.health: removed; handshake_max_age is now a built-in constant (lazy.DefaultHandshakeMaxAge = 180s)", pe.Details())
+		assert.Equal(t, "config.health: removed; handshake_max_age is now a built-in constant (tunnelpool.DefaultHandshakeMaxAge = 180s)", pe.Details())
 	})
 
 	t.Run("absent auth block loads with zero Auth and disables auth", func(t *testing.T) {

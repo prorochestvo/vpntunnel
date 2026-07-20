@@ -1,4 +1,4 @@
-package lazy
+package tunnelpool
 
 import (
 	"context"
@@ -64,12 +64,12 @@ func BuildDialer(ctx context.Context, configPath, configDir string, opLog *slog.
 
 	parsed, err := wgconf.Parse(path, opLog)
 	if err != nil {
-		return nil, fmt.Errorf("lazy: parse %s: %w", id, err)
+		return nil, fmt.Errorf("tunnelpool: parse %s: %w", id, err)
 	}
 
 	d, err := fn(ctx, parsed, opLog)
 	if err != nil {
-		return nil, fmt.Errorf("lazy: build %s: %w", id, err)
+		return nil, fmt.Errorf("tunnelpool: build %s: %w", id, err)
 	}
 
 	opLog.Info("tunnel built",

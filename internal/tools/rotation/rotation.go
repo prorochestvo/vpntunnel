@@ -1,8 +1,8 @@
 // Package rotation defines the transport-agnostic contract for triggering a
 // graceful streaming-tunnel rotation. It carries no HTTP or transport
 // dependency: the HTTP handler that drives Rotate lives in the gateway and the
-// concrete implementation (bridging *lazy.StreamingSupervisor) lives in
-// cmd/vpntunnel, so neither the transport layer nor this package imports lazy.
+// concrete implementation (bridging *tunnelpool.StreamingSupervisor) lives in
+// cmd/vpntunnel, so neither the transport layer nor this package imports tunnelpool.
 package rotation
 
 import "context"
@@ -43,8 +43,8 @@ type RotationResult struct {
 
 // Rotator triggers a graceful streaming-tunnel rotation. Implementations live
 // outside this package — the cmd/vpntunnel adapter bridges to
-// *lazy.StreamingSupervisor.RotateIfIdle — so the transport layer never
-// imports lazy, mirroring how Router/ZoneChecker/TunnelCatalog keep lazy out
+// *tunnelpool.StreamingSupervisor.RotateIfIdle — so the transport layer never
+// imports tunnelpool, mirroring how Router/ZoneChecker/TunnelCatalog keep tunnelpool out
 // of the handlers package.
 type Rotator interface {
 	// Rotate triggers a graceful streaming rotation. force=false gates the

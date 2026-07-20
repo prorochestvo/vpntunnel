@@ -7,12 +7,12 @@ import (
 	"sort"
 	"strings"
 
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 )
 
 // TunnelCatalog is the exported type alias for the tunnelCatalog interface so
 // that server.go Options.TunnelCatalog can name it without importing a concrete
-// type. *lazy.EligibleSet (NewFullSet) satisfies this interface via Entries().
+// type. *tunnelpool.EligibleSet (NewFullSet) satisfies this interface via Entries().
 //
 // The catalog reflects the FULL discovered set — it ignores
 // vpnstream.allowed_countries, which scopes the streaming supervisor only.
@@ -97,17 +97,17 @@ func (h *tunnelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // tunnelCatalog is the narrow read-only contract the tunnels handler depends on.
-// *lazy.EligibleSet satisfies it via Entries(). Unexported so callers can
+// *tunnelpool.EligibleSet satisfies it via Entries(). Unexported so callers can
 // substitute fakes in tests without exposing a wider abstraction.
 type tunnelCatalog interface {
-	Entries() []lazy.CatalogEntry
+	Entries() []tunnelpool.CatalogEntry
 }
 
 // groupByCountry builds a map[country][]id from catalog entries. Entries with
 // an empty Country are grouped under "zz". Each id slice is sorted ascending.
 // Always returns an initialised (non-nil) map so the caller marshals "{}" for
 // an empty catalog instead of "null".
-func groupByCountry(entries []lazy.CatalogEntry) map[string][]string {
+func groupByCountry(entries []tunnelpool.CatalogEntry) map[string][]string {
 	out := make(map[string][]string)
 	for _, ent := range entries {
 		cc := ent.Country

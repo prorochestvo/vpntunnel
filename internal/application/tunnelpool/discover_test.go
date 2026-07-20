@@ -1,4 +1,4 @@
-package lazy_test
+package tunnelpool_test
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/publicerror"
 )
 
@@ -25,7 +25,7 @@ func TestDiscoverConfigs(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(""), 0o600))
 		}
 
-		got, err := lazy.DiscoverConfigs(dir)
+		got, err := tunnelpool.DiscoverConfigs(dir)
 		require.NoError(t, err)
 		require.Len(t, got, 3)
 
@@ -49,7 +49,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), []byte(""), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "a.conf"), []byte(""), 0o600))
 
-		got, err := lazy.DiscoverConfigs(dir)
+		got, err := tunnelpool.DiscoverConfigs(dir)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, filepath.Join(dir, "a.conf"), got[0])
@@ -64,7 +64,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(subDir, 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(subDir, "nested.conf"), []byte(""), 0o600))
 
-		got, err := lazy.DiscoverConfigs(dir)
+		got, err := tunnelpool.DiscoverConfigs(dir)
 		require.NoError(t, err)
 		// the nested.conf must not appear.
 		assert.Empty(t, got)
@@ -78,7 +78,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "x.conf"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "real.conf"), []byte(""), 0o600))
 
-		got, err := lazy.DiscoverConfigs(dir)
+		got, err := tunnelpool.DiscoverConfigs(dir)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, filepath.Join(dir, "real.conf"), got[0])
@@ -88,7 +88,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 
-		got, err := lazy.DiscoverConfigs(dir)
+		got, err := tunnelpool.DiscoverConfigs(dir)
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
@@ -98,7 +98,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		dir := t.TempDir()
 		missing := filepath.Join(dir, "nonexistent-tunnels")
 
-		_, err := lazy.DiscoverConfigs(missing)
+		_, err := tunnelpool.DiscoverConfigs(missing)
 		require.Error(t, err)
 
 		var pe *publicerror.Error
@@ -124,7 +124,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		linkConf := filepath.Join(scanDir, "linked.conf")
 		require.NoError(t, os.Symlink(realConf, linkConf))
 
-		got, err := lazy.DiscoverConfigs(scanDir)
+		got, err := tunnelpool.DiscoverConfigs(scanDir)
 		require.NoError(t, err)
 		require.Len(t, got, 1, "expected only the regular .conf, got %v", got)
 		assert.Equal(t, regularConf, got[0])
@@ -142,7 +142,7 @@ func TestDiscoverConfigs(t *testing.T) {
 		require.NoError(t, os.Chmod(tunnelsDir, 0o000))
 		t.Cleanup(func() { _ = os.Chmod(tunnelsDir, 0o700) })
 
-		_, err := lazy.DiscoverConfigs(tunnelsDir)
+		_, err := tunnelpool.DiscoverConfigs(tunnelsDir)
 		require.Error(t, err)
 
 		var pe *publicerror.Error

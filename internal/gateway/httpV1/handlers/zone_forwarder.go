@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/publicerror"
 )
@@ -28,9 +28,9 @@ func NewZoneRoutingForwarder(router Router, base RawForwarder) *ZoneRoutingForwa
 	return &ZoneRoutingForwarder{router: router, base: base}
 }
 
-// Router is the minimal zone-routing contract. *lazy.OnDemandScheduler
+// Router is the minimal zone-routing contract. *tunnelpool.OnDemandScheduler
 // satisfies it. The local interface keeps the structural dependency narrow
-// (the scheduler is injected, not constructed here); the lazy import in this
+// (the scheduler is injected, not constructed here); the tunnelpool import in this
 // file is scoped to the PrefixUnknownZone constant, which is the single
 // source of truth shared with the scheduler's Route implementation.
 type Router interface {
@@ -104,7 +104,7 @@ func classifyRouteError(err error) asyncjob.UpstreamResponse {
 	// classify against the prefix constants the scheduler exports (single source
 	// of truth shared with Route), not an inline literal that could drift.
 	msg := pe.Details()
-	if strings.HasPrefix(msg, lazy.PrefixUnknownZone) {
+	if strings.HasPrefix(msg, tunnelpool.PrefixUnknownZone) {
 		return zoneErrorResponse(http.StatusBadRequest, "unknown_zone")
 	}
 	// zone_bring_up_failure or any other publicerror from the scheduler is our

@@ -136,7 +136,7 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 	}
 	if _, hasHealth := probe["health"]; hasHealth {
 		return Config{}, publicerror.New(
-			"config.health: removed; handshake_max_age is now a built-in constant (lazy.DefaultHandshakeMaxAge = 180s)",
+			"config.health: removed; handshake_max_age is now a built-in constant (tunnelpool.DefaultHandshakeMaxAge = 180s)",
 		)
 	}
 

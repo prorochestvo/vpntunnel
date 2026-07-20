@@ -1,7 +1,7 @@
-// Package lazy implements the lazy two-role tunnel manager: the streaming
+// Package tunnelpool implements the two-role tunnel manager: the streaming
 // supervisor (always-on, one WireGuard device) and the on-demand scheduler
 // (at most one device, time-multiplexed across zones).
-package lazy
+package tunnelpool
 
 import (
 	"crypto/rand"
@@ -171,7 +171,7 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 		// path relative and BuildDialer re-joins configDir, doubling the prefix.
 		abs, err := filepath.Abs(path)
 		if err != nil {
-			return nil, fmt.Errorf("lazy: resolve config path %q: %w", cfgPath, err)
+			return nil, fmt.Errorf("tunnelpool: resolve config path %q: %w", cfgPath, err)
 		}
 		path = abs
 

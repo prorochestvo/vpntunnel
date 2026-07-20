@@ -44,7 +44,7 @@ import (
 
 	"vpntunnel/internal/application"
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/constants"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/httpserver"
@@ -71,10 +71,10 @@ type runOpt func(*runOptions)
 type runOptions struct {
 	// supervisorBuilder overrides the DeviceBuilderFn for the streaming supervisor.
 	// When nil (the default), DefaultDeviceBuilder is used.
-	supervisorBuilder lazy.DeviceBuilderFn
+	supervisorBuilder tunnelpool.DeviceBuilderFn
 	// schedulerBuilder overrides the DeviceBuilderFn for the on-demand scheduler.
 	// When nil (the default), DefaultDeviceBuilder is used.
-	schedulerBuilder lazy.DeviceBuilderFn
+	schedulerBuilder tunnelpool.DeviceBuilderFn
 	// shutdownCtx, when non-nil, replaces signal.NotifyContext as the
 	// cancellation source. Test-only seam — production omits this to get the
 	// default signal-handling behaviour. The matching cancel func is held by
@@ -304,7 +304,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// discover all *.conf files in <configDir>/tunnels/. Discovery never parses
 	// file contents — it returns a sorted list of absolute paths.
 	tunnelsDir := filepath.Join(configDir, "tunnels")
-	discovered, err := lazy.DiscoverConfigs(tunnelsDir)
+	discovered, err := tunnelpool.DiscoverConfigs(tunnelsDir)
 	if err != nil {
 		return fmt.Errorf("discover tunnel configs: %w", err)
 	}
@@ -321,7 +321,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// build the full set first — covers every discovered config, used by the
 	// on-demand scheduler and the API ZoneChecker. An empty discovered set is
 	// caught here before the country-filter check below.
-	fullSet, err := lazy.NewFullSet(discovered, configDir, hmacKey)
+	fullSet, err := tunnelpool.NewFullSet(discovered, configDir, hmacKey)
 	if err != nil {
 		return fmt.Errorf("build full tunnel set: %w", err)
 	}
@@ -336,7 +336,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// streaming supervisor's random pick. An empty result after filtering means
 	// allowed_countries matches nothing; the supervisor is mandatory so this is
 	// a fatal startup error (RandomPath panics on an empty set).
-	streamingSet, err := lazy.NewEligibleSet(discovered, configDir, cfg.VPNStream.AllowedCountries)
+	streamingSet, err := tunnelpool.NewEligibleSet(discovered, configDir, cfg.VPNStream.AllowedCountries)
 	if err != nil {
 		return fmt.Errorf("build streaming tunnel set: %w", err)
 	}
@@ -344,20 +344,20 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// single-key guard runs over the full discovered set (pre-country-filter) so
 	// the single-account invariant is enforced across all configs the operator
 	// deposited, not just the ones currently enabled by allowed_countries.
-	if err := lazy.VerifySingleKey(discovered, configDir, opLog); err != nil {
+	if err := tunnelpool.VerifySingleKey(discovered, configDir, opLog); err != nil {
 		return fmt.Errorf("single-key guard: %w", err)
 	}
 
 	// build the streaming supervisor (always-on role).
-	supervisor := lazy.NewStreamingSupervisor(lazy.SupervisorOptions{
+	supervisor := tunnelpool.NewStreamingSupervisor(tunnelpool.SupervisorOptions{
 		Eligible:        streamingSet,
 		DeviceBuilder:   ro.supervisorBuilder,
-		HandshakeMaxAge: lazy.DefaultHandshakeMaxAge,
+		HandshakeMaxAge: tunnelpool.DefaultHandshakeMaxAge,
 		ReconnectMin:    cfg.VPNStream.ReconnectMin,
 		ReconnectMax:    cfg.VPNStream.ReconnectMax,
 		// RotateSettle reuses the operator-tuned on-demand settle delay so the
 		// streaming role's rotate honours the same Mullvad-session-free window
-		// without the lazy package importing on-demand config. SettleDelay
+		// without the tunnelpool package importing on-demand config. SettleDelay
 		// always resolves to a valid value (default 15s, 5s minimum,
 		// config.go validation).
 		RotateSettle: cfg.API.VPN.Demand.SettleDelay,
@@ -370,7 +370,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	}
 
 	// build the on-demand scheduler.
-	scheduler := lazy.NewOnDemandScheduler(lazy.SchedulerOptions{
+	scheduler := tunnelpool.NewOnDemandScheduler(tunnelpool.SchedulerOptions{
 		Eligible:      fullSet,
 		DeviceBuilder: ro.schedulerBuilder,
 		SettleDelay:   cfg.API.VPN.Demand.SettleDelay,
@@ -517,7 +517,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		MaxRequestBodyBytes: cfg.API.MaxRequestBodyBytes,
 		UpstreamTimeout:     cfg.API.VPN.Timeout,
 		MaxUpstreamTimeout:  cfg.API.VPN.MaxTimeout,
-		HealthMaxAge:        lazy.DefaultHandshakeMaxAge,
+		HealthMaxAge:        tunnelpool.DefaultHandshakeMaxAge,
 		JobCounter:          store,
 		JobPool:             jobPool,
 		Access:              access,

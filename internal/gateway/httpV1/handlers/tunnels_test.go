@@ -9,25 +9,25 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/application/lazy"
+	"vpntunnel/internal/application/tunnelpool"
 )
 
 // fakeCatalog is a test double for tunnelCatalog.
 type fakeCatalog struct {
-	entries []lazy.CatalogEntry
+	entries []tunnelpool.CatalogEntry
 }
 
 var _ tunnelCatalog = (*fakeCatalog)(nil)
 
-// compile-time contract assertion: *lazy.EligibleSet must implement TunnelCatalog.
-var _ TunnelCatalog = (*lazy.EligibleSet)(nil)
+// compile-time contract assertion: *tunnelpool.EligibleSet must implement TunnelCatalog.
+var _ TunnelCatalog = (*tunnelpool.EligibleSet)(nil)
 
-func (f *fakeCatalog) Entries() []lazy.CatalogEntry { return f.entries }
+func (f *fakeCatalog) Entries() []tunnelpool.CatalogEntry { return f.entries }
 
 // threeEntryCatalog returns a catalog with two SE entries and one DE entry;
 // IDs are short strings to keep assertions readable.
 func threeEntryCatalog() *fakeCatalog {
-	return &fakeCatalog{entries: []lazy.CatalogEntry{
+	return &fakeCatalog{entries: []tunnelpool.CatalogEntry{
 		{ID: "aaa", Basename: "se-sto-wg-001", Country: "se"},
 		{ID: "bbb", Basename: "se-sto-wg-002", Country: "se"},
 		{ID: "ccc", Basename: "de-fra-wg-001", Country: "de"},
@@ -59,7 +59,7 @@ func TestTunnelsHandler_ServeHTTP(t *testing.T) {
 	t.Run("unparseable country grouped under zz", func(t *testing.T) {
 		t.Parallel()
 
-		cat := &fakeCatalog{entries: []lazy.CatalogEntry{
+		cat := &fakeCatalog{entries: []tunnelpool.CatalogEntry{
 			{ID: "zzz", Basename: "mullvad-ch-zrh-wg-001", Country: ""},
 			{ID: "yyy", Basename: "se-sto-wg-001", Country: "se"},
 		}}
@@ -78,7 +78,7 @@ func TestTunnelsHandler_ServeHTTP(t *testing.T) {
 	t.Run("country_equals_zz_returns_zz_bucket", func(t *testing.T) {
 		t.Parallel()
 
-		cat := &fakeCatalog{entries: []lazy.CatalogEntry{
+		cat := &fakeCatalog{entries: []tunnelpool.CatalogEntry{
 			{ID: "zzz", Basename: "mullvad-ch-zrh-wg-001", Country: ""},
 			{ID: "yyy", Basename: "se-sto-wg-001", Country: "se"},
 		}}
@@ -140,7 +140,7 @@ func TestTunnelsHandler_ServeHTTP(t *testing.T) {
 	t.Run("empty catalog returns body exactly {}", func(t *testing.T) {
 		t.Parallel()
 
-		h := NewTunnelsHandler(&fakeCatalog{entries: []lazy.CatalogEntry{}}, testLogger(t))
+		h := NewTunnelsHandler(&fakeCatalog{entries: []tunnelpool.CatalogEntry{}}, testLogger(t))
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/v1/tunnels", nil)
 		h.ServeHTTP(rec, req)
