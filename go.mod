@@ -3,6 +3,7 @@ module vpntunnel
 go 1.26
 
 require (
+	github.com/go-telegram/bot v1.22.0
 	github.com/prorochestvo/dsninjector v0.0.2
 	github.com/prorochestvo/loginjector v1.0.7
 	github.com/stretchr/testify v1.11.1

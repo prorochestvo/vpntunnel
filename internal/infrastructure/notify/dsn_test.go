@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 
@@ -89,35 +88,5 @@ func TestExtractIdentity(t *testing.T) {
 
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), validToken)
-	})
-}
-
-func TestRedactToken(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil error returns nil", func(t *testing.T) {
-		t.Parallel()
-		assert.NoError(t, redactToken(nil))
-	})
-
-	t.Run("token embedded in a url error is replaced", func(t *testing.T) {
-		t.Parallel()
-		raw := errors.New(`Post "https://api.telegram.org/bot123456789:AAAAaaaaBBBBbbbbCCCC/sendMessage": dial tcp: timeout`)
-
-		got := redactToken(raw)
-
-		require.Error(t, got)
-		assert.NotContains(t, got.Error(), "AAAAaaaaBBBBbbbbCCCC")
-		assert.Contains(t, got.Error(), "/bot<redacted>")
-	})
-
-	t.Run("error without a token is returned unchanged in content", func(t *testing.T) {
-		t.Parallel()
-		raw := errors.New("connection refused")
-
-		got := redactToken(raw)
-
-		require.Error(t, got)
-		assert.Equal(t, "connection refused", got.Error())
 	})
 }

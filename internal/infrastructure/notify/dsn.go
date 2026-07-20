@@ -12,10 +12,6 @@ import (
 // tokenPattern is the Bot API token shape: <bot-id>:<secret>.
 var tokenPattern = regexp.MustCompile(`^\d{9,}:[a-zA-Z0-9_-]{35,}$`)
 
-// tokenInURLPattern matches a bot token embedded in a Bot API request URL, as
-// it appears inside the *url.Error the HTTP client returns on failure.
-var tokenInURLPattern = regexp.MustCompile(`(/bot)\d{6,}:[a-zA-Z0-9_-]+`)
-
 // extractIdentity pulls the admin chat ID and bot token out of a DataSource
 // parsed (by the caller) from a VPNTUNNEL_TELEGRAMBOT_DSN of the form
 // tbot://<adminChatID>:@<botToken>/. The token is read from Addr() (the
@@ -40,15 +36,4 @@ func extractIdentity(ds dsninjector.DataSource) (adminChatID int64, token string
 	}
 
 	return adminChatID, token, nil
-}
-
-// redactToken scrubs a bot token embedded in a URL-shaped error so the secret
-// never reaches a log line. It returns a fresh error with the token replaced;
-// nil in yields nil out.
-func redactToken(err error) error {
-	if err == nil {
-		return nil
-	}
-	scrubbed := tokenInURLPattern.ReplaceAllString(err.Error(), "${1}<redacted>")
-	return errors.New(scrubbed)
 }

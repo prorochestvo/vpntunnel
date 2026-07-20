@@ -2,16 +2,15 @@ package notify
 
 import (
 	"context"
-	"fmt"
-	"io"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/prorochestvo/dsninjector"
 )
 
@@ -22,28 +21,27 @@ import (
 // app reusing this package can brand its own notifications. NewTelegram starts
 // the notifier's asynchronous sender goroutine and returns a ready
 // TelegramNotifier; the caller must Close it on shutdown. The returned error is
-// safe to log — it never contains the DSN or the bot token (see
-// extractIdentity). No identity probe (getMe) is performed at construction; a
-// bad token only surfaces as a redacted warning on the first failed send.
+// safe to log — it never contains the DSN or the bot token (see extractIdentity
+// and the bot-init path). No identity probe (getMe) is performed at construction
+// (WithSkipGetMe); a bad token only surfaces as a redacted warning on the first
+// failed send.
 func NewTelegram(ds dsninjector.DataSource, tag string, opLog *slog.Logger) (*TelegramNotifier, error) {
 	adminChatID, token, err := extractIdentity(ds)
 	if err != nil {
 		return nil, err
 	}
-	return newTelegramNotifier(adminChatID, token, tag, "", "", nil, opLog), nil
+	return newTelegramNotifier(adminChatID, token, tag, "", "", nil, opLog)
 }
 
-// TelegramNotifier is a Notifier that posts tunnel-change events to a
-// Telegram chat via the Bot API sendMessage endpoint. Notify is cheap and
-// non-blocking: it applies the on-demand dedup/rate-limit check, then hands
-// the event to a single background sender goroutine that performs the
-// exit-IP probe, message formatting, and the HTTP send. Safe for concurrent
-// use; Close is idempotent.
+// TelegramNotifier is a Notifier that posts tunnel-change events to a Telegram
+// chat via the go-telegram/bot SendMessage call. Notify is cheap and
+// non-blocking: it applies the on-demand dedup/rate-limit check, then hands the
+// event to a single background sender goroutine that performs the exit-IP probe,
+// message formatting, and the send. Safe for concurrent use; Close is idempotent.
 type TelegramNotifier struct {
 	adminChatID int64
-	token       string
 	tag         string
-	apiBase     string
+	bot         *bot.Bot
 	probeURL    string
 	now         func() time.Time
 	opLog       *slog.Logger
@@ -108,7 +106,16 @@ func (tn *TelegramNotifier) handle(ev Event) {
 	}
 
 	text := formatMessage(tn.tag, ev.Title, ev.Country, exit, ev.Filename)
-	if err := sendMessage(tn.ctx, tn.apiBase, tn.token, tn.adminChatID, text); err != nil {
+	_, err := tn.bot.SendMessage(tn.ctx, &bot.SendMessageParams{
+		ChatID:             tn.adminChatID,
+		Text:               text,
+		ParseMode:          models.ParseModeHTML,
+		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
+	})
+	if err != nil {
+		// go-telegram/bot redacts the bot token from its errors (it replaces the
+		// token in any *url.Error URL, and API errors carry only Telegram's
+		// description), so err is safe to log.
 		tn.opLog.Warn("notify: telegram send failed", slog.String("err", err.Error()))
 	}
 }
@@ -151,10 +158,7 @@ func (tn *TelegramNotifier) suppressed(filename string) bool {
 	return false
 }
 
-// defaultAPIBase is the production Telegram Bot API base URL.
-const defaultAPIBase = "https://api.telegram.org"
-
-// sendTimeout bounds a single sendMessage HTTP round trip.
+// sendTimeout bounds a single SendMessage HTTP round trip.
 const sendTimeout = 10 * time.Second
 
 // onDemandDedupWindow suppresses a repeated on-demand notification for the
@@ -170,9 +174,9 @@ const onDemandMinInterval = 20 * time.Second
 // generously so a burst of notifications does not immediately drop events.
 const notifyQueueBuf = 32
 
-// sendClient is the package-level HTTP client used for the Bot API
-// sendMessage call. Its Proxy is an explicit nil-returning func so requests
-// never route through any process-wide proxy.
+// sendClient is the HTTP client handed to go-telegram/bot for the Bot API
+// call. Its Proxy is an explicit nil-returning func so requests never route
+// through any process-wide proxy.
 var sendClient = &http.Client{
 	Timeout: sendTimeout,
 	Transport: &http.Transport{
@@ -186,15 +190,12 @@ type notifyJob struct {
 }
 
 // newTelegramNotifier builds a TelegramNotifier and starts its sender
-// goroutine. apiBase and probeURL default to the production Telegram API and
-// the production exit-IP probe endpoint (respectively) when empty; now
-// defaults to time.Now; opLog defaults to slog.Default(). This is the shared
-// construction path for both NewTelegram and tests, which inject apiBase/
-// probeURL pointed at httptest servers and a fake now for the dedup window.
-func newTelegramNotifier(adminChatID int64, token, tag, apiBase, probeURL string, now func() time.Time, opLog *slog.Logger) *TelegramNotifier {
-	if apiBase == "" {
-		apiBase = defaultAPIBase
-	}
+// goroutine. apiBase overrides the Telegram API base URL (empty = the library
+// default, https://api.telegram.org); now defaults to time.Now; opLog defaults
+// to slog.Default(). This is the shared construction path for both NewTelegram
+// and tests, which inject apiBase pointed at an httptest server and a fake now
+// for the dedup window. The returned error is safe to log (never the token).
+func newTelegramNotifier(adminChatID int64, token, tag, apiBase, probeURL string, now func() time.Time, opLog *slog.Logger) (*TelegramNotifier, error) {
 	if now == nil {
 		now = time.Now
 	}
@@ -202,12 +203,24 @@ func newTelegramNotifier(adminChatID int64, token, tag, apiBase, probeURL string
 		opLog = slog.Default()
 	}
 
+	opts := []bot.Option{
+		bot.WithSkipGetMe(),
+		bot.WithHTTPClient(sendTimeout, sendClient),
+	}
+	if apiBase != "" {
+		opts = append(opts, bot.WithServerURL(apiBase))
+	}
+	b, err := bot.New(token, opts...)
+	if err != nil {
+		// bot.New's error can reference the token; never surface it.
+		return nil, errors.New("notify: telegram bot init failed")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	tn := &TelegramNotifier{
 		adminChatID: adminChatID,
-		token:       token,
 		tag:         tag,
-		apiBase:     apiBase,
+		bot:         b,
 		probeURL:    probeURL,
 		now:         now,
 		opLog:       opLog,
@@ -219,41 +232,8 @@ func newTelegramNotifier(adminChatID int64, token, tag, apiBase, probeURL string
 	go tn.sendLoop()
 
 	opLog.Info("telegram notifier enabled", slog.Int("token_len", len(token)))
-	return tn
+	return tn, nil
 }
 
-// sendMessage POSTs a form-encoded sendMessage request to the Telegram Bot
-// API at {apiBase}/bot{token}/sendMessage. The bot token lives in the request
-// path, so any *url.Error the client returns embeds it — every returned
-// error is passed through redactToken before it reaches the caller.
-func sendMessage(ctx context.Context, apiBase, token string, chatID int64, htmlText string) error {
-	endpoint := apiBase + "/bot" + token + "/sendMessage"
-	form := url.Values{
-		"chat_id":                  {strconv.FormatInt(chatID, 10)},
-		"text":                     {htmlText},
-		"parse_mode":               {"HTML"},
-		"disable_web_page_preview": {"true"},
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return redactToken(fmt.Errorf("notify: build sendMessage request: %w", err))
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := sendClient.Do(req)
-	if err != nil {
-		return redactToken(fmt.Errorf("notify: sendMessage request failed: %w", err))
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
-		if readErr != nil {
-			return redactToken(fmt.Errorf("notify: sendMessage status %d (body read failed: %w)", resp.StatusCode, readErr))
-		}
-		return redactToken(fmt.Errorf("notify: sendMessage status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
-	}
-
-	return nil
-}
+// boolPtr returns a pointer to b, for the *bool fields in the bot API models.
+func boolPtr(b bool) *bool { return &b }

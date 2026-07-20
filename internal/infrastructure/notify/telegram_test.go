@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -16,67 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSendMessage(t *testing.T) {
+func TestSendClientNoProxy(t *testing.T) {
 	t.Parallel()
-
-	const token = "123456789:AAAAaaaaBBBBbbbbCCCCccccDDDDdddd123"
-
-	t.Run("200 sends the expected form and path", func(t *testing.T) {
-		t.Parallel()
-		var gotPath string
-		var gotForm url.Values
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotPath = r.URL.Path
-			require.NoError(t, r.ParseForm())
-			gotForm = r.Form
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer srv.Close()
-
-		err := sendMessage(t.Context(), srv.URL, token, 42, "<b>hi</b>")
-
-		require.NoError(t, err)
-		assert.Equal(t, "/bot"+token+"/sendMessage", gotPath)
-		assert.Equal(t, "HTML", gotForm.Get("parse_mode"))
-		assert.Equal(t, "true", gotForm.Get("disable_web_page_preview"))
-		assert.Equal(t, "42", gotForm.Get("chat_id"))
-		assert.Equal(t, "<b>hi</b>", gotForm.Get("text"))
-	})
-
-	t.Run("non-200 with telegram error body returns an error without the token", func(t *testing.T) {
-		t.Parallel()
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
-			_, err := w.Write([]byte(`{"ok":false,"description":"Bad Request: chat not found"}`))
-			require.NoError(t, err)
-		}))
-		defer srv.Close()
-
-		err := sendMessage(t.Context(), srv.URL, token, 42, "hi")
-
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), token)
-		assert.Contains(t, err.Error(), "chat not found")
-	})
-
-	t.Run("transport error is redacted", func(t *testing.T) {
-		t.Parallel()
-		// no listener at this address: the client returns a *url.Error whose
-		// message embeds the request URL (and thus the token in the path).
-		err := sendMessage(t.Context(), "http://127.0.0.1:1", token, 42, "hi")
-
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), token)
-	})
-
-	t.Run("send client never routes through a process proxy", func(t *testing.T) {
-		t.Parallel()
-		transport, ok := sendClient.Transport.(*http.Transport)
-		require.True(t, ok)
-		u, err := transport.Proxy(&http.Request{})
-		require.NoError(t, err)
-		assert.Nil(t, u)
-	})
+	// the HTTP client handed to go-telegram/bot must never route through a
+	// process-wide proxy.
+	transport, ok := sendClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	u, err := transport.Proxy(&http.Request{})
+	require.NoError(t, err)
+	assert.Nil(t, u)
 }
 
 func TestTelegramNotifier_Notify(t *testing.T) {
@@ -87,7 +34,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		srv, calls := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
@@ -103,7 +50,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 
 		now := time.Now()
 		clk := &manualClock{t: now}
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
@@ -122,7 +69,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 
 		now := time.Now()
 		clk := &manualClock{t: now}
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
@@ -142,15 +89,14 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		var gotText string
 		var mu sync.Mutex
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			require.NoError(t, r.ParseForm())
 			mu.Lock()
-			gotText = r.PostForm.Get("text")
+			gotText = r.FormValue("text")
 			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
 		}))
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
 		tn.Notify(t.Context(), Event{
@@ -181,7 +127,7 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
 		assert.NotPanics(t, func() {
@@ -196,6 +142,44 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 	})
 }
 
+func TestTelegramNotifier_SendErrorNeverLogsToken(t *testing.T) {
+	t.Parallel()
+	// point the bot at a dead address so the send fails with a transport error
+	// whose URL embeds the token; go-telegram/bot must redact it before the
+	// notifier logs the failure (R15 regression guard).
+	lb := &lockedBuffer{}
+	logger := slog.New(slog.NewTextHandler(lb, nil))
+	tn := mustNotifier(t, 1, validToken, testTag, "http://127.0.0.1:1", "", fixedClock(time.Now()), logger)
+	defer tn.Close()
+
+	tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(lb.String(), "telegram send failed")
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.NotContains(t, lb.String(), validToken)
+	assert.NotContains(t, lb.String(), "AAAAaaaaBBBBbbbbCCCCccccDDDDdddd123")
+}
+
+// lockedBuffer is a mutex-guarded write+read buffer for capturing async log
+// output from the sender goroutine without racing the test's reads.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestTelegramNotifier_Close(t *testing.T) {
 	t.Parallel()
 
@@ -204,7 +188,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		srv, _ := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		tn.Close()
 
 		select {
@@ -219,7 +203,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		srv, _ := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		tn.Close()
 		assert.NotPanics(t, func() { tn.Close() })
 	})
@@ -229,7 +213,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		srv, _ := newRecordingTelegramServer(t)
 		defer srv.Close()
 
-		tn := newTelegramNotifier(1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
+		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		tn.Close()
 
 		assert.NotPanics(t, func() {
@@ -306,14 +290,24 @@ func (c *manualClock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// mustNotifier builds a TelegramNotifier via the internal constructor and fails
+// the test on the (practically unreachable) bot-init error.
+func mustNotifier(t *testing.T, adminChatID int64, token, tag, apiBase, probeURL string, now func() time.Time, opLog *slog.Logger) *TelegramNotifier {
+	t.Helper()
+	tn, err := newTelegramNotifier(adminChatID, token, tag, apiBase, probeURL, now, opLog)
+	require.NoError(t, err)
+	return tn
+}
+
 // newRecordingTelegramServer returns an httptest server that always answers
-// 200 to sendMessage and an atomic counter of how many requests it received.
+// with the Bot API success envelope and an atomic counter of how many requests
+// it received.
 func newRecordingTelegramServer(t *testing.T) (*httptest.Server, *atomicCounter) {
 	t.Helper()
 	calls := &atomicCounter{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
 	}))
 	return srv, calls
 }
