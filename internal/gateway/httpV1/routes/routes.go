@@ -17,7 +17,4 @@ const (
 	// methodless (any method is proxied); {id} selects the tunnel, {scheme} and
 	// {rest...} carry the upstream target.
 	TunnelProxy = "/v1/tunnels/{id}/proxy/{scheme}/{rest...}"
-	// CatchAll is the fallback pattern that returns the JSON 404 envelope,
-	// overriding ServeMux's plain-text default.
-	CatchAll = "/"
 )

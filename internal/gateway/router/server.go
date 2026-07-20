@@ -126,12 +126,14 @@ func New(opts Options, log *slog.Logger) *Server {
 		log,
 		opts.JobPool,
 	)
+	rotateHandler := handlers.NewRotateHandler(opts.Rotator, log)
 	s := &Server{
 		opts:           opts,
 		log:            log,
 		healthHandler:  healthHandler,
 		tunnelsHandler: tunnelsHandler,
 		proxyHandler:   proxyHandler,
+		rotateHandler:  rotateHandler,
 	}
 	s.http = s.buildHTTPServer()
 	return s
@@ -148,6 +150,7 @@ type Server struct {
 	healthHandler  http.Handler
 	tunnelsHandler http.Handler
 	proxyHandler   http.Handler
+	rotateHandler  http.Handler
 }
 
 // Start creates a TLS listener on opts.Addr and begins serving. It returns
@@ -213,6 +216,13 @@ func (s *Server) buildHTTPServer() *http.Server {
 //  3. requireRole (per route) — rejects with 403 if role not in the per-route allow-list.
 //  4. withAccessLog (proxy route only, when opts.Access is non-nil) — records one
 //     JSONL line per /v1/tunnels/{id}/proxy/ request after the handler returns.
+//
+// catchAllPattern is the mux-wide fallback that emits the JSON 404 envelope. It
+// is not a versioned route (it carries no /v1/ marker and http.ServeMux panics on
+// a duplicate "/" registration), so it lives here in the router — the package that
+// owns the mux — rather than in httpV1/routes.
+const catchAllPattern = "/"
+
 func (s *Server) buildMux() http.Handler {
 	mux := http.NewServeMux()
 
@@ -233,7 +243,7 @@ func (s *Server) buildMux() http.Handler {
 	// fall through to the catch-all's 404); handleRotate checks the method
 	// itself and replies 405 with Allow: POST.
 	mux.HandleFunc(routes.AdminRotate,
-		s.requireRole(middleware.RoleAdmin)(s.handleRotate))
+		s.requireRole(middleware.RoleAdmin)(s.rotateHandler.ServeHTTP))
 
 	// /v1/tunnels/{id}/proxy/{scheme}/{rest...} — user or admin. Access logging wraps
 	// the route when opts.Access is configured; the sanitiser patterns are applied
@@ -247,7 +257,7 @@ func (s *Server) buildMux() http.Handler {
 	}
 
 	// catch-all 404 with JSON envelope (overrides the plain-text ServeMux default).
-	mux.Handle(routes.CatchAll, s.notFoundHandler())
+	mux.Handle(catchAllPattern, s.notFoundHandler())
 
 	return s.withRequestID(s.withAuth(mux))
 }
