@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -918,27 +919,33 @@ func TestAccessLogSanitiserStripsToken(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-		// lumberjack writes synchronously; the line is on disk by the time the
+		// the access-log writer writes synchronously; the line is on disk by the time the
 		// HTTP response has returned. We close and re-open the logger to flush
 		// any internal buffering in the slog JSON handler.
 		require.NoError(t, accessLog.Close())
 
-		f, err := os.Open(logPath)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = f.Close() })
+		prefix := strings.TrimSuffix(filepath.Base(logPath), ".log")
+		matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(logPath), prefix+".*.log"))
+		require.NoError(t, globErr)
+		sort.Strings(matches)
 
 		var targets []string
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			var rec map[string]any
-			if jsonErr := json.Unmarshal(scanner.Bytes(), &rec); jsonErr != nil {
-				continue
+		for _, m := range matches {
+			f, openErr := os.Open(m)
+			require.NoError(t, openErr)
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				var rec map[string]any
+				if jsonErr := json.Unmarshal(scanner.Bytes(), &rec); jsonErr != nil {
+					continue
+				}
+				if v, ok := rec["target"].(string); ok {
+					targets = append(targets, v)
+				}
 			}
-			if v, ok := rec["target"].(string); ok {
-				targets = append(targets, v)
-			}
+			require.NoError(t, scanner.Err())
+			_ = f.Close()
 		}
-		require.NoError(t, scanner.Err())
 		require.NotEmpty(t, targets, "access log must contain at least one target line")
 
 		for _, tgt := range targets {

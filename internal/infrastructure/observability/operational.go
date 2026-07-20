@@ -1,6 +1,6 @@
 // Package observability wires the two logging outputs: an operational slog
 // logger (stdout, human-readable or JSON) and a rotating JSONL access log
-// via lumberjack. The two loggers are independent — different audiences,
+// via loginjector. The two loggers are independent — different audiences,
 // different formats.
 package observability
 

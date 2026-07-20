@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,18 +82,7 @@ func TestAccessLogger_Log(t *testing.T) {
 		}
 		require.NoError(t, al.Close())
 
-		f, err := os.Open(logPath)
-		require.NoError(t, err)
-		defer func() { _ = f.Close() }()
-
-		var lines []map[string]any
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			var rec map[string]any
-			require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
-			lines = append(lines, rec)
-		}
-		require.NoError(t, scanner.Err())
+		lines := readAccessLogLines(t, dir, "access")
 		assert.Len(t, lines, 3, "expected 3 JSONL lines")
 
 		assert.Equal(t, "GET", lines[0]["method"])
@@ -118,11 +108,12 @@ func TestAccessLogger_Log(t *testing.T) {
 		al.Log(domain.RequestSummary{Method: "GET", Target: "http://x.com"})
 		require.NoError(t, al.Close())
 
-		_, statErr := os.Stat(logPath)
-		assert.NoError(t, statErr, "expected log file to exist")
+		matches, globErr := filepath.Glob(filepath.Join(dir, "sub", "dir", "access.*.log"))
+		require.NoError(t, globErr)
+		assert.NotEmpty(t, matches, "expected a rotated log file under the created directory")
 	})
 
-	t.Run("Close closes underlying writer", func(t *testing.T) {
+	t.Run("Close is idempotent", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		al, err := observability.NewAccessLogger(config.AccessLog{
@@ -272,6 +263,31 @@ func TestAccessLogger_PathSanitization(t *testing.T) {
 // function that reads the target field from every emitted JSONL line.
 // readTargets owns the single Close call; callers that do not invoke readTargets
 // must register their own t.Cleanup to close the logger.
+// readAccessLogLines reads every JSONL record the access logger wrote.
+// loginjector's rotating handler writes to "<prefix>.<8hex>.log" rather than a
+// fixed path, so this globs and reads all matching files in dir, sorted,
+// concatenating their lines.
+func readAccessLogLines(t *testing.T, dir, prefix string) []map[string]any {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, prefix+".*.log"))
+	require.NoError(t, err)
+	sort.Strings(matches)
+	var recs []map[string]any
+	for _, m := range matches {
+		f, err := os.Open(m)
+		require.NoError(t, err)
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			var rec map[string]any
+			require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
+			recs = append(recs, rec)
+		}
+		require.NoError(t, scanner.Err())
+		_ = f.Close()
+	}
+	return recs
+}
+
 func newTestAccessLogger(t *testing.T, sanitizers []observability.PathSanitizePattern) (*observability.AccessLogger, func() []string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -288,20 +304,12 @@ func newTestAccessLogger(t *testing.T, sanitizers []observability.PathSanitizePa
 
 	readTargets := func() []string {
 		require.NoError(t, al.Close())
-		f, err := os.Open(logPath)
-		require.NoError(t, err)
-		defer func() { _ = f.Close() }()
-
 		var targets []string
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			var rec map[string]any
-			require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
+		for _, rec := range readAccessLogLines(t, dir, "access") {
 			if v, ok := rec["target"].(string); ok {
 				targets = append(targets, v)
 			}
 		}
-		require.NoError(t, scanner.Err())
 		return targets
 	}
 
@@ -326,20 +334,12 @@ func newTestAccessLoggerUpstreamErr(t *testing.T, sanitizers []observability.Pat
 
 	readUpstreamErrors := func() []string {
 		require.NoError(t, al.Close())
-		f, err := os.Open(logPath)
-		require.NoError(t, err)
-		defer func() { _ = f.Close() }()
-
 		var errs []string
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			var rec map[string]any
-			require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
+		for _, rec := range readAccessLogLines(t, dir, "access") {
 			if v, ok := rec["upstream_error"].(string); ok {
 				errs = append(errs, v)
 			}
 		}
-		require.NoError(t, scanner.Err())
 		return errs
 	}
 

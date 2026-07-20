@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
-	"gopkg.in/natefinch/lumberjack.v2"
+	"github.com/prorochestvo/loginjector"
 
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/config"
@@ -30,9 +31,18 @@ type PathSanitizePattern struct {
 }
 
 // NewAccessLogger constructs an AccessLogger that writes JSONL records to a
-// rotating file described by cfg. It creates the parent directory with mode
-// 0o755 if it does not exist. Returns a plain error on mkdir or file-open
-// failures — not a PublicError, because these are operator startup issues.
+// size-rotated file managed by loginjector's RotatingFileHandler. It creates the
+// parent directory with mode 0o755 if it does not exist. Returns a plain error
+// on mkdir failures — not a PublicError, because these are operator startup
+// issues.
+//
+// Rotation caveat: loginjector rotates by file size and file count only. The
+// live file is "<prefix>.<8-hex>.log" inside the log directory (not a fixed
+// "access.log"), and cfg.MaxAgeDays / cfg.Compress are NOT enforced yet —
+// age-based pruning and gzip of rotated files are pending in the loginjector
+// project (see its plan "rotating-file-handler-lumberjack-parity"). Those config
+// fields are accepted for forward-compatibility and take effect once loginjector
+// gains the features.
 //
 // opLog is the operational slog logger used to emit a debounced warning when
 // access log writes fail (e.g. full disk). Pass nil to suppress those warnings.
@@ -42,7 +52,9 @@ type PathSanitizePattern struct {
 // slice to disable sanitisation. The patterns are applied left-to-right; the
 // output of pattern N is the input to pattern N+1.
 //
-// The caller must call Close when done to flush any buffered writes.
+// The caller should call Close when done. It is a no-op for the current rotating
+// handler (which opens and closes the file per write) but honours io.Closer if a
+// future writer implementation holds a handle.
 func NewAccessLogger(cfg config.AccessLog, opLog *slog.Logger, sanitizers []PathSanitizePattern) (*AccessLogger, error) {
 	for i, p := range sanitizers {
 		if p.Regexp == nil {
@@ -55,33 +67,45 @@ func NewAccessLogger(cfg config.AccessLog, opLog *slog.Logger, sanitizers []Path
 		return nil, fmt.Errorf("observability: create access log directory %s: %w", dir, err)
 	}
 
-	lj := &lumberjack.Logger{
-		Filename:   cfg.Path,
-		MaxSize:    cfg.MaxSizeMB,
-		MaxAge:     cfg.MaxAgeDays,
-		MaxBackups: cfg.MaxBackups,
-		Compress:   cfg.Compress,
+	// loginjector takes (folder, prefix) and writes "<prefix>.<8hex>.log"; derive
+	// the prefix from the configured filename without its .log suffix.
+	prefix := strings.TrimSuffix(filepath.Base(cfg.Path), ".log")
+
+	opts := []loginjector.RotatingFileOption{}
+	if cfg.MaxSizeMB > 0 {
+		mb := cfg.MaxSizeMB
+		if mb > 4095 { // clamp so mb<<20 fits a uint32
+			mb = 4095
+		}
+		opts = append(opts, loginjector.WithMaxFileSize(uint32(mb)<<20))
+	}
+	if cfg.MaxBackups > 0 {
+		opts = append(opts, loginjector.WithMaxFiles(cfg.MaxBackups))
 	}
 
-	// wrap lumberjack with an error-tracking writer so slog write failures
-	// are visible to operators without flooding the operational log.
-	tw := &trackingWriter{inner: lj, opLog: opLog}
+	// A bare RotatingFileHandler writes exactly the bytes it is given (no
+	// timestamp prefix, unlike loginjector's TimestampedHandler), so the file
+	// stays valid JSONL — one slog JSON record per line.
+	fileWriter := loginjector.RotatingFileHandler(dir, prefix, opts...)
 
-	// Lumberjack opens lazily; the first Write creates the file.
+	// wrap the rotating writer with an error-tracking writer so slog write
+	// failures are visible to operators without flooding the operational log.
+	tw := &trackingWriter{inner: fileWriter, opLog: opLog}
+
 	handler := slog.NewJSONHandler(tw, &slog.HandlerOptions{Level: slog.LevelInfo})
 	logger := slog.New(handler)
 
-	return &AccessLogger{writer: lj, log: logger, sanitizers: sanitizers}, nil
+	return &AccessLogger{writer: fileWriter, log: logger, sanitizers: sanitizers}, nil
 }
 
-// AccessLogger writes one JSONL record per request to a rotating file.
-// It is safe for concurrent Log calls; slog and lumberjack both serialize
-// their internal writes.
+// AccessLogger writes one JSONL record per request to a size-rotated file.
+// It is safe for concurrent Log calls; slog serialises each record and
+// loginjector's handler serialises its own writes.
 //
 // Write errors surface as a debounced slog.Warn on the operational logger
 // (at most once per minute) so a full disk does not flood the log.
 type AccessLogger struct {
-	writer     *lumberjack.Logger
+	writer     io.Writer
 	log        *slog.Logger
 	sanitizers []PathSanitizePattern
 }
@@ -108,11 +132,16 @@ func (a *AccessLogger) Log(s domain.RequestSummary) {
 	)
 }
 
-// Close closes the underlying lumberjack writer. Safe to call more than once;
-// subsequent calls may return an error from the underlying file but will not
-// panic.
+// Close releases the underlying writer if it holds resources. loginjector's
+// rotating file handler opens and closes the file on each write, so there is
+// nothing to flush and Close is a no-op for it; the io.Closer branch keeps the
+// method correct if the writer implementation ever holds a handle. Safe to call
+// more than once.
 func (a *AccessLogger) Close() error {
-	return a.writer.Close()
+	if c, ok := a.writer.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // trackingWriter wraps an io.Writer and emits a debounced slog.Warn on the
