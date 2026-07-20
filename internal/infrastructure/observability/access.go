@@ -36,13 +36,11 @@ type PathSanitizePattern struct {
 // on mkdir failures — not a PublicError, because these are operator startup
 // issues.
 //
-// Rotation caveat: loginjector rotates by file size and file count only. The
-// live file is "<prefix>.<8-hex>.log" inside the log directory (not a fixed
-// "access.log"), and cfg.MaxAgeDays / cfg.Compress are NOT enforced yet —
-// age-based pruning and gzip of rotated files are pending in the loginjector
-// project (see its plan "rotating-file-handler-lumberjack-parity"). Those config
-// fields are accepted for forward-compatibility and take effect once loginjector
-// gains the features.
+// Rotation is delegated to loginjector's RotatingFileHandler with full lumberjack
+// parity: the live file stays at the fixed cfg.Path (WithStableCurrentName), and
+// cfg.MaxSizeMB / cfg.MaxBackups / cfg.MaxAgeDays / cfg.Compress map to
+// WithMaxFileSize / WithMaxFiles / WithMaxAge / WithCompress. Rotated backups are
+// indexed "<prefix>.<8hex>.log", gzipped to ".gz" when compression is enabled.
 //
 // opLog is the operational slog logger used to emit a debounced warning when
 // access log writes fail (e.g. full disk). Pass nil to suppress those warnings.
@@ -71,7 +69,9 @@ func NewAccessLogger(cfg config.AccessLog, opLog *slog.Logger, sanitizers []Path
 	// the prefix from the configured filename without its .log suffix.
 	prefix := strings.TrimSuffix(filepath.Base(cfg.Path), ".log")
 
-	opts := []loginjector.RotatingFileOption{}
+	// WithStableCurrentName keeps the live file at the fixed cfg.Path (e.g.
+	// access.log) so operators can tail it; rotated backups are indexed.
+	opts := []loginjector.RotatingFileOption{loginjector.WithStableCurrentName()}
 	if cfg.MaxSizeMB > 0 {
 		mb := cfg.MaxSizeMB
 		if mb > 4095 { // clamp so mb<<20 fits a uint32
@@ -81,6 +81,12 @@ func NewAccessLogger(cfg config.AccessLog, opLog *slog.Logger, sanitizers []Path
 	}
 	if cfg.MaxBackups > 0 {
 		opts = append(opts, loginjector.WithMaxFiles(cfg.MaxBackups))
+	}
+	if cfg.MaxAgeDays > 0 {
+		opts = append(opts, loginjector.WithMaxAge(time.Duration(cfg.MaxAgeDays)*24*time.Hour))
+	}
+	if cfg.Compress {
+		opts = append(opts, loginjector.WithCompress())
 	}
 
 	// A bare RotatingFileHandler writes exactly the bytes it is given (no

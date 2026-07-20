@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -924,28 +923,22 @@ func TestAccessLogSanitiserStripsToken(t *testing.T) {
 		// any internal buffering in the slog JSON handler.
 		require.NoError(t, accessLog.Close())
 
-		prefix := strings.TrimSuffix(filepath.Base(logPath), ".log")
-		matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(logPath), prefix+".*.log"))
-		require.NoError(t, globErr)
-		sort.Strings(matches)
+		f, err := os.Open(logPath)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = f.Close() })
 
 		var targets []string
-		for _, m := range matches {
-			f, openErr := os.Open(m)
-			require.NoError(t, openErr)
-			scanner := bufio.NewScanner(f)
-			for scanner.Scan() {
-				var rec map[string]any
-				if jsonErr := json.Unmarshal(scanner.Bytes(), &rec); jsonErr != nil {
-					continue
-				}
-				if v, ok := rec["target"].(string); ok {
-					targets = append(targets, v)
-				}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			var rec map[string]any
+			if jsonErr := json.Unmarshal(scanner.Bytes(), &rec); jsonErr != nil {
+				continue
 			}
-			require.NoError(t, scanner.Err())
-			_ = f.Close()
+			if v, ok := rec["target"].(string); ok {
+				targets = append(targets, v)
+			}
 		}
+		require.NoError(t, scanner.Err())
 		require.NotEmpty(t, targets, "access log must contain at least one target line")
 
 		for _, tgt := range targets {

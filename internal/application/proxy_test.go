@@ -14,8 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,24 +35,6 @@ var _ net.Conn = fakeConn{}
 var _ net.Addr = fakeAddr{}
 var _ http.ResponseWriter = (*fakeHijackWriter)(nil)
 var _ http.Hijacker = (*fakeHijackWriter)(nil)
-
-// readAccessLogRaw reads the bytes the access logger wrote. loginjector's
-// rotating handler writes to "<prefix>.<8hex>.log" rather than the configured
-// path, so glob for the actual file(s) and concatenate.
-func readAccessLogRaw(t *testing.T, logPath string) []byte {
-	t.Helper()
-	prefix := strings.TrimSuffix(filepath.Base(logPath), ".log")
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(logPath), prefix+".*.log"))
-	require.NoError(t, err)
-	sort.Strings(matches)
-	var raw []byte
-	for _, m := range matches {
-		b, readErr := os.ReadFile(m)
-		require.NoError(t, readErr)
-		raw = append(raw, b...)
-	}
-	return raw
-}
 
 // mockVerifier is a test double for application.Verifier.
 type mockVerifier struct {
@@ -293,7 +273,8 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 		// close the logger to flush before reading the file
 		require.NoError(t, al.Close())
 
-		raw := readAccessLogRaw(t, logPath)
+		raw, err := os.ReadFile(logPath)
+		require.NoError(t, err)
 		require.NotEmpty(t, raw, "access log file must not be empty")
 
 		var rec map[string]any
@@ -351,7 +332,8 @@ func TestProxyService_HandleHTTP(t *testing.T) {
 
 		require.NoError(t, al.Close())
 
-		raw := readAccessLogRaw(t, logPath)
+		raw, err := os.ReadFile(logPath)
+		require.NoError(t, err)
 		require.NotEmpty(t, raw)
 
 		var rec map[string]any

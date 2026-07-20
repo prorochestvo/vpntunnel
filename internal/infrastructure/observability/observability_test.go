@@ -2,12 +2,13 @@ package observability_test
 
 import (
 	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -108,9 +109,8 @@ func TestAccessLogger_Log(t *testing.T) {
 		al.Log(domain.RequestSummary{Method: "GET", Target: "http://x.com"})
 		require.NoError(t, al.Close())
 
-		matches, globErr := filepath.Glob(filepath.Join(dir, "sub", "dir", "access.*.log"))
-		require.NoError(t, globErr)
-		assert.NotEmpty(t, matches, "expected a rotated log file under the created directory")
+		_, statErr := os.Stat(logPath)
+		assert.NoError(t, statErr, "expected the access log file to exist at the fixed path")
 	})
 
 	t.Run("Close is idempotent", func(t *testing.T) {
@@ -129,6 +129,52 @@ func TestAccessLogger_Log(t *testing.T) {
 		// second Close must not panic (error is acceptable)
 		assert.NotPanics(t, func() { _ = al.Close() })
 	})
+}
+
+func TestAccessLogger_RotationCompressionStableName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "access.log")
+
+	al, err := observability.NewAccessLogger(config.AccessLog{
+		Path:       logPath,
+		MaxSizeMB:  1,
+		MaxAgeDays: 14,
+		MaxBackups: 3,
+		Compress:   true,
+	}, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+
+	// write well over 1 MiB to force at least one rotation. A padded target
+	// makes each JSONL line ~0.5 KiB, so a few thousand lines suffice.
+	padded := "http://example.com/" + strings.Repeat("x", 400)
+	for range 4000 {
+		al.Log(domain.RequestSummary{Method: "GET", Target: padded, ClientAddr: "127.0.0.1:1000", StatusCode: 200})
+	}
+	require.NoError(t, al.Close())
+
+	// WithStableCurrentName: the live file stays at the fixed path.
+	_, statErr := os.Stat(logPath)
+	require.NoError(t, statErr, "live access.log must exist at the fixed path")
+
+	// WithCompress: at least one rotated backup must be gzip-compressed.
+	gzs, err := filepath.Glob(filepath.Join(dir, "access.*.log.gz"))
+	require.NoError(t, err)
+	require.NotEmpty(t, gzs, "expected at least one gzipped rotated backup")
+
+	// the compressed backup must decompress to valid access-log JSONL.
+	f, err := os.Open(gzs[0])
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	gr, err := gzip.NewReader(f)
+	require.NoError(t, err)
+	defer func() { _ = gr.Close() }()
+	scanner := bufio.NewScanner(gr)
+	require.True(t, scanner.Scan(), "compressed backup must contain at least one line")
+	var rec map[string]any
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
+	assert.Equal(t, "GET", rec["method"])
 }
 
 func TestAccessLogger_PathSanitization(t *testing.T) {
@@ -263,28 +309,22 @@ func TestAccessLogger_PathSanitization(t *testing.T) {
 // function that reads the target field from every emitted JSONL line.
 // readTargets owns the single Close call; callers that do not invoke readTargets
 // must register their own t.Cleanup to close the logger.
-// readAccessLogLines reads every JSONL record the access logger wrote.
-// loginjector's rotating handler writes to "<prefix>.<8hex>.log" rather than a
-// fixed path, so this globs and reads all matching files in dir, sorted,
-// concatenating their lines.
+// readAccessLogLines reads every JSONL record from the live access log. With
+// WithStableCurrentName the live file stays at the fixed "<prefix>.log" path;
+// these tests write too little to trigger rotation, so all records are there.
 func readAccessLogLines(t *testing.T, dir, prefix string) []map[string]any {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, prefix+".*.log"))
+	f, err := os.Open(filepath.Join(dir, prefix+".log"))
 	require.NoError(t, err)
-	sort.Strings(matches)
+	defer func() { _ = f.Close() }()
 	var recs []map[string]any
-	for _, m := range matches {
-		f, err := os.Open(m)
-		require.NoError(t, err)
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			var rec map[string]any
-			require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
-			recs = append(recs, rec)
-		}
-		require.NoError(t, scanner.Err())
-		_ = f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &rec))
+		recs = append(recs, rec)
 	}
+	require.NoError(t, scanner.Err())
 	return recs
 }
 
