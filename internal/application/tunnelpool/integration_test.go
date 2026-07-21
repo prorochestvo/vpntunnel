@@ -3,6 +3,7 @@ package tunnelpool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -10,12 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
-	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tools/hmackey"
 )
 
@@ -474,7 +475,8 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 		for i, ch := range errChs {
 			err := <-ch
 			require.Error(t, err, "caller %d: expected error on bring-up failure", i)
-			pe, ok := publicerror.Is(err)
+			var pe loginjector.PublicDetailsError
+			ok := errors.As(err, &pe)
 			require.True(t, ok, "caller %d: error must be a publicerror, got %T", i, err)
 			assert.Contains(t, pe.Details(), PrefixZoneBringUpFailure,
 				"caller %d: publicerror must mention the bring-up-failure prefix", i)
@@ -736,7 +738,8 @@ func TestLazyTwoRoleFlow(t *testing.T) {
 		deFraID := hmackey.DeriveID(integKey, "de-fra-wg-001")
 		_, _, _, deErr := sched.Route(ctx, deFraID)
 		require.Error(t, deErr, "routing to an unknown zone must return an error")
-		pe, ok := publicerror.Is(deErr)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(deErr, &pe)
 		require.True(t, ok, "unknown-zone error must be a publicerror, got %T: %v", deErr, deErr)
 		assert.Contains(t, pe.Details(), PrefixUnknownZone,
 			"unknown-zone publicerror must carry PrefixUnknownZone")

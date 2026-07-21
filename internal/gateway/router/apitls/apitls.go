@@ -34,7 +34,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"vpntunnel/internal/publicerror"
+	"github.com/prorochestvo/loginjector"
 )
 
 // LoadOrGenerate loads the TLS certificate from certDir (using cert.pem and
@@ -48,7 +48,7 @@ import (
 // fingerprint of the DER certificate as a lowercase 64-character hex string,
 // and an error.
 //
-// Returns a *publicerror.Error for operator-correctable conditions (wrong
+// Returns a loginjector.PublicDetailsError for operator-correctable conditions (wrong
 // certDir permissions). Returns a plain error for unexpected I/O or crypto
 // failures.
 //
@@ -119,7 +119,7 @@ func ensureCertDir(certDir string) error {
 		return fmt.Errorf("apitls: stat cert dir %q: %w", certDir, err)
 	}
 	if perm := info.Mode().Perm(); perm != 0o700 {
-		return publicerror.New(fmt.Sprintf(
+		return loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"apitls: cert dir %q has mode %04o; must be 0700 — run: chmod 0700 %s",
 			certDir, perm, certDir,
 		))

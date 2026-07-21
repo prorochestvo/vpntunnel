@@ -10,12 +10,12 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/wireguard/wgconf"
-	"vpntunnel/internal/publicerror"
 )
 
 // compile-time assertion: fakeDialer must satisfy egress.DialerCloser.
@@ -94,7 +94,7 @@ func TestBuildDialer(t *testing.T) {
 		assert.NotPanics(t, func() {
 			_, err := BuildDialer(t.Context(), badPath, dir, log, nil)
 			require.Error(t, err)
-			_, isPublic := publicerror.Is(err)
+			isPublic := errors.As(err, new(loginjector.PublicDetailsError))
 			assert.False(t, isPublic, "parse failure must be a plain error")
 		})
 	})

@@ -13,7 +13,8 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
-	"vpntunnel/internal/publicerror"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // DeviceBuilderFn constructs one live DialerCloser from a config path. The
@@ -240,7 +241,7 @@ func (s *StreamingSupervisor) DialContext(ctx context.Context, network, address 
 	s.mu.RUnlock()
 
 	if d == nil {
-		return nil, publicerror.New("Streaming tunnel temporarily unavailable; reconnecting.")
+		return nil, loginjector.NewPublicErrorDetails("Streaming tunnel temporarily unavailable; reconnecting.")
 	}
 	return d.DialContext(ctx, network, address)
 }
@@ -303,7 +304,7 @@ func (s *StreamingSupervisor) LiveHealth() (domain.TunnelHealth, bool) {
 //
 // The returned error is non-nil ONLY when ctx is cancelled before the loop
 // replies (e.g. the HTTP caller disconnected) — it is always a plain error
-// (ctx.Err()), never a *publicerror.Error. A caller ctx-cancel does not abort
+// (ctx.Err()), never a loginjector.PublicDetailsError. A caller ctx-cancel does not abort
 // an in-flight rotation: the loop finishes it on its own loopCtx regardless;
 // the reply simply lands unread in the cap-1 buffered reply channel.
 func (s *StreamingSupervisor) RotateIfIdle(ctx context.Context, force bool, busy func() bool) (RotateResult, error) {

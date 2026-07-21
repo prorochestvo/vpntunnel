@@ -2,16 +2,17 @@ package middleware
 
 import (
 	"crypto/sha512"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/infrastructure/config"
-	"vpntunnel/internal/publicerror"
 )
 
 // hashToken returns the SHA-512 hash of plaintext. Test fixtures use this
@@ -88,7 +89,8 @@ func TestLoadTokens(t *testing.T) {
 
 		_, err := LoadTokens(makeAPIAuth(u, a), dir)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got %T: %v", err, err)
 		assert.Contains(t, pe.Details(), "user.token")
 		assert.Contains(t, pe.Details(), fmt.Sprintf("%d", minTokenLen-1))
@@ -109,7 +111,8 @@ func TestLoadTokens(t *testing.T) {
 
 		_, err := LoadTokens(makeAPIAuth(u, a), dir)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got %T: %v", err, err)
 		assert.Contains(t, pe.Details(), "user.token")
 		assert.Contains(t, pe.Details(), fmt.Sprintf("%d", maxTokenLen+1))
@@ -126,7 +129,8 @@ func TestLoadTokens(t *testing.T) {
 
 		_, err := LoadTokens(makeAPIAuth(u, a), dir)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got %T: %v", err, err)
 		assert.Contains(t, pe.Details(), "user.token")
 		assert.Contains(t, pe.Details(), "0")
@@ -142,7 +146,8 @@ func TestLoadTokens(t *testing.T) {
 
 		_, err := LoadTokens(makeAPIAuth(u, a), dir)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got %T: %v", err, err)
 		assert.Contains(t, pe.Details(), "admin")
 		assert.Contains(t, pe.Details(), "user")
@@ -159,7 +164,8 @@ func TestLoadTokens(t *testing.T) {
 
 		_, err := LoadTokens(makeAPIAuth(u, a), dir)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got %T: %v", err, err)
 		assert.Contains(t, pe.Details(), "user.token")
 		assert.Contains(t, pe.Details(), "0644")
@@ -181,7 +187,8 @@ func TestLoadTokens(t *testing.T) {
 
 		_, err := LoadTokens(makeAPIAuth(missingPath, a), dir)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror for missing file, got %T: %v", err, err)
 		assert.Contains(t, pe.Details(), "ghost.token")
 	})

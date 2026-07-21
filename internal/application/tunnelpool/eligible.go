@@ -13,15 +13,16 @@ import (
 	"sync"
 
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tools/hmackey"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // NewEligibleSet builds the set of eligible config paths from rawConfigs
 // filtered by allowed country codes. configDir is used to resolve relative
 // paths (same rule as pool.NewPool). allowed is a list of two-letter country
 // codes (case-insensitive); an empty slice means "no filter — all configs are
-// eligible". Returns a *publicerror.Error when the resulting set is empty.
+// eligible". Returns a loginjector.PublicDetailsError when the resulting set is empty.
 //
 // Input paths in rawConfigs may be relative (resolved against configDir) or
 // already absolute (e.g. as returned by DiscoverConfigs). In both cases the
@@ -47,7 +48,7 @@ func NewEligibleSet(rawConfigs []string, configDir string, allowed []string) (*E
 // here — on-demand may route to any discovered zone regardless of the
 // vpnstream.allowed_countries setting.
 //
-// Returns a *publicerror.Error only when rawConfigs is empty (no .conf
+// Returns a loginjector.PublicDetailsError only when rawConfigs is empty (no .conf
 // discovered at all). In that case the process cannot serve any traffic and
 // the caller should treat this as a fatal startup error.
 //
@@ -56,7 +57,7 @@ func NewEligibleSet(rawConfigs []string, configDir string, allowed []string) (*E
 // and must never be logged; it is not retained on the returned struct.
 func NewFullSet(rawConfigs []string, configDir string, hmacKey []byte) (*EligibleSet, error) {
 	if len(rawConfigs) == 0 {
-		return nil, publicerror.New(
+		return nil, loginjector.NewPublicErrorDetails(
 			"config.vpnstream: no tunnel configs discovered in tunnels/; " +
 				"drop at least one wg-quick .conf file there",
 		)
@@ -200,12 +201,12 @@ func newSet(rawConfigs []string, configDir string, allowed []string, keyFn func(
 
 	if len(byKey) == 0 {
 		if len(allowed) == 0 {
-			return nil, publicerror.New(
+			return nil, loginjector.NewPublicErrorDetails(
 				"config.vpnstream: no eligible tunnel configs discovered in tunnels/; " +
 					"ensure at least one wg-quick .conf file is present",
 			)
 		}
-		return nil, publicerror.New(fmt.Sprintf(
+		return nil, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"config.upstream: no eligible tunnel configs after country filter %s; "+
 				"check that allowed_countries matches at least one of the discovered configs in tunnels/",
 			strings.Join(allowed, ", "),

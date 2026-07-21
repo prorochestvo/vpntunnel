@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/infrastructure/config"
-	"vpntunnel/internal/publicerror"
 )
 
 // validAPIBlock returns a minimal valid api block for use in test JSON payloads.
@@ -73,7 +73,7 @@ func TestLoad(t *testing.T) {
 		t.Parallel()
 		_, err := config.Load("/nonexistent/path/proxy.json")
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.False(t, errors.As(err, &pe), "expected plain error, got PublicError")
 	})
 
@@ -87,7 +87,7 @@ func TestLoad(t *testing.T) {
 
 		_, loadErr := config.Load(f.Name())
 		require.Error(t, loadErr)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.False(t, errors.As(loadErr, &pe), "expected plain error, got PublicError")
 	})
 
@@ -110,7 +110,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 	})
 
@@ -122,7 +122,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe))
 		assert.Contains(t, pe.Details(), "vpnstream.listen")
 	})
@@ -137,7 +137,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Contains(t, pe.Details(), "config.upstream.configs")
 		assert.Contains(t, pe.Details(), "removed")
@@ -152,7 +152,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.upstream: moved to vpnstream (allowed_countries → vpnstream.allowed_countries)", pe.Details())
 	})
@@ -165,7 +165,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.upstream: moved to vpnstream (allowed_countries → vpnstream.allowed_countries)", pe.Details())
 		// error must not echo the country code values from the config
@@ -180,7 +180,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe))
 		assert.Contains(t, pe.Details(), "dial_timeout")
 	})
@@ -239,7 +239,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.health: removed; handshake_max_age is now a built-in constant (tunnelpool.DefaultHandshakeMaxAge = 180s)", pe.Details())
 	})
@@ -286,7 +286,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.vpnstream.auth: token and token_file are mutually exclusive; pick one", pe.Details())
 		// error must not echo the actual token value
@@ -320,7 +320,7 @@ func TestLoad(t *testing.T) {
 		path := writeJSON(t, map[string]any{})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api: block is required; add an api block (see configs/proxy.example.json for the required fields)",
@@ -336,7 +336,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.admin: removed in v5; use the api block", pe.Details())
 	})
@@ -356,7 +356,7 @@ func TestLoad(t *testing.T) {
 			})
 			_, err := config.Load(path)
 			require.Error(t, err)
-			var pe *publicerror.Error
+			var pe loginjector.PublicDetailsError
 			assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 			assert.Equal(t, "config.api.auth.admin_token_file: required", pe.Details())
 		})
@@ -373,7 +373,7 @@ func TestLoad(t *testing.T) {
 			})
 			_, err := config.Load(path)
 			require.Error(t, err)
-			var pe *publicerror.Error
+			var pe loginjector.PublicDetailsError
 			assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 			assert.Equal(t, "config.api.auth.proxy_token_file: required", pe.Details())
 		})
@@ -391,7 +391,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.auth: proxy_token_file and admin_token_file resolve to the same path",
@@ -408,7 +408,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.api.listen: must be host:port", pe.Details())
 	})
@@ -425,7 +425,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.vpn.timeout (10m0s) must be <= max_timeout (5m0s)",
@@ -535,7 +535,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.api.vpn.async.storage_path: must not be empty", pe.Details())
 	})
@@ -606,7 +606,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Contains(t, pe.Details(), "path_sanitize_patterns[0]")
 	})
@@ -625,7 +625,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Contains(t, pe.Details(), "path_sanitize_patterns[1]")
 	})
@@ -643,7 +643,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.log.path_sanitize_patterns[0].pattern: must not be empty",
@@ -665,7 +665,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Contains(t, pe.Details(), "path_sanitize_patterns[0]")
 	})
@@ -726,7 +726,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "reconnect_min")
 	})
@@ -739,7 +740,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "reconnect_max")
 	})
@@ -752,7 +754,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "reconnect_min")
 		assert.Contains(t, pe.Details(), "reconnect_max")
@@ -797,7 +800,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "settle_delay")
 	})
@@ -815,7 +819,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "grace")
 	})
@@ -833,7 +838,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "idle_ttl")
 	})
@@ -874,7 +880,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "allowed_countries[1]")
 		assert.Contains(t, pe.Details(), "USA")
@@ -890,7 +897,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "allowed_countries[0]")
 	})
@@ -910,7 +918,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "settle_delay")
 	})
@@ -926,7 +935,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "allowed_countries[1]")
 	})
@@ -941,7 +951,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "allowed_countries[0]")
 		assert.Contains(t, pe.Details(), "1a")
@@ -957,7 +968,8 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok)
 		assert.Contains(t, pe.Details(), "allowed_countries[0]")
 		assert.Contains(t, pe.Details(), `"u"`)
@@ -988,7 +1000,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.listen: moved to vpnstream.listen", pe.Details())
 	})
@@ -1001,7 +1013,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.auth: moved to vpnstream.auth", pe.Details())
 	})
@@ -1014,7 +1026,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.dial_timeout: moved to vpnstream.dial_timeout", pe.Details())
 	})
@@ -1027,7 +1039,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.idle_timeout: moved to vpnstream.idle_timeout", pe.Details())
 	})
@@ -1040,7 +1052,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.shutdown_timeout: moved to vpnstream.shutdown_timeout", pe.Details())
 	})
@@ -1053,7 +1065,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.streaming: moved to vpnstream (reconnect_min/reconnect_max)", pe.Details())
 	})
@@ -1066,7 +1078,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.ondemand: moved to api.vpn.demand", pe.Details())
 	})
@@ -1080,7 +1092,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.tls: removed; use the -tls-cert-dir, -tls-hostname, -tls-ip-sans CLI flags",
@@ -1097,7 +1109,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.api.upstream_timeout: moved to api.vpn.timeout", pe.Details())
 	})
@@ -1111,7 +1123,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.api.max_upstream_timeout: moved to api.vpn.max_timeout", pe.Details())
 	})
@@ -1125,7 +1137,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.async: moved to api.vpn.async (only storage_path survives; max_concurrent_jobs/pending_timeout/complete_ttl/tombstone_ttl are now built-in constants in internal/application/asyncjob)",
@@ -1149,7 +1161,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.vpn.async.max_concurrent_jobs: removed; now a built-in constant in internal/application/asyncjob",
@@ -1173,7 +1185,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.vpn.async.pending_timeout: removed; now a built-in constant in internal/application/asyncjob",
@@ -1197,7 +1209,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.vpn.async.complete_ttl: removed; now a built-in constant in internal/application/asyncjob",
@@ -1221,7 +1233,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.vpn.async.tombstone_ttl: removed; now a built-in constant in internal/application/asyncjob",
@@ -1240,7 +1252,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.listen: moved to vpnstream.listen", pe.Details())
 	})
@@ -1256,7 +1268,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.listen: moved to vpnstream.listen", pe.Details())
 	})
@@ -1278,7 +1290,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.auth.user_token_file: renamed to proxy_token_file",
@@ -1300,7 +1312,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.auth.deploy_token_file: removed; the deploy role no longer exists — the release health-check uses the admin token",
@@ -1323,7 +1335,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t,
 			"config.api.auth.user_token_file: renamed to proxy_token_file",
@@ -1360,7 +1372,7 @@ func TestLoad(t *testing.T) {
 		})
 		_, err := config.Load(path)
 		require.Error(t, err)
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		require.True(t, errors.As(err, &pe), "expected PublicError, got: %v", err)
 		assert.Equal(t, "config.tunnel_id_hmac_key_file: must not be empty", pe.Details())
 	})

@@ -1,14 +1,14 @@
 package tunnelpool
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"vpntunnel/internal/publicerror"
 )
 
 // confWithKey returns a minimal wg-quick .conf body using the given base64
@@ -72,7 +72,8 @@ func TestVerifySingleKey(t *testing.T) {
 
 		err := VerifySingleKey([]string{pathA, pathB}, dir, log)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got: %T %v", err, err)
 		// must mention the count of distinct keys
 		assert.Contains(t, pe.Details(), "2")
@@ -90,7 +91,8 @@ func TestVerifySingleKey(t *testing.T) {
 
 		err := VerifySingleKey([]string{pathA, pathB, pathC}, dir, log)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror")
 		assert.Contains(t, pe.Details(), "2")
 	})
@@ -103,7 +105,7 @@ func TestVerifySingleKey(t *testing.T) {
 
 		err := VerifySingleKey([]string{badPath}, dir, log)
 		require.Error(t, err)
-		_, isPublic := publicerror.Is(err)
+		isPublic := errors.As(err, new(loginjector.PublicDetailsError))
 		assert.False(t, isPublic, "all-parse-failure should be a plain error, got publicerror")
 	})
 

@@ -7,14 +7,14 @@ import (
 	"log/slog"
 	"path/filepath"
 
+	"github.com/prorochestvo/loginjector"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/infrastructure/wireguard/wgconf"
-	"vpntunnel/internal/publicerror"
 )
 
 // VerifySingleKey parses each config in configPaths (resolved against configDir
-// when relative) and returns a *publicerror.Error when two or more distinct
+// when relative) and returns a loginjector.PublicDetailsError when two or more distinct
 // Interface.PrivateKey values are found across the set.
 //
 // The check is parse-only: no WireGuard device or netstack is created. It is
@@ -58,7 +58,7 @@ func VerifySingleKey(configPaths []string, configDir string, opLog *slog.Logger)
 	}
 
 	if len(fingerprints) > 1 {
-		return publicerror.New(fmt.Sprintf(
+		return loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"tunnel config: found %d distinct WireGuard private keys across discovered configs; "+
 				"all configs must share a single [Interface] PrivateKey "+
 				"(one Mullvad device account); verify your config export",

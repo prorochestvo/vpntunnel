@@ -9,10 +9,9 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"vpntunnel/internal/publicerror"
 )
 
 // newBufLog returns a slog.Logger that writes JSON to buf and the *bytes.Buffer
@@ -84,8 +83,8 @@ func TestLoadOrGenerate(t *testing.T) {
 		_, err := LoadOrGenerate(path, dir, log)
 		require.Error(t, err)
 
-		var pe *publicerror.Error
-		require.True(t, errors.As(err, &pe), "error must be *publicerror.Error")
+		var pe loginjector.PublicDetailsError
+		require.True(t, errors.As(err, &pe), "error must be loginjector.PublicDetailsError")
 		assert.Contains(t, pe.Details(), "0600", "error message must mention required mode 0600")
 	})
 
@@ -106,8 +105,8 @@ func TestLoadOrGenerate(t *testing.T) {
 		_, err := LoadOrGenerate(path, dir, log)
 		require.Error(t, err)
 
-		var pe *publicerror.Error
-		require.True(t, errors.As(err, &pe), "error must be *publicerror.Error")
+		var pe loginjector.PublicDetailsError
+		require.True(t, errors.As(err, &pe), "error must be loginjector.PublicDetailsError")
 		assert.Contains(t, pe.Details(), "16", "error message must mention actual byte count")
 
 		// the raw bytes must not appear in the error message.

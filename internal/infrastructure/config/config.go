@@ -1,6 +1,6 @@
 // Package config loads and validates the proxy's JSON configuration file.
 // Validation errors that the operator must fix are returned as
-// *publicerror.Error; I/O and JSON parse failures are plain errors.
+// loginjector.PublicDetailsError; I/O and JSON parse failures are plain errors.
 package config
 
 import (
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"vpntunnel/internal/publicerror"
+	"github.com/prorochestvo/loginjector"
 )
 
 // Default values applied when the corresponding JSON field is absent or zero.
@@ -67,7 +67,7 @@ const (
 )
 
 // Load reads the JSON config at path, applies defaults, and validates the result.
-// It returns a *publicerror.Error for fields the operator must correct, or a
+// It returns a loginjector.PublicDetailsError for fields the operator must correct, or a
 // plain wrapped error for I/O and JSON failures.
 func Load(path string) (Config, error) {
 	return LoadWithLogger(path, slog.Default())
@@ -88,7 +88,7 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 		return Config{}, fmt.Errorf("decode config %s: %w", path, err)
 	}
 	if _, hasAdmin := probe["admin"]; hasAdmin {
-		return Config{}, publicerror.New("config.admin: removed in v5; use the api block")
+		return Config{}, loginjector.NewPublicErrorDetails("config.admin: removed in v5; use the api block")
 	}
 	if upstreamRaw, hasUpstream := probe["upstream"]; hasUpstream {
 		var upstreamProbe map[string]json.RawMessage
@@ -99,13 +99,13 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 			logger.Warn("config.upstream: failed to probe for removed fields; skipping migration check",
 				slog.String("err", err.Error()))
 		} else if _, hasConfigs := upstreamProbe["configs"]; hasConfigs {
-			return Config{}, publicerror.New(
+			return Config{}, loginjector.NewPublicErrorDetails(
 				"config.upstream.configs: removed; tunnels are now auto-discovered from " +
 					filepath.Join(filepath.Dir(path), "tunnels") +
 					" — delete this field",
 			)
 		} else {
-			return Config{}, publicerror.New(
+			return Config{}, loginjector.NewPublicErrorDetails(
 				"config.upstream: moved to vpnstream (allowed_countries → vpnstream.allowed_countries)",
 			)
 		}
@@ -135,7 +135,7 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 		return Config{}, err
 	}
 	if _, hasHealth := probe["health"]; hasHealth {
-		return Config{}, publicerror.New(
+		return Config{}, loginjector.NewPublicErrorDetails(
 			"config.health: removed; handshake_max_age is now a built-in constant (tunnelpool.DefaultHandshakeMaxAge = 180s)",
 		)
 	}
@@ -544,7 +544,7 @@ func (r rawConfig) toConfig() (Config, error) {
 	}
 
 	if r.API == nil {
-		return Config{}, publicerror.New(
+		return Config{}, loginjector.NewPublicErrorDetails(
 			"config.api: block is required; add an api block (see configs/proxy.example.json for the required fields)",
 		)
 	}
@@ -553,13 +553,13 @@ func (r rawConfig) toConfig() (Config, error) {
 	patterns := make([]PathSanitizePattern, 0, len(r.API.Log.PathSanitizePatterns))
 	for i, rp := range r.API.Log.PathSanitizePatterns {
 		if rp.Pattern == "" {
-			return Config{}, publicerror.New(fmt.Sprintf(
+			return Config{}, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 				"config.api.log.path_sanitize_patterns[%d].pattern: must not be empty", i,
 			))
 		}
 		re, err := regexp.Compile(rp.Pattern)
 		if err != nil {
-			return Config{}, publicerror.New(fmt.Sprintf(
+			return Config{}, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 				"config.api.log.path_sanitize_patterns[%d].pattern: invalid regex: %s", i, err.Error(),
 			))
 		}
@@ -750,36 +750,36 @@ func (c *Config) applyDefaults() {
 // a slog warn when vpnstream.listen or api.listen is bound to a non-loopback address.
 func (c *Config) validate(logger *slog.Logger) error {
 	if c.VPNStream.Listen == "" {
-		return publicerror.New("config.vpnstream.listen: must be host:port")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.listen: must be host:port")
 	}
 	host, _, err := net.SplitHostPort(c.VPNStream.Listen)
 	if err != nil {
-		return publicerror.New("config.vpnstream.listen: must be host:port")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.listen: must be host:port")
 	}
 	warnNonLoopback(logger, "vpnstream.listen", host)
 
 	if c.VPNStream.DialTimeout < 0 {
-		return publicerror.New("config.vpnstream.dial_timeout: must be >= 0")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.dial_timeout: must be >= 0")
 	}
 	if c.VPNStream.IdleTimeout < 0 {
-		return publicerror.New("config.vpnstream.idle_timeout: must be >= 0")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.idle_timeout: must be >= 0")
 	}
 	if c.VPNStream.ShutdownTimeout < 0 {
-		return publicerror.New("config.vpnstream.shutdown_timeout: must be >= 0")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.shutdown_timeout: must be >= 0")
 	}
 
 	if c.AccessLog.Path == "" {
-		return publicerror.New("config.access_log.path: required")
+		return loginjector.NewPublicErrorDetails("config.access_log.path: required")
 	}
 
 	if c.VPNStream.Auth.Token != "" && c.VPNStream.Auth.TokenFile != "" {
-		return publicerror.New("config.vpnstream.auth: token and token_file are mutually exclusive; pick one")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.auth: token and token_file are mutually exclusive; pick one")
 	}
 
 	// allowed_countries: each entry must be exactly two lowercase ASCII letters.
 	for i, cc := range c.VPNStream.AllowedCountries {
 		if len(cc) != 2 || cc[0] < 'a' || cc[0] > 'z' || cc[1] < 'a' || cc[1] > 'z' {
-			return publicerror.New(fmt.Sprintf(
+			return loginjector.NewPublicErrorDetails(fmt.Sprintf(
 				"config.vpnstream.allowed_countries[%d]: %q is not a valid two-letter lowercase country code",
 				i, cc,
 			))
@@ -788,95 +788,95 @@ func (c *Config) validate(logger *slog.Logger) error {
 
 	// vpnstream streaming — explicit 0s are invalid.
 	if c.VPNStream.ReconnectMin <= 0 {
-		return publicerror.New("config.vpnstream.reconnect_min: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.reconnect_min: must be > 0")
 	}
 	if c.VPNStream.ReconnectMax <= 0 {
-		return publicerror.New("config.vpnstream.reconnect_max: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.vpnstream.reconnect_max: must be > 0")
 	}
 	if c.VPNStream.ReconnectMin > c.VPNStream.ReconnectMax {
-		return publicerror.New(fmt.Sprintf(
+		return loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"config.vpnstream.reconnect_min (%s) must be <= reconnect_max (%s)",
 			c.VPNStream.ReconnectMin, c.VPNStream.ReconnectMax,
 		))
 	}
 
 	if c.API.Listen == "" {
-		return publicerror.New("config.api.listen: must be host:port")
+		return loginjector.NewPublicErrorDetails("config.api.listen: must be host:port")
 	}
 	apiHost, _, err := net.SplitHostPort(c.API.Listen)
 	if err != nil {
-		return publicerror.New("config.api.listen: must be host:port")
+		return loginjector.NewPublicErrorDetails("config.api.listen: must be host:port")
 	}
 	warnNonLoopback(logger, "api.listen", apiHost)
 
 	if c.API.ShutdownTimeout < 0 {
-		return publicerror.New("config.api.shutdown_timeout: must be >= 0")
+		return loginjector.NewPublicErrorDetails("config.api.shutdown_timeout: must be >= 0")
 	}
 
 	if c.API.Auth.ProxyTokenFile == "" {
-		return publicerror.New("config.api.auth.proxy_token_file: required")
+		return loginjector.NewPublicErrorDetails("config.api.auth.proxy_token_file: required")
 	}
 	if c.API.Auth.AdminTokenFile == "" {
-		return publicerror.New("config.api.auth.admin_token_file: required")
+		return loginjector.NewPublicErrorDetails("config.api.auth.admin_token_file: required")
 	}
 	// token file paths must be distinct after cleaning.
 	userClean := filepath.Clean(c.API.Auth.ProxyTokenFile)
 	adminClean := filepath.Clean(c.API.Auth.AdminTokenFile)
 	if userClean == adminClean {
-		return publicerror.New("config.api.auth: proxy_token_file and admin_token_file resolve to the same path")
+		return loginjector.NewPublicErrorDetails("config.api.auth: proxy_token_file and admin_token_file resolve to the same path")
 	}
 
 	if c.API.MaxRequestBodyBytes <= 0 {
-		return publicerror.New("config.api.max_request_body_bytes: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.api.max_request_body_bytes: must be > 0")
 	}
 	if c.API.VPN.Timeout <= 0 {
-		return publicerror.New("config.api.vpn.timeout: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.api.vpn.timeout: must be > 0")
 	}
 	if c.API.VPN.MaxTimeout <= 0 {
-		return publicerror.New("config.api.vpn.max_timeout: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.api.vpn.max_timeout: must be > 0")
 	}
 	if c.API.VPN.Timeout > c.API.VPN.MaxTimeout {
-		return publicerror.New(fmt.Sprintf(
+		return loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"config.api.vpn.timeout (%s) must be <= max_timeout (%s)",
 			c.API.VPN.Timeout, c.API.VPN.MaxTimeout,
 		))
 	}
 
 	if c.API.VPN.Async.StoragePath == "" {
-		return publicerror.New("config.api.vpn.async.storage_path: must not be empty")
+		return loginjector.NewPublicErrorDetails("config.api.vpn.async.storage_path: must not be empty")
 	}
 
 	if c.TunnelIDHMACKeyFile == "" {
-		return publicerror.New("config.tunnel_id_hmac_key_file: must not be empty")
+		return loginjector.NewPublicErrorDetails("config.tunnel_id_hmac_key_file: must not be empty")
 	}
 
 	// ondemand block — explicit 0s are invalid; settle_delay has a minimum.
 	if c.API.VPN.Demand.Grace <= 0 {
-		return publicerror.New("config.api.vpn.demand.grace: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.api.vpn.demand.grace: must be > 0")
 	}
 	if c.API.VPN.Demand.SettleDelay <= 0 {
-		return publicerror.New("config.api.vpn.demand.settle_delay: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.api.vpn.demand.settle_delay: must be > 0")
 	}
 	const minSettleDelay = 5 * time.Second
 	if c.API.VPN.Demand.SettleDelay < minSettleDelay {
-		return publicerror.New(fmt.Sprintf(
+		return loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"config.api.vpn.demand.settle_delay: must be >= %s (got %s)",
 			minSettleDelay, c.API.VPN.Demand.SettleDelay,
 		))
 	}
 	if c.API.VPN.Demand.IdleTTL <= 0 {
-		return publicerror.New("config.api.vpn.demand.idle_ttl: must be > 0")
+		return loginjector.NewPublicErrorDetails("config.api.vpn.demand.idle_ttl: must be > 0")
 	}
 
 	return nil
 }
 
 // probeRemovedKey checks whether key is present in probe. If it is, it returns
-// a *publicerror.Error with message so the operator knows where the key moved.
+// a loginjector.PublicDetailsError with message so the operator knows where the key moved.
 // It does NOT check the value — presence alone is sufficient to fire the probe.
 func probeRemovedKey(probe map[string]json.RawMessage, key, message string) error {
 	if _, ok := probe[key]; ok {
-		return publicerror.New(message)
+		return loginjector.NewPublicErrorDetails(message)
 	}
 	return nil
 }

@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/tunnelpool"
-	"vpntunnel/internal/publicerror"
 )
 
 func TestDiscoverConfigs(t *testing.T) {
@@ -101,8 +101,8 @@ func TestDiscoverConfigs(t *testing.T) {
 		_, err := tunnelpool.DiscoverConfigs(missing)
 		require.Error(t, err)
 
-		var pe *publicerror.Error
-		require.True(t, errors.As(err, &pe), "expected *publicerror.Error, got: %T %v", err, err)
+		var pe loginjector.PublicDetailsError
+		require.True(t, errors.As(err, &pe), "expected loginjector.PublicDetailsError, got: %T %v", err, err)
 		assert.Contains(t, pe.Details(), missing)
 	})
 
@@ -145,8 +145,8 @@ func TestDiscoverConfigs(t *testing.T) {
 		_, err := tunnelpool.DiscoverConfigs(tunnelsDir)
 		require.Error(t, err)
 
-		var pe *publicerror.Error
+		var pe loginjector.PublicDetailsError
 		assert.False(t, errors.As(err, &pe),
-			"expected a plain wrapped error, got *publicerror.Error: %v", err)
+			"expected a plain wrapped error, got loginjector.PublicDetailsError: %v", err)
 	})
 }

@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"vpntunnel/internal/publicerror"
+	"github.com/prorochestvo/loginjector"
 )
 
 // keyLen is the length in bytes of the HMAC key. 64 is the SHA-256 block size:
@@ -74,7 +74,7 @@ func loadExistingKey(path string, opLog *slog.Logger) ([]byte, error) {
 	}
 
 	if perm := info.Mode().Perm(); perm != 0o600 {
-		return nil, publicerror.New(fmt.Sprintf(
+		return nil, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"tunnel_id_hmac_key_file: %q has mode %04o; must be 0600 — run: chmod 0600 %s",
 			filepath.Base(path), perm, path,
 		))
@@ -86,7 +86,7 @@ func loadExistingKey(path string, opLog *slog.Logger) ([]byte, error) {
 	}
 
 	if len(raw) != keyLen {
-		return nil, publicerror.New(fmt.Sprintf(
+		return nil, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"tunnel_id_hmac_key_file: %q contains %d bytes; must be exactly %d bytes",
 			filepath.Base(path), len(raw), keyLen,
 		))

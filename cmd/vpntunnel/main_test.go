@@ -576,7 +576,7 @@ func TestRun(t *testing.T) {
 
 		// create a dir with wrong permissions (0777 instead of 0700).
 		// apitls.ensureCertDir rejects dirs whose permissions are not 0700,
-		// giving a deterministic FAIL via a *publicerror.Error (apitls.go:121).
+		// giving a deterministic FAIL via a loginjector.PublicDetailsError (apitls.go:121).
 		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
 		// NOTE: do NOT call parseTLSOptions — we inject the tlsOptions directly
 		// to exercise the Wave 3 cert-load branch inside run in isolation.
@@ -595,7 +595,7 @@ func TestRun(t *testing.T) {
 			withShutdownCtx(shutdownCtx),
 		)
 		// exercises the FAIL-not-fallback contract via the wrong-perms path
-		// (apitls.ensureCertDir returns a *publicerror.Error for non-0700 dirs).
+		// (apitls.ensureCertDir returns a loginjector.PublicDetailsError for non-0700 dirs).
 		// the existing-but-unparseable-cert FAIL variant is gated on a sibling
 		// apitls change and is not asserted here.
 		require.Error(t, err)

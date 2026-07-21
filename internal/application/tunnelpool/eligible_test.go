@@ -1,14 +1,15 @@
 package tunnelpool
 
 import (
+	"errors"
 	mrand "math/rand/v2"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/publicerror"
 	"vpntunnel/internal/tools/hmackey"
 )
 
@@ -79,7 +80,8 @@ func TestNewEligibleSet(t *testing.T) {
 		cfgs := sampleConfigs()
 		_, err := NewEligibleSet(cfgs, "/fake", []string{"xx", "yy"})
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got: %T %v", err, err)
 		assert.Contains(t, pe.Details(), "eligible")
 	})
@@ -88,7 +90,7 @@ func TestNewEligibleSet(t *testing.T) {
 		t.Parallel()
 		_, err := NewEligibleSet([]string{}, "/fake", nil)
 		require.Error(t, err)
-		_, ok := publicerror.Is(err)
+		ok := errors.As(err, new(loginjector.PublicDetailsError))
 		require.True(t, ok)
 	})
 
@@ -273,7 +275,8 @@ func TestNewFullSet(t *testing.T) {
 		t.Parallel()
 		_, err := NewFullSet([]string{}, "/fake", testHMACKey)
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror for empty config list, got: %T %v", err, err)
 		assert.Contains(t, pe.Details(), "config.vpnstream")
 		assert.Contains(t, pe.Details(), "tunnels/")

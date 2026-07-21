@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/egress"
-	"vpntunnel/internal/publicerror"
 )
 
 // compile-time assertions: fakes must satisfy their target interfaces.
@@ -146,7 +146,7 @@ func TestZoneRoutingForwarder_Forward(t *testing.T) {
 		t.Parallel()
 
 		router := &fakeRouter{
-			routeErr: publicerror.New("unknown_zone: bad-zone is not in the eligible set"),
+			routeErr: loginjector.NewPublicErrorDetails("unknown_zone: bad-zone is not in the eligible set"),
 		}
 		base := &fakeRawForwarder{}
 		fwd := NewZoneRoutingForwarder(router, base)
@@ -164,7 +164,7 @@ func TestZoneRoutingForwarder_Forward(t *testing.T) {
 		t.Parallel()
 
 		router := &fakeRouter{
-			routeErr: publicerror.New("zone_bring_up_failure: some-zone device could not be started"),
+			routeErr: loginjector.NewPublicErrorDetails("zone_bring_up_failure: some-zone device could not be started"),
 		}
 		base := &fakeRawForwarder{}
 		fwd := NewZoneRoutingForwarder(router, base)
@@ -228,7 +228,7 @@ func TestZoneRoutingForwarder_Forward(t *testing.T) {
 		t.Parallel()
 
 		router := &fakeRouter{
-			routeErr: publicerror.New("unknown_zone: missing is not in the eligible set"),
+			routeErr: loginjector.NewPublicErrorDetails("unknown_zone: missing is not in the eligible set"),
 		}
 		base := &fakeRawForwarder{}
 		fwd := NewZoneRoutingForwarder(router, base)

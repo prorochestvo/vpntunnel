@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"vpntunnel/internal/publicerror"
+	"github.com/prorochestvo/loginjector"
 )
 
 // DiscoverConfigs lists the top-level *.conf files in tunnelsDir and returns
@@ -18,7 +18,7 @@ import (
 // with "."), including ".gitkeep", are skipped. Subdirectories are not
 // recursed into.
 //
-// If tunnelsDir does not exist, DiscoverConfigs returns a *publicerror.Error
+// If tunnelsDir does not exist, DiscoverConfigs returns a loginjector.PublicDetailsError
 // naming the path with an operator-actionable message. Other os.ReadDir errors
 // (permission denied, not a directory) are returned as plain wrapped errors.
 //
@@ -29,7 +29,7 @@ func DiscoverConfigs(tunnelsDir string) ([]string, error) {
 	entries, err := os.ReadDir(tunnelsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, publicerror.New(fmt.Sprintf(
+			return nil, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 				"config.upstream: tunnels directory %s not found; "+
 					"create it and drop your wg-quick .conf files there",
 				tunnelsDir,

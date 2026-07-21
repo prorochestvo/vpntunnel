@@ -1,7 +1,7 @@
 // Package application implements the core proxy logic: HandleHTTP for
 // plain-HTTP forward requests and HandleCONNECT for HTTPS tunnels.
 //
-// Error contract: methods call publicerror.New for failures whose cause is
+// Error contract: methods call loginjector.NewPublicErrorDetails for failures whose cause is
 // useful to the client — bad input, concurrency limit, and upstream
 // unreachable. The fallback constant ErrFallbackMessage is reserved for
 // genuinely unexpected impl failures (request build error, hijacker missing)
@@ -25,7 +25,8 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/observability"
-	"vpntunnel/internal/publicerror"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // ErrFallbackMessage is the generic error body sent to clients when an
@@ -138,7 +139,7 @@ func (s *ProxyService) ActiveSessions() int64 {
 // It strips hop-by-hop headers, re-issues the request through the configured
 // dialer, streams the response, and emits one access log record.
 //
-// Writes a *publicerror.Error body for bad-input (400, non-absolute URI) and
+// Writes a loginjector.PublicDetailsError body for bad-input (400, non-absolute URI) and
 // for upstream-unreachable (502). Unexpected impl failures get 500 with
 // ErrFallbackMessage.
 func (s *ProxyService) HandleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +155,7 @@ func (s *ProxyService) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !r.URL.IsAbs() {
-		err := publicerror.New("Proxy expects absolute-URI request form.")
+		err := loginjector.NewPublicErrorDetails("Proxy expects absolute-URI request form.")
 		http.Error(w, err.Details(), http.StatusBadRequest)
 		summary.StatusCode = http.StatusBadRequest
 		summary.UpstreamError = err.Error()
@@ -189,7 +190,7 @@ func (s *ProxyService) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logger().Error("upstream request failed",
 			slog.String("target", logTarget(r.URL)),
 			slog.String("err", err.Error()))
-		pe := publicerror.New("Upstream unreachable.")
+		pe := loginjector.NewPublicErrorDetails("Upstream unreachable.")
 		http.Error(w, pe.Details(), http.StatusBadGateway)
 		summary.StatusCode = http.StatusBadGateway
 		summary.UpstreamError = err.Error()
@@ -234,7 +235,7 @@ func (s *ProxyService) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, _, err := net.SplitHostPort(target); err != nil {
-		pe := publicerror.New("Invalid CONNECT target. Expected host:port.")
+		pe := loginjector.NewPublicErrorDetails("Invalid CONNECT target. Expected host:port.")
 		http.Error(w, pe.Details(), http.StatusBadRequest)
 		summary.StatusCode = http.StatusBadRequest
 		summary.UpstreamError = pe.Error()
@@ -259,7 +260,7 @@ func (s *ProxyService) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 		s.logger().Error("CONNECT dial failed",
 			slog.String("target", target),
 			slog.String("err", err.Error()))
-		pe := publicerror.New("Upstream unreachable.")
+		pe := loginjector.NewPublicErrorDetails("Upstream unreachable.")
 		http.Error(w, pe.Details(), http.StatusBadGateway)
 		summary.StatusCode = http.StatusBadGateway
 		summary.UpstreamError = err.Error()

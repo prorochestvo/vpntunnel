@@ -16,7 +16,8 @@ import (
 	"path/filepath"
 
 	"vpntunnel/internal/infrastructure/config"
-	"vpntunnel/internal/publicerror"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // Role identifies which API role a Bearer token grants.
@@ -49,7 +50,7 @@ const TokenRoleCount = 2
 //   - Both hashes must be distinct (checked via crypto/subtle.ConstantTimeCompare).
 //   - Token files are read once at startup; no hot-reload in v1.
 //
-// Returns a *publicerror.Error for operator-correctable conditions (wrong mode,
+// Returns a loginjector.PublicDetailsError for operator-correctable conditions (wrong mode,
 // wrong owner, bad length, duplicate tokens). Returns a plain error for
 // unexpected I/O failures.
 func LoadTokens(auth config.APIAuth, configDir string) (*Tokens, error) {
@@ -79,7 +80,7 @@ func LoadTokens(auth config.APIAuth, configDir string) (*Tokens, error) {
 	// is made (constant-time discipline even on aggregate checks).
 	adminEqUser := subtle.ConstantTimeCompare(results[0].hash[:], results[1].hash[:]) == 1
 	if adminEqUser {
-		return nil, publicerror.New(fmt.Sprintf(
+		return nil, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"api.auth: admin and proxy token hashes are identical (files: %q, %q)",
 			filepath.Base(results[0].resolved), filepath.Base(results[1].resolved),
 		))
@@ -169,7 +170,7 @@ func loadOneToken(path, label, configDir string) ([64]byte, string, error) {
 	// target file, not the symlink itself.
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return [64]byte{}, resolved, publicerror.New(fmt.Sprintf(
+		return [64]byte{}, resolved, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"api.auth.%s_token_file: cannot stat %q: %v",
 			label, filepath.Base(resolved), err,
 		))
@@ -177,7 +178,7 @@ func loadOneToken(path, label, configDir string) ([64]byte, string, error) {
 
 	// permission check runs before read — per project security constraints.
 	if perm := info.Mode().Perm(); perm != 0o600 {
-		return [64]byte{}, resolved, publicerror.New(fmt.Sprintf(
+		return [64]byte{}, resolved, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"api.auth.%s_token_file: %q has mode %04o; must be 0600 — run: chmod 0600 %s",
 			label, filepath.Base(resolved), perm, resolved,
 		))
@@ -186,7 +187,7 @@ func loadOneToken(path, label, configDir string) ([64]byte, string, error) {
 	// owner check runs before read — unix-only; no-op stub on non-unix.
 	// project security constraint: token file must be owned by the process UID.
 	if err := checkOwnerUID(info); err != nil {
-		return [64]byte{}, resolved, publicerror.New(fmt.Sprintf(
+		return [64]byte{}, resolved, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"api.auth.%s_token_file: %q is not owned by the current process UID: %v",
 			label, filepath.Base(resolved), err,
 		))
@@ -212,7 +213,7 @@ func loadOneToken(path, label, configDir string) ([64]byte, string, error) {
 		for i := range raw {
 			raw[i] = 0
 		}
-		return [64]byte{}, resolved, publicerror.New(fmt.Sprintf(
+		return [64]byte{}, resolved, loginjector.NewPublicErrorDetails(fmt.Sprintf(
 			"api.auth.%s_token_file: %q token length is %d bytes after trimming; must be between %d and %d bytes",
 			label, filepath.Base(resolved), n, minTokenLen, maxTokenLen,
 		))

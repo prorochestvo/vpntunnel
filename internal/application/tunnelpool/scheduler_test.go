@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
-	"vpntunnel/internal/publicerror"
 )
 
 // compile-time check: fakeClock already declared in supervisor_test.go satisfies Clock.
@@ -213,7 +213,8 @@ func TestOnDemandScheduler_Route(t *testing.T) {
 
 		_, _, _, err := sched.Route(ctx, "xx-unknown-wg-001")
 		require.Error(t, err)
-		pe, ok := publicerror.Is(err)
+		var pe loginjector.PublicDetailsError
+		ok := errors.As(err, &pe)
 		require.True(t, ok, "expected publicerror, got: %T %v", err, err)
 		assert.Contains(t, pe.Details(), "unknown_zone")
 	})
@@ -509,7 +510,8 @@ func TestOnDemandScheduler_bringupFailure(t *testing.T) {
 		for _, ch := range errChs {
 			err := <-ch
 			require.Error(t, err)
-			pe, ok := publicerror.Is(err)
+			var pe loginjector.PublicDetailsError
+			ok := errors.As(err, &pe)
 			require.True(t, ok, "expected publicerror, got: %T %v", err, err)
 			assert.Contains(t, pe.Details(), "zone_bring_up_failure")
 		}
@@ -555,7 +557,7 @@ func TestOnDemandScheduler_bringupFailure(t *testing.T) {
 
 		usErr := <-usErrCh
 		require.Error(t, usErr)
-		_, ok := publicerror.Is(usErr)
+		ok := errors.As(usErr, new(loginjector.PublicDetailsError))
 		require.True(t, ok, "US error should be publicerror")
 
 		// GB now needs its settle.

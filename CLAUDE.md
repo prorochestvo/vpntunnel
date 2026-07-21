@@ -259,8 +259,9 @@ Run one-off tests with the standard `go test -race -run 'TestName/subtest' ./<pk
 Generic Go conventions (style, file declaration order, test structure, test-only
 code placement, godoc, error discipline, code organization) come from the
 `stack-go` plugin skills — they are not restated here. Error handling follows the
-standard `PublicError` contract via the cross-cutting `internal/publicerror`
-package: construct with `publicerror.New(...)`, match with `publicerror.Is`; every
+standard `PublicError` contract from `github.com/prorochestvo/loginjector`:
+construct with `loginjector.NewPublicErrorDetails(...)`, match with
+`errors.As(err, &loginjector.PublicDetailsError)`; every
 controller error-branch test asserts the response text (public message when the
 error is public, generic fallback otherwise). Project-specific constraints:
 

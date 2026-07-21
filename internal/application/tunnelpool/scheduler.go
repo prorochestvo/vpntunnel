@@ -11,7 +11,8 @@ import (
 	"vpntunnel/internal/domain"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
-	"vpntunnel/internal/publicerror"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // PrefixUnknownZone and PrefixZoneBringUpFailure are the leading tokens of the
@@ -150,14 +151,14 @@ type OnDemandScheduler struct {
 // function the caller MUST defer. The release signals the scheduler that the
 // job is done, so idle and grace timers are accurate.
 //
-// Returns a *publicerror.Error for unknown tunnels or device bring-up failures.
+// Returns a loginjector.PublicDetailsError for unknown tunnels or device bring-up failures.
 // Returns ctx.Err() when ctx is cancelled while waiting.
 func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer egress.Dialer, resolver egress.Resolver, release func(), err error) {
 	configPath, ok := s.eligible.Lookup(tunnelID)
 	if !ok {
 		// tunnelID is an opaque string (HMAC id or basename) chosen by the operator
 		// and not key material, so it is safe to echo in this client-facing error.
-		return nil, nil, nil, publicerror.New(PrefixUnknownZone + " " + tunnelID + " is not in the eligible set")
+		return nil, nil, nil, loginjector.NewPublicErrorDetails(PrefixUnknownZone + " " + tunnelID + " is not in the eligible set")
 	}
 
 	replyCh := make(chan routeReply, 1)
@@ -383,7 +384,7 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 
 		d, err := s.deviceBuilder(ctx, configPath, s.configDir, s.logger())
 		if err != nil {
-			buildErr := publicerror.New(PrefixZoneBringUpFailure + " " + tunnelID + " device could not be started")
+			buildErr := loginjector.NewPublicErrorDetails(PrefixZoneBringUpFailure + " " + tunnelID + " device could not be started")
 			s.logger().Warn("on-demand scheduler: device bring-up failed",
 				slog.String("tunnel_id", tunnelID),
 				slog.String("err", err.Error()),

@@ -3,13 +3,15 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/egress"
-	"vpntunnel/internal/publicerror"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // NewZoneRoutingForwarder returns a ZoneRoutingForwarder that reads the tunnel
@@ -37,7 +39,7 @@ type Router interface {
 	// Route acquires a dialer and resolver for the given zone. The returned
 	// release function MUST be deferred by the caller; it signals the scheduler
 	// that the job is done so grace and idle timers remain accurate. Returns a
-	// *publicerror.Error for unknown zones (message prefix "unknown_zone:") or
+	// loginjector.PublicDetailsError for unknown zones (message prefix "unknown_zone:") or
 	// device bring-up failures (message prefix "zone_bring_up_failure:").
 	Route(ctx context.Context, zoneID string) (dialer egress.Dialer, resolver egress.Resolver, release func(), err error)
 }
@@ -94,7 +96,8 @@ func (z *ZoneRoutingForwarder) Forward(ctx context.Context, req *http.Request) (
 // classifyRouteError maps a Route error to the stored UpstreamResponse the
 // async client will see when polling the job result.
 func classifyRouteError(err error) asyncjob.UpstreamResponse {
-	pe, ok := publicerror.Is(err)
+	var pe loginjector.PublicDetailsError
+	ok := errors.As(err, &pe)
 	if !ok {
 		// unexpected non-public error from Route (scheduler bug or ctx cancel):
 		// treat as proxy fault → 502.

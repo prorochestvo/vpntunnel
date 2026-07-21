@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/gateway/router/apitls"
-	"vpntunnel/internal/publicerror"
 )
 
 // recordingHandler is a slog.Handler that captures every log record for
@@ -282,8 +282,8 @@ func TestLoadOrGenerate(t *testing.T) {
 		_, _, err := apitls.LoadOrGenerate(dir, "test.local", nil, logger)
 		require.Error(t, err)
 
-		var pe *publicerror.Error
-		require.ErrorAs(t, err, &pe, "cert dir with world-write must return a *publicerror.Error")
+		var pe loginjector.PublicDetailsError
+		require.ErrorAs(t, err, &pe, "cert dir with world-write must return a loginjector.PublicDetailsError")
 		assert.Contains(t, pe.Details(), "0777", "error names the bad mode")
 		assert.Contains(t, pe.Details(), "chmod", "error includes chmod hint")
 		assert.Contains(t, pe.Details(), "0700", "chmod hint names the correct target mode")
