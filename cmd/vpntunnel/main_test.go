@@ -1,12 +1,12 @@
 // Package main tests the composition root (main.go). Smoke tests in this file
-// exercise runWithOpts end-to-end using fake tunnel dialers so no real WireGuard
+// exercise run end-to-end using fake tunnel dialers so no real WireGuard
 // device is needed.
 //
 // Port allocation trade-off: the fixture config hard-codes proxy=127.0.0.1:17788
 // and api=127.0.0.1:18888. These ports are unlikely to be in use on a developer
 // machine or CI runner; if they are, the test will fail with "bind: address already
 // in use". The alternative — using port 0 and recovering the actual port — requires
-// exposing net.Listener from runWithOpts, which would add non-trivial surface.
+// exposing net.Listener from run, which would add non-trivial surface.
 // The current approach keeps the production path clean at the cost of a small
 // flakiness risk on heavily-loaded machines.
 package main
@@ -31,10 +31,30 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"vpntunnel/internal/asyncjob"
-	"vpntunnel/internal/config"
-	"vpntunnel/internal/tunnel"
+	"vpntunnel/internal/application/asyncjob"
+	"vpntunnel/internal/application/tunnelpool"
+	"vpntunnel/internal/constants"
+	"vpntunnel/internal/egress"
+	"vpntunnel/internal/infrastructure/config"
 )
+
+// withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
+// into the streaming supervisor. Intended for tests only.
+func withSupervisorBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
+	return func(o *runOptions) { o.supervisorBuilder = b }
+}
+
+// withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
+// into the on-demand scheduler. Intended for tests only.
+func withSchedulerBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
+	return func(o *runOptions) { o.schedulerBuilder = b }
+}
+
+// withShutdownCtx returns a runOpt that replaces signal.NotifyContext with the
+// caller-owned context as the shutdown trigger. Test-only seam.
+func withShutdownCtx(ctx context.Context) runOpt {
+	return func(o *runOptions) { o.shutdownCtx = ctx }
+}
 
 func TestResolveAuthToken(t *testing.T) {
 	t.Parallel()
@@ -192,9 +212,9 @@ func TestParseTLSOptions(t *testing.T) {
 
 // compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
 var (
-	_ tunnel.DialerCloser   = (*smokeDialer)(nil)
-	_ tunnel.HealthReporter = (*smokeDialer)(nil)
-	_ tunnel.Resolver       = (*smokeDialer)(nil)
+	_ egress.DialerCloser   = (*smokeDialer)(nil)
+	_ egress.HealthReporter = (*smokeDialer)(nil)
+	_ egress.Resolver       = (*smokeDialer)(nil)
 )
 
 // smokeDialer is a no-op test double for the full tunnel interface set.
@@ -216,8 +236,8 @@ func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error)
 	return nil, fmt.Errorf("smokeDialer: DNS not implemented")
 }
 
-// smokeBuilder is a lazy.DeviceBuilderFn that returns a smokeDialer for any config path.
-func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (tunnel.DialerCloser, error) {
+// smokeBuilder is a tunnelpool.DeviceBuilderFn that returns a smokeDialer for any config path.
+func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
 	return &smokeDialer{}, nil
 }
 
@@ -252,13 +272,13 @@ func writeToken(tb testing.TB, path string, offset int) {
 	require.NoError(tb, os.WriteFile(path, buf, 0o600))
 }
 
-// TestRunWithOpts is the composition-root smoke test. It boots the full
-// runWithOpts pipeline with a fake tunnel pool (no real WireGuard) and asserts:
+// TestRun is the composition-root smoke test. It boots the full
+// run pipeline with a fake tunnel pool (no real WireGuard) and asserts:
 //  1. Both the proxy and API servers become reachable.
 //  2. Context cancellation triggers graceful shutdown (avoids SIGTERM to the
 //     whole test process, which would be unsafe if other tests run in parallel).
-//  3. runWithOpts returns nil within a reasonable timeout.
-func TestRunWithOpts(t *testing.T) {
+//  3. run returns nil within a reasonable timeout.
+func TestRun(t *testing.T) {
 	// not t.Parallel() — binds to fixed ports 17788 / 18888.
 
 	t.Run("boots and shuts down on context cancel", func(t *testing.T) {
@@ -326,7 +346,7 @@ func TestRunWithOpts(t *testing.T) {
 		require.NoError(t, os.WriteFile(cfgPath, []byte(cfgJSON), 0o644))
 
 		// shutdownCtx is the test-owned cancellation source. Cancelling it drives
-		// the same ctx.Done() branch in runWithOpts as SIGTERM would in production,
+		// the same ctx.Done() branch in run as SIGTERM would in production,
 		// without risking signal delivery to the whole test process.
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -334,7 +354,7 @@ func TestRunWithOpts(t *testing.T) {
 		// run in a goroutine; collect the return value.
 		done := make(chan error, 1)
 		go func() {
-			done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 		}()
 
 		// wait for both servers to become reachable (up to 5 s).
@@ -349,9 +369,9 @@ func TestRunWithOpts(t *testing.T) {
 		// assert clean shutdown within 10 s.
 		select {
 		case err := <-done:
-			assert.NoError(t, err, "runWithOpts returned error on context-cancel shutdown")
+			assert.NoError(t, err, "run returned error on context-cancel shutdown")
 		case <-time.After(10 * time.Second):
-			t.Fatal("runWithOpts did not return within 10s after context cancel")
+			t.Fatal("run did not return within 10s after context cancel")
 		}
 	})
 
@@ -382,7 +402,7 @@ func TestRunWithOpts(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 		}()
 
 		// wait for the API to become reachable (proves boot + recovery completed).
@@ -394,9 +414,9 @@ func TestRunWithOpts(t *testing.T) {
 
 		select {
 		case runErr := <-done:
-			require.NoError(t, runErr, "runWithOpts returned an error")
+			require.NoError(t, runErr, "run returned an error")
 		case <-time.After(15 * time.Second):
-			t.Fatal("runWithOpts did not return within 15s after async startup shutdown")
+			t.Fatal("run did not return within 15s after async startup shutdown")
 		}
 
 		// reopen the store and confirm recovery deleted the pending record.
@@ -426,7 +446,7 @@ func TestRunWithOpts(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 		}()
 
 		// wait until the API is up — guarantees GC goroutine has been launched.
@@ -439,9 +459,9 @@ func TestRunWithOpts(t *testing.T) {
 		select {
 		case runErr := <-done:
 			// clean exit proves the GC goroutine did not block the shutdown path.
-			assert.NoError(t, runErr, "runWithOpts returned an error on GC shutdown")
+			assert.NoError(t, runErr, "run returned an error on GC shutdown")
 		case <-time.After(15 * time.Second):
-			t.Fatal("runWithOpts did not return within 15s; GC goroutine may be leaking")
+			t.Fatal("run did not return within 15s; GC goroutine may be leaking")
 		}
 	})
 
@@ -471,7 +491,7 @@ func TestRunWithOpts(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 		}()
 
 		// API reachability proves the store opened, which proves the dir was created.
@@ -483,9 +503,9 @@ func TestRunWithOpts(t *testing.T) {
 
 		select {
 		case runErr := <-done:
-			assert.NoError(t, runErr, "runWithOpts returned an error")
+			assert.NoError(t, runErr, "run returned an error")
 		case <-time.After(15 * time.Second):
-			t.Fatal("runWithOpts did not return within 15s after shutdown")
+			t.Fatal("run did not return within 15s after shutdown")
 		}
 	})
 
@@ -505,12 +525,12 @@ func TestRunWithOpts(t *testing.T) {
 		defer cancel()
 
 		done := make(chan error, 1)
-		// pass an empty CertDir — this is the HTTP-mode trigger. runWithOpts
+		// pass an empty CertDir — this is the HTTP-mode trigger. run
 		// skips apitls.LoadOrGenerate and emits the no-TLS WARN instead.
 		// waitHTTPS to the same port is the negative control (TLS dial to a
 		// plain-HTTP listener must fail fast).
 		go func() {
-			done <- runWithOpts(cfgPath,
+			done <- run(cfgPath,
 				tlsOptions{CertDir: "", Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
 				withSupervisorBuilder(smokeBuilder),
 				withSchedulerBuilder(smokeBuilder),
@@ -533,9 +553,9 @@ func TestRunWithOpts(t *testing.T) {
 
 		select {
 		case err := <-done:
-			assert.NoError(t, err, "runWithOpts returned error on context-cancel shutdown (HTTP mode)")
+			assert.NoError(t, err, "run returned error on context-cancel shutdown (HTTP mode)")
 		case <-time.After(10 * time.Second):
-			t.Fatal("runWithOpts did not return within 10s after context cancel (HTTP mode)")
+			t.Fatal("run did not return within 10s after context cancel (HTTP mode)")
 		}
 	})
 
@@ -556,11 +576,11 @@ func TestRunWithOpts(t *testing.T) {
 
 		// create a dir with wrong permissions (0777 instead of 0700).
 		// apitls.ensureCertDir rejects dirs whose permissions are not 0700,
-		// giving a deterministic FAIL via a *publicerror.Error (apitls.go:121).
+		// giving a deterministic FAIL via a loginjector.PublicDetailsError (apitls.go:121).
 		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
 		// NOTE: do NOT call parseTLSOptions — we inject the tlsOptions directly
-		// to exercise the Wave 3 cert-load branch inside runWithOpts in isolation.
-		// parseTLSOptions is only invoked from main() to parse CLI flags.
+		// to exercise the Wave 3 cert-load branch inside run in isolation.
+		// parseTLSOptions is only invoked from parseFlags (via main) to parse CLI flags.
 		poisonDir := filepath.Join(t.TempDir(), "badtls")
 		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
 		require.NoError(t, os.Chmod(poisonDir, 0o777))
@@ -568,14 +588,14 @@ func TestRunWithOpts(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		err := runWithOpts(cfgPath,
+		err := run(cfgPath,
 			tlsOptions{CertDir: poisonDir, Hostname: "localhost", IPSANs: nil},
 			withSupervisorBuilder(smokeBuilder),
 			withSchedulerBuilder(smokeBuilder),
 			withShutdownCtx(shutdownCtx),
 		)
 		// exercises the FAIL-not-fallback contract via the wrong-perms path
-		// (apitls.ensureCertDir returns a *publicerror.Error for non-0700 dirs).
+		// (apitls.ensureCertDir returns a loginjector.PublicDetailsError for non-0700 dirs).
 		// the existing-but-unparseable-cert FAIL variant is gated on a sibling
 		// apitls change and is not asserted here.
 		require.Error(t, err)
@@ -583,7 +603,7 @@ func TestRunWithOpts(t *testing.T) {
 	})
 
 	t.Run("startup fails when allowed_countries matches no discovered config", func(t *testing.T) {
-		// no port binding — runWithOpts returns before any listener starts.
+		// no port binding — run returns before any listener starts.
 
 		dir := t.TempDir()
 		tunnelsDir := filepath.Join(dir, "tunnels")
@@ -638,7 +658,7 @@ func TestRunWithOpts(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		err := runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
+		err := run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
 			withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 		require.Error(t, err, "expected startup error when allowed_countries matches no config")
 		assert.Contains(t, err.Error(), "streaming tunnel set",
@@ -664,7 +684,7 @@ func TestRunWithOpts(t *testing.T) {
 		done := make(chan error, 1)
 		stdout := captureStdout(t, func() {
 			go func() {
-				done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+				done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 			}()
 
 			apiReady := waitHTTPS(t, "https://127.0.0.1:18900/v1/admin/health", 10*time.Second)
@@ -676,7 +696,7 @@ func TestRunWithOpts(t *testing.T) {
 			case runErr := <-done:
 				assert.NoError(t, runErr)
 			case <-time.After(15 * time.Second):
-				t.Fatal("runWithOpts did not return within 15s")
+				t.Fatal("run did not return within 15s")
 			}
 		})
 
@@ -696,7 +716,7 @@ func TestRunWithOpts(t *testing.T) {
 		})
 
 		const malformedDSN = "tbot://not-a-valid-dsn"
-		t.Setenv("VPNTUNNEL_TELEGRAMBOT_DSN", malformedDSN)
+		t.Setenv(constants.EnvTelegramBotDSN, malformedDSN)
 
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -704,7 +724,7 @@ func TestRunWithOpts(t *testing.T) {
 		done := make(chan error, 1)
 		stdout := captureStdout(t, func() {
 			go func() {
-				done <- runWithOpts(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+				done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
 			}()
 
 			apiReady := waitHTTPS(t, "https://127.0.0.1:18902/v1/admin/health", 10*time.Second)
@@ -716,9 +736,9 @@ func TestRunWithOpts(t *testing.T) {
 			case runErr := <-done:
 				// a malformed DSN must never abort the proxy — it is auxiliary
 				// telemetry, not a startup precondition.
-				assert.NoError(t, runErr, "runWithOpts must succeed even with a malformed telegram DSN")
+				assert.NoError(t, runErr, "run must succeed even with a malformed telegram DSN")
 			case <-time.After(15 * time.Second):
-				t.Fatal("runWithOpts did not return within 15s")
+				t.Fatal("run did not return within 15s")
 			}
 		})
 
@@ -736,18 +756,18 @@ type fixtureConfig struct {
 	// certDir is the directory where apitls.LoadOrGenerate will store/generate
 	// the TLS cert. When empty, writeFixtureConfig derives it as
 	// filepath.Join(dir, "tls"). The caller must pass the same path as
-	// tlsOptions.CertDir to runWithOpts so the on-disk dir and the flag agree.
+	// tlsOptions.CertDir to run so the on-disk dir and the flag agree.
 	certDir string
 }
 
 // writeFixtureConfig writes a proxy.json at cfgPath suitable for running
-// runWithOpts in tests. All secrets (tokens, keys) are generated fresh.
+// run in tests. All secrets (tokens, keys) are generated fresh.
 // The fixture includes an async block pointing to cfg.asyncDBPath (when
 // non-empty) or a temp path derived from cfgPath's directory.
 //
 // The cert dir is derived from cfg.certDir; when empty it defaults to
 // filepath.Join(dir, "tls"). The caller must pass the same cert-dir path as
-// tlsOptions.CertDir to runWithOpts — writeFixtureConfig no longer embeds TLS
+// tlsOptions.CertDir to run — writeFixtureConfig no longer embeds TLS
 // settings in the JSON; they travel as CLI-flag-equivalent tlsOptions.
 func writeFixtureConfig(tb testing.TB, cfgPath string, cfg fixtureConfig) {
 	tb.Helper()

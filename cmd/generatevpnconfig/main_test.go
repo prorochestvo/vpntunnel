@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"vpntunnel/internal/tunnel/wireguard/wgconf"
+	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 )
 
 // discardLog drops wgconf parser warnings so test output stays clean and does

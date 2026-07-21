@@ -1,6 +1,7 @@
 // Package domain defines the core value types shared across the vpntunnel
 // internal packages. It has no I/O, no business logic, and no imports beyond
-// the standard library.
+// the standard library. The outbound-connection port interfaces live in the
+// sibling internal/egress package.
 package domain
 
 // RequestSummary holds the per-request fields written to the access log.
