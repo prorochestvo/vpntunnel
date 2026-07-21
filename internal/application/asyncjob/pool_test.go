@@ -21,7 +21,6 @@ import (
 )
 
 // compile-time assertion that fakeForwarder satisfies asyncjob.Forwarder.
-var _ asyncjob.Forwarder = (asyncjob.ForwarderFunc)(nil)
 var _ asyncjob.Forwarder = (*fakeForwarder)(nil)
 
 // fakeForwarder is a test double for asyncjob.Forwarder.

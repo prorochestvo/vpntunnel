@@ -64,17 +64,6 @@ type Forwarder interface {
 	Forward(ctx context.Context, req *http.Request) (UpstreamResponse, error)
 }
 
-// ForwarderFunc is an adapter that lets a plain function satisfy Forwarder.
-// It is intended for wiring the sync tunnelForwarder into the async pool in
-// main.go via a closure that captures the pre-resolved tunnel ID, dialer, and
-// resolver.
-type ForwarderFunc func(ctx context.Context, req *http.Request) (UpstreamResponse, error)
-
-// Forward calls f.
-func (f ForwarderFunc) Forward(ctx context.Context, req *http.Request) (UpstreamResponse, error) {
-	return f(ctx, req)
-}
-
 // Pool is a semaphore-bounded async job executor. It accepts inbound HTTP
 // requests keyed by a retry-tag, dispatches them to a Forwarder on a
 // background goroutine, and persists the result in a Store. Callers retrieve
