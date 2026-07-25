@@ -497,7 +497,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// store, jobPool, access, opLog (never svc), and svc's Options reference
 	// only supervisor, verifier, access, opLog, cfg (never apiSrv) — the two
 	// constructions are independent, so reordering changes no behaviour.
-	svc := application.NewProxyService(application.ProxyServiceOptions{
+	proxy := application.NewProxyService(application.ProxyServiceOptions{
 		Dialer:      supervisor,
 		Verifier:    verifier,
 		Access:      access,
@@ -521,17 +521,17 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		JobCounter:          store,
 		JobPool:             jobPool,
 		Access:              access,
-		Rotator:             rotateAdapter{sup: supervisor, svc: svc},
+		Rotator:             rotateAdapter{sup: supervisor, svc: proxy},
 	}, opLog)
 
-	srv := httpserver.New(httpserver.Options{
+	vpnSrv := httpserver.New(httpserver.Options{
 		Listen:            cfg.VPNStream.Listen,
 		ReadHeaderTimeout: cfg.VPNStream.DialTimeout,
 		IdleTimeout:       cfg.VPNStream.IdleTimeout,
-	}, svc, opLog)
+	}, proxy, opLog)
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- srv.Start() }()
+	go func() { errCh <- vpnSrv.Start() }()
 	go func() { errCh <- apiSrv.Start() }()
 
 	select {
@@ -540,7 +540,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		// before returning so we don't leak a goroutine into the cleanup path.
 		earlyCtx, earlyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer earlyCancel()
-		_ = srv.Shutdown(earlyCtx)
+		_ = vpnSrv.Shutdown(earlyCtx)
 		_ = apiSrv.Shutdown(earlyCtx)
 		return fmt.Errorf("server start: %w", err)
 	case <-ctx.Done():
@@ -561,7 +561,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	defer cancel()
 
 	var shutdownErr error
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := vpnSrv.Shutdown(shutdownCtx); err != nil {
 		opLog.Error("proxy shutdown failed", "err", err.Error())
 		shutdownErr = fmt.Errorf("proxy shutdown: %w", err)
 	}
