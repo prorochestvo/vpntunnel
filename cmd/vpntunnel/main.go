@@ -58,6 +58,27 @@ import (
 	"vpntunnel/internal/tools/hmackey"
 )
 
+func main() {
+	cfg, cert, opLog, err := bootstrap()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	// the signal handler is installed only after bootstrap's blocking startup
+	// I/O (config read, cert load/generate) has finished. Until a handler
+	// exists SIGINT/SIGTERM keeps its default action and kills the process
+	// immediately; installing it earlier would capture the signal into a
+	// context nothing is watching yet, leaving startup uninterruptible.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, cfg, cert, opLog, tunnelpool.DefaultDeviceBuilder, tunnelpool.DefaultDeviceBuilder); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
 // telegramAppTag is the app-identity prefix injected into every Telegram
 // notification (see notify.NewTelegram). It is non-secret and safe to log.
 const telegramAppTag = "#VPNTUNNEL"
@@ -109,27 +130,6 @@ func bootstrap() (config.Config, *tls.Certificate, *slog.Logger, error) {
 	}
 
 	return cfg, cert, opLog, nil
-}
-
-func main() {
-	cfg, cert, opLog, err := bootstrap()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	// the signal handler is installed only after bootstrap's blocking startup
-	// I/O (config read, cert load/generate) has finished. Until a handler
-	// exists SIGINT/SIGTERM keeps its default action and kills the process
-	// immediately; installing it earlier would capture the signal into a
-	// context nothing is watching yet, leaving startup uninterruptible.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if err := run(ctx, cfg, cert, opLog, tunnelpool.DefaultDeviceBuilder, tunnelpool.DefaultDeviceBuilder); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 }
 
 // run is the full startup / run / shutdown path. ctx is the caller-owned

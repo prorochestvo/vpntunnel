@@ -37,271 +37,12 @@ import (
 	"vpntunnel/internal/policy"
 )
 
-func TestResolveAuthToken(t *testing.T) {
-	t.Parallel()
-
-	t.Run("both empty returns empty string", func(t *testing.T) {
-		t.Parallel()
-		tok, err := resolveAuthToken(config.Auth{}, "/some/dir")
-		require.NoError(t, err)
-		assert.Empty(t, tok)
-	})
-
-	t.Run("inline token only is returned trimmed", func(t *testing.T) {
-		t.Parallel()
-		tok, err := resolveAuthToken(config.Auth{Token: "  mytoken  "}, "/some/dir")
-		require.NoError(t, err)
-		assert.Equal(t, "mytoken", tok)
-	})
-
-	t.Run("inline token without padding is returned as-is", func(t *testing.T) {
-		t.Parallel()
-		tok, err := resolveAuthToken(config.Auth{Token: "mytoken"}, "/some/dir")
-		require.NoError(t, err)
-		assert.Equal(t, "mytoken", tok)
-	})
-
-	t.Run("token_file with relative path is resolved against configDir", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		tokenPath := filepath.Join(dir, "token.txt")
-		require.NoError(t, os.WriteFile(tokenPath, []byte("filetoken\n"), 0o600))
-
-		tok, err := resolveAuthToken(config.Auth{TokenFile: "token.txt"}, dir)
-		require.NoError(t, err)
-		assert.Equal(t, "filetoken", tok)
-	})
-
-	t.Run("token_file with absolute path is used as-is", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		tokenPath := filepath.Join(dir, "token.txt")
-		require.NoError(t, os.WriteFile(tokenPath, []byte("abstoken\n"), 0o600))
-
-		tok, err := resolveAuthToken(config.Auth{TokenFile: tokenPath}, "/different/dir")
-		require.NoError(t, err)
-		assert.Equal(t, "abstoken", tok)
-	})
-
-	t.Run("token_file with CRLF line ending is trimmed correctly", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		tokenPath := filepath.Join(dir, "token.txt")
-		require.NoError(t, os.WriteFile(tokenPath, []byte("crlftoken\r\n"), 0o600))
-
-		tok, err := resolveAuthToken(config.Auth{TokenFile: "token.txt"}, dir)
-		require.NoError(t, err)
-		assert.Equal(t, "crlftoken", tok)
-	})
-
-	t.Run("unreadable token_file returns wrapped error", func(t *testing.T) {
-		t.Parallel()
-		_, err := resolveAuthToken(config.Auth{TokenFile: "nonexistent.txt"}, "/nonexistent")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "read auth.token_file")
-		// error must not contain token contents (there are none, but check shape)
-	})
-
-	t.Run("token_file with whitespace-only contents returns error", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		tokenPath := filepath.Join(dir, "empty.txt")
-		require.NoError(t, os.WriteFile(tokenPath, []byte("   \n  \t  \n"), 0o600))
-
-		_, err := resolveAuthToken(config.Auth{TokenFile: "empty.txt"}, dir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token is empty after trim")
-		// error must not contain the file contents
-		assert.NotContains(t, err.Error(), "   ")
-	})
-
-	t.Run("token takes precedence when both set (defensive; config validation prevents this)", func(t *testing.T) {
-		t.Parallel()
-		// config.Load would have rejected this, but resolveAuthToken should handle it
-		// gracefully by preferring the inline token.
-		tok, err := resolveAuthToken(config.Auth{Token: "inlinetoken", TokenFile: "somefile.txt"}, "/dir")
-		require.NoError(t, err)
-		assert.Equal(t, "inlinetoken", tok)
-	})
-}
-
-func TestResolveCertDir(t *testing.T) {
-	t.Parallel()
-
-	t.Run("relative cert dir resolves against cwd", func(t *testing.T) {
-		t.Parallel()
-		cwd, err := os.Getwd()
-		require.NoError(t, err)
-		got, err := resolveCertDir("reltls")
-		require.NoError(t, err)
-		assert.Equal(t, filepath.Join(cwd, "reltls"), got)
-	})
-
-	t.Run("absolute cert dir passed through unchanged", func(t *testing.T) {
-		t.Parallel()
-		got, err := resolveCertDir("/opt/vpntunnel/tls/")
-		require.NoError(t, err)
-		assert.Equal(t, "/opt/vpntunnel/tls/", got)
-	})
-
-	t.Run("empty cert dir stays empty", func(t *testing.T) {
-		t.Parallel()
-		// regression guard: filepath.Abs("") returns the cwd, which would
-		// silently re-enable HTTPS against an unintended directory.
-		got, err := resolveCertDir("")
-		require.NoError(t, err)
-		assert.Equal(t, "", got, "empty cert dir must stay empty (not resolved to cwd)")
-	})
-}
-
-func TestParseIPSANs(t *testing.T) {
-	t.Parallel()
-
-	t.Run("comma-separated ip sans parsed", func(t *testing.T) {
-		t.Parallel()
-		got, err := parseIPSANs("127.0.0.1,::1")
-		require.NoError(t, err)
-		assert.Len(t, got, 2)
-	})
-
-	t.Run("invalid ip rejected", func(t *testing.T) {
-		t.Parallel()
-		_, err := parseIPSANs("127.0.0.1,not-an-ip")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not-an-ip")
-	})
-
-	t.Run("empty ip-sans yields none", func(t *testing.T) {
-		t.Parallel()
-		got, err := parseIPSANs("")
-		require.NoError(t, err)
-		assert.Len(t, got, 0)
-	})
-
-	t.Run("trailing comma tolerated", func(t *testing.T) {
-		t.Parallel()
-		got, err := parseIPSANs("127.0.0.1,")
-		require.NoError(t, err)
-		assert.Len(t, got, 1)
-	})
-}
-
-func TestLoadAPICert(t *testing.T) {
-	t.Parallel()
-
-	t.Run("empty hostname rejected", func(t *testing.T) {
-		t.Parallel()
-		_, err := loadAPICert("/tmp/tls", "", "", "127.0.0.1:8888", discardLogger())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "-tls-hostname")
-	})
-
-	t.Run("invalid ip san rejected before any disk access", func(t *testing.T) {
-		t.Parallel()
-		// the SAN list is validated in both modes, so a typo is reported even
-		// when no certificate is minted.
-		_, err := loadAPICert("", "localhost", "not-an-ip", "127.0.0.1:8888", discardLogger())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not-an-ip")
-	})
-
-	t.Run("empty cert dir yields no certificate", func(t *testing.T) {
-		t.Parallel()
-		// nil is the one and only spelling of plain-HTTP mode.
-		cert, err := loadAPICert("", "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
-		require.NoError(t, err)
-		assert.Nil(t, cert, "empty cert dir must yield no certificate (HTTP mode)")
-	})
-
-	t.Run("unloadable cert dir returns an error", func(t *testing.T) {
-		t.Parallel()
-		// exercises the FAIL-not-fallback contract via the wrong-perms path:
-		// apitls.ensureCertDir rejects a cert dir whose permissions are not 0700
-		// with a loginjector.PublicDetailsError (apitls.go:121).
-		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
-		poisonDir := filepath.Join(t.TempDir(), "badtls")
-		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
-		require.NoError(t, os.Chmod(poisonDir, 0o777))
-
-		cert, err := loadAPICert(poisonDir, "localhost", "", "127.0.0.1:8888", discardLogger())
-		require.Error(t, err)
-		assert.Nil(t, cert)
-		assert.Contains(t, err.Error(), "load tls cert")
-	})
-
-	t.Run("fresh cert dir yields a usable certificate", func(t *testing.T) {
-		t.Parallel()
-		certDir := filepath.Join(t.TempDir(), "tls")
-		require.NoError(t, os.MkdirAll(certDir, 0o700))
-
-		cert, err := loadAPICert(certDir, "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
-		require.NoError(t, err)
-		require.NotNil(t, cert)
-		assert.NotEmpty(t, cert.Certificate)
-	})
-}
-
 // compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
 var (
 	_ tunnelpool.DialerCloser   = (*smokeDialer)(nil)
 	_ tunnelpool.HealthReporter = (*smokeDialer)(nil)
 	_ tunnelpool.Resolver       = (*smokeDialer)(nil)
 )
-
-// smokeDialer is a no-op test double for the full tunnel interface set.
-// DialContext always fails (smoke tests do not actually proxy traffic).
-// LastHandshake returns a recent timestamp so the health handler reports healthy.
-type smokeDialer struct{}
-
-func (smokeDialer) DialContext(_ context.Context, _, _ string) (net.Conn, error) {
-	return nil, fmt.Errorf("smokeDialer: not connected")
-}
-
-func (smokeDialer) Close() error { return nil }
-
-func (smokeDialer) LastHandshake() (time.Time, error) {
-	return time.Now().Add(-5 * time.Second), nil
-}
-
-func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error) {
-	return nil, fmt.Errorf("smokeDialer: DNS not implemented")
-}
-
-// smokeBuilder is a tunnelpool.DeviceBuilderFn that returns a smokeDialer for any config path.
-func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (tunnelpool.DialerCloser, error) {
-	return &smokeDialer{}, nil
-}
-
-// genWGKey returns a fresh WireGuard private key in base64 string form.
-func genWGKey(tb testing.TB) string {
-	tb.Helper()
-	k, err := wgtypes.GeneratePrivateKey()
-	require.NoError(tb, err)
-	return k.String()
-}
-
-// genWGPubKey returns a fresh WireGuard public key (derived from a fresh
-// private key) in base64 string form.
-func genWGPubKey(tb testing.TB) string {
-	tb.Helper()
-	k, err := wgtypes.GeneratePrivateKey()
-	require.NoError(tb, err)
-	return k.PublicKey().String()
-}
-
-// writeToken writes a ≥64-byte deterministic token file at path with mode 0600.
-// offset shifts the starting position in the alphabet so callers can produce
-// three files with distinct contents (and therefore distinct SHA-512 hashes).
-func writeToken(tb testing.TB, path string, offset int) {
-	tb.Helper()
-	// 80 printable ASCII characters — safely above the 64-byte minimum.
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	buf := make([]byte, 80)
-	for i := range buf {
-		buf[i] = alphabet[(i+offset)%len(alphabet)]
-	}
-	require.NoError(tb, os.WriteFile(path, buf, 0o600))
-}
 
 // TestRun is the composition-root smoke test. It boots the full
 // run pipeline with a fake tunnel pool (no real WireGuard) and asserts:
@@ -313,6 +54,8 @@ func TestRun(t *testing.T) {
 	// not t.Parallel() — binds to fixed ports 17788 / 18888.
 
 	t.Run("boots and shuts down on context cancel", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17788 / 18888.
+
 		dir := t.TempDir()
 
 		// write a minimal wg-quick .conf the parser will accept into the
@@ -602,6 +345,7 @@ func TestRun(t *testing.T) {
 	// contract is asserted at the cert-load step instead of end to end.
 
 	t.Run("startup fails when allowed_countries matches no discovered config", func(t *testing.T) {
+		// not t.Parallel() — declares the same 17794 / 18894 port pair as the "missing async store dir" subtest; safe only while run aborts before binding.
 		// no port binding — run returns before any listener starts.
 
 		dir := t.TempDir()
@@ -755,6 +499,265 @@ func TestRun(t *testing.T) {
 		assert.Contains(t, strings.ToUpper(stdout), "WARN")
 		assert.NotContains(t, stdout, malformedDSN, "the raw DSN must never be logged")
 	})
+}
+
+func TestLoadAPICert(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty hostname rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := loadAPICert("/tmp/tls", "", "", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "-tls-hostname")
+	})
+
+	t.Run("invalid ip san rejected before any disk access", func(t *testing.T) {
+		t.Parallel()
+		// the SAN list is validated in both modes, so a typo is reported even
+		// when no certificate is minted.
+		_, err := loadAPICert("", "localhost", "not-an-ip", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-an-ip")
+	})
+
+	t.Run("empty cert dir yields no certificate", func(t *testing.T) {
+		t.Parallel()
+		// nil is the one and only spelling of plain-HTTP mode.
+		cert, err := loadAPICert("", "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
+		require.NoError(t, err)
+		assert.Nil(t, cert, "empty cert dir must yield no certificate (HTTP mode)")
+	})
+
+	t.Run("unloadable cert dir returns an error", func(t *testing.T) {
+		t.Parallel()
+		// exercises the FAIL-not-fallback contract via the wrong-perms path:
+		// apitls.ensureCertDir rejects a cert dir whose permissions are not 0700
+		// with a loginjector.PublicDetailsError (apitls.go:121).
+		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
+		poisonDir := filepath.Join(t.TempDir(), "badtls")
+		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
+		require.NoError(t, os.Chmod(poisonDir, 0o777))
+
+		cert, err := loadAPICert(poisonDir, "localhost", "", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Nil(t, cert)
+		assert.Contains(t, err.Error(), "load tls cert")
+	})
+
+	t.Run("fresh cert dir yields a usable certificate", func(t *testing.T) {
+		t.Parallel()
+		certDir := filepath.Join(t.TempDir(), "tls")
+		require.NoError(t, os.MkdirAll(certDir, 0o700))
+
+		cert, err := loadAPICert(certDir, "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
+		require.NoError(t, err)
+		require.NotNil(t, cert)
+		assert.NotEmpty(t, cert.Certificate)
+	})
+}
+
+func TestParseIPSANs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("comma-separated ip sans parsed", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseIPSANs("127.0.0.1,::1")
+		require.NoError(t, err)
+		assert.Len(t, got, 2)
+	})
+
+	t.Run("invalid ip rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := parseIPSANs("127.0.0.1,not-an-ip")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-an-ip")
+	})
+
+	t.Run("empty ip-sans yields none", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseIPSANs("")
+		require.NoError(t, err)
+		assert.Len(t, got, 0)
+	})
+
+	t.Run("trailing comma tolerated", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseIPSANs("127.0.0.1,")
+		require.NoError(t, err)
+		assert.Len(t, got, 1)
+	})
+}
+
+func TestResolveAuthToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("both empty returns empty string", func(t *testing.T) {
+		t.Parallel()
+		tok, err := resolveAuthToken(config.Auth{}, "/some/dir")
+		require.NoError(t, err)
+		assert.Empty(t, tok)
+	})
+
+	t.Run("inline token only is returned trimmed", func(t *testing.T) {
+		t.Parallel()
+		tok, err := resolveAuthToken(config.Auth{Token: "  mytoken  "}, "/some/dir")
+		require.NoError(t, err)
+		assert.Equal(t, "mytoken", tok)
+	})
+
+	t.Run("inline token without padding is returned as-is", func(t *testing.T) {
+		t.Parallel()
+		tok, err := resolveAuthToken(config.Auth{Token: "mytoken"}, "/some/dir")
+		require.NoError(t, err)
+		assert.Equal(t, "mytoken", tok)
+	})
+
+	t.Run("token_file with relative path is resolved against configDir", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		tokenPath := filepath.Join(dir, "token.txt")
+		require.NoError(t, os.WriteFile(tokenPath, []byte("filetoken\n"), 0o600))
+
+		tok, err := resolveAuthToken(config.Auth{TokenFile: "token.txt"}, dir)
+		require.NoError(t, err)
+		assert.Equal(t, "filetoken", tok)
+	})
+
+	t.Run("token_file with absolute path is used as-is", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		tokenPath := filepath.Join(dir, "token.txt")
+		require.NoError(t, os.WriteFile(tokenPath, []byte("abstoken\n"), 0o600))
+
+		tok, err := resolveAuthToken(config.Auth{TokenFile: tokenPath}, "/different/dir")
+		require.NoError(t, err)
+		assert.Equal(t, "abstoken", tok)
+	})
+
+	t.Run("token_file with CRLF line ending is trimmed correctly", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		tokenPath := filepath.Join(dir, "token.txt")
+		require.NoError(t, os.WriteFile(tokenPath, []byte("crlftoken\r\n"), 0o600))
+
+		tok, err := resolveAuthToken(config.Auth{TokenFile: "token.txt"}, dir)
+		require.NoError(t, err)
+		assert.Equal(t, "crlftoken", tok)
+	})
+
+	t.Run("unreadable token_file returns wrapped error", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolveAuthToken(config.Auth{TokenFile: "nonexistent.txt"}, "/nonexistent")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read auth.token_file")
+		// error must not contain token contents (there are none, but check shape)
+	})
+
+	t.Run("token_file with whitespace-only contents returns error", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		tokenPath := filepath.Join(dir, "empty.txt")
+		require.NoError(t, os.WriteFile(tokenPath, []byte("   \n  \t  \n"), 0o600))
+
+		_, err := resolveAuthToken(config.Auth{TokenFile: "empty.txt"}, dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token is empty after trim")
+		// error must not contain the file contents
+		assert.NotContains(t, err.Error(), "   ")
+	})
+
+	t.Run("token takes precedence when both set (defensive; config validation prevents this)", func(t *testing.T) {
+		t.Parallel()
+		// config.Load would have rejected this, but resolveAuthToken should handle it
+		// gracefully by preferring the inline token.
+		tok, err := resolveAuthToken(config.Auth{Token: "inlinetoken", TokenFile: "somefile.txt"}, "/dir")
+		require.NoError(t, err)
+		assert.Equal(t, "inlinetoken", tok)
+	})
+}
+
+func TestResolveCertDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("relative cert dir resolves against cwd", func(t *testing.T) {
+		t.Parallel()
+		cwd, err := os.Getwd()
+		require.NoError(t, err)
+		got, err := resolveCertDir("reltls")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(cwd, "reltls"), got)
+	})
+
+	t.Run("absolute cert dir passed through unchanged", func(t *testing.T) {
+		t.Parallel()
+		got, err := resolveCertDir("/opt/vpntunnel/tls/")
+		require.NoError(t, err)
+		assert.Equal(t, "/opt/vpntunnel/tls/", got)
+	})
+
+	t.Run("empty cert dir stays empty", func(t *testing.T) {
+		t.Parallel()
+		// regression guard: filepath.Abs("") returns the cwd, which would
+		// silently re-enable HTTPS against an unintended directory.
+		got, err := resolveCertDir("")
+		require.NoError(t, err)
+		assert.Equal(t, "", got, "empty cert dir must stay empty (not resolved to cwd)")
+	})
+}
+
+// smokeDialer is a no-op test double for the full tunnel interface set.
+// DialContext always fails (smoke tests do not actually proxy traffic).
+// LastHandshake returns a recent timestamp so the health handler reports healthy.
+type smokeDialer struct{}
+
+func (smokeDialer) DialContext(_ context.Context, _, _ string) (net.Conn, error) {
+	return nil, fmt.Errorf("smokeDialer: not connected")
+}
+
+func (smokeDialer) Close() error { return nil }
+
+func (smokeDialer) LastHandshake() (time.Time, error) {
+	return time.Now().Add(-5 * time.Second), nil
+}
+
+func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error) {
+	return nil, fmt.Errorf("smokeDialer: DNS not implemented")
+}
+
+// smokeBuilder is a tunnelpool.DeviceBuilderFn that returns a smokeDialer for any config path.
+func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (tunnelpool.DialerCloser, error) {
+	return &smokeDialer{}, nil
+}
+
+// genWGKey returns a fresh WireGuard private key in base64 string form.
+func genWGKey(tb testing.TB) string {
+	tb.Helper()
+	k, err := wgtypes.GeneratePrivateKey()
+	require.NoError(tb, err)
+	return k.String()
+}
+
+// genWGPubKey returns a fresh WireGuard public key (derived from a fresh
+// private key) in base64 string form.
+func genWGPubKey(tb testing.TB) string {
+	tb.Helper()
+	k, err := wgtypes.GeneratePrivateKey()
+	require.NoError(tb, err)
+	return k.PublicKey().String()
+}
+
+// writeToken writes a ≥64-byte deterministic token file at path with mode 0600.
+// offset shifts the starting position in the alphabet so callers can produce
+// three files with distinct contents (and therefore distinct SHA-512 hashes).
+func writeToken(tb testing.TB, path string, offset int) {
+	tb.Helper()
+	// 80 printable ASCII characters — safely above the 64-byte minimum.
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	buf := make([]byte, 80)
+	for i := range buf {
+		buf[i] = alphabet[(i+offset)%len(alphabet)]
+	}
+	require.NoError(tb, os.WriteFile(path, buf, 0o600))
 }
 
 // fixtureConfig holds the paths needed to write a test proxy.json.

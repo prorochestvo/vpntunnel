@@ -9,6 +9,23 @@ import (
 	"vpntunnel/internal/tools/bearerauth"
 )
 
+func TestNewBearerVerifier(t *testing.T) {
+	t.Parallel()
+
+	t.Run("panics on empty token", func(t *testing.T) {
+		t.Parallel()
+		require.Panics(t, func() {
+			bearerauth.NewBearerVerifier("")
+		})
+	})
+
+	t.Run("returns non-nil verifier for non-empty token", func(t *testing.T) {
+		t.Parallel()
+		v := bearerauth.NewBearerVerifier("tok")
+		require.NotNil(t, v)
+	})
+}
+
 func TestBearerVerifier_Verify(t *testing.T) {
 	t.Parallel()
 
@@ -78,22 +95,5 @@ func TestBearerVerifier_Verify(t *testing.T) {
 		t.Parallel()
 		// three fields: Bearer, token, extra — len(parts) == 3 → false
 		assert.False(t, v.Verify("Bearer "+token+" extra"))
-	})
-}
-
-func TestNewBearerVerifier(t *testing.T) {
-	t.Parallel()
-
-	t.Run("panics on empty token", func(t *testing.T) {
-		t.Parallel()
-		require.Panics(t, func() {
-			bearerauth.NewBearerVerifier("")
-		})
-	})
-
-	t.Run("returns non-nil verifier for non-empty token", func(t *testing.T) {
-		t.Parallel()
-		v := bearerauth.NewBearerVerifier("tok")
-		require.NotNil(t, v)
 	})
 }

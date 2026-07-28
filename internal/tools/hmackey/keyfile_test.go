@@ -14,12 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newBufLog returns a slog.Logger that writes JSON to buf and the *bytes.Buffer
-// so the caller can inspect what was logged.
-func newBufLog(buf *bytes.Buffer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
 func TestLoadOrGenerate(t *testing.T) {
 	t.Parallel()
 
@@ -165,6 +159,12 @@ func TestLoadOrGenerate(t *testing.T) {
 
 		assertKeyNotLogged(t, &logBuf, key)
 	})
+}
+
+// newBufLog returns a slog.Logger that writes JSON to buf and the *bytes.Buffer
+// so the caller can inspect what was logged.
+func newBufLog(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 // assertKeyNotLogged checks that neither the raw key bytes nor their hex
