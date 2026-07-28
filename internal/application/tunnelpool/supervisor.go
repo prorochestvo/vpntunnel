@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
 
 	"github.com/prorochestvo/loginjector"
@@ -27,11 +26,11 @@ import (
 // config parsing. For a seam at the post-parse level (given an already-parsed
 // config, build a device — used to verify parsed options in tests), see
 // BuilderFn and BuildDialer.
-type DeviceBuilderFn func(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (egress.DialerCloser, error)
+type DeviceBuilderFn func(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (DialerCloser, error)
 
 // DefaultDeviceBuilder is the production DeviceBuilderFn. It calls BuildDialer
 // with the DefaultBuilder as the wireguard factory.
-func DefaultDeviceBuilder(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (egress.DialerCloser, error) {
+func DefaultDeviceBuilder(ctx context.Context, configPath, configDir string, opLog *slog.Logger) (DialerCloser, error) {
 	return BuildDialer(ctx, configPath, configDir, opLog, nil)
 }
 
@@ -173,7 +172,7 @@ func NewStreamingSupervisor(opts SupervisorOptions) *StreamingSupervisor {
 }
 
 // StreamingSupervisor owns exactly one live streaming WireGuard device for the
-// process lifetime. It exposes an egress.Dialer whose DialContext delegates to
+// process lifetime. It exposes a Dialer whose DialContext delegates to
 // the current live device under an RWMutex swap — in-flight connections to the
 // old device die naturally when the device is closed; new dials get the new
 // device (RESOLVED #5: no drain-before-close).
@@ -213,9 +212,9 @@ type StreamingSupervisor struct {
 
 	// mu guards device, deviceID, and reporter.
 	mu       sync.RWMutex
-	device   egress.DialerCloser
+	device   DialerCloser
 	deviceID string
-	reporter egress.HealthReporter
+	reporter HealthReporter
 
 	// stopOnce ensures Close/Stop tears down the device exactly once.
 	stopOnce sync.Once
@@ -232,7 +231,7 @@ type StreamingSupervisor struct {
 	rotateCh chan rotateReq
 }
 
-// DialContext implements egress.Dialer. It delegates to the current live device
+// DialContext implements Dialer. It delegates to the current live device
 // under a read lock. If no device is currently live (mid-backoff after a failure)
 // it returns a publicerror so the proxy listener can surface a clean error.
 func (s *StreamingSupervisor) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -543,7 +542,7 @@ func (s *StreamingSupervisor) handleRotate(loopCtx context.Context, req rotateRe
 
 // build calls s.deviceBuilder to create a live DialerCloser and casts the
 // result to HealthReporter. Returns a plain error on failure.
-func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (egress.DialerCloser, string, egress.HealthReporter, error) {
+func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (DialerCloser, string, HealthReporter, error) {
 	id := tunnelIDFromPath(configPath)
 
 	s.logger().Info("streaming supervisor: building tunnel",
@@ -560,7 +559,7 @@ func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (egr
 		return nil, "", nil, err
 	}
 
-	rep, _ := d.(egress.HealthReporter)
+	rep, _ := d.(HealthReporter)
 	return d, id, rep, nil
 }
 
@@ -568,7 +567,7 @@ func (s *StreamingSupervisor) build(ctx context.Context, configPath string) (egr
 // must already have been closed before calling swapDevice; this function does
 // NOT close it (caller's responsibility to enforce the "close old before new
 // build" invariant).
-func (s *StreamingSupervisor) swapDevice(d egress.DialerCloser, id string, rep egress.HealthReporter) {
+func (s *StreamingSupervisor) swapDevice(d DialerCloser, id string, rep HealthReporter) {
 	s.mu.Lock()
 	s.device = d
 	s.deviceID = id
@@ -603,7 +602,7 @@ func (s *StreamingSupervisor) shutdown() {
 
 // isHealthy queries the HealthReporter and returns true when the handshake
 // age is within HandshakeMaxAge. reason is a short enum string for logging.
-func (s *StreamingSupervisor) isHealthy(rep egress.HealthReporter) (bool, string) {
+func (s *StreamingSupervisor) isHealthy(rep HealthReporter) (bool, string) {
 	if rep == nil {
 		// no HealthReporter — treat as healthy so we never tear down a device
 		// that doesn't expose health (e.g. a test fake without health support).
@@ -635,7 +634,7 @@ func (s *StreamingSupervisor) logger() *slog.Logger {
 // already made d the live device, with context.Background() rather than the
 // supervisor's run ctx: Notify never blocks, so the send is fire-and-forget
 // and outlives any single call's context.
-func (s *StreamingSupervisor) notifyChange(title, id string, d egress.Dialer) {
+func (s *StreamingSupervisor) notifyChange(title, id string, d Dialer) {
 	s.notifier.Notify(context.Background(), notify.Event{
 		Source:   notify.SourceStreaming,
 		Title:    title,

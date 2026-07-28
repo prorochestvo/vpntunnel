@@ -23,7 +23,6 @@ import (
 
 	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/gateway/router"
@@ -68,7 +67,7 @@ func (fakeZoneChecker) IsEligible(_ string) bool { return true }
 // fakeZoneRouter always returns an error so async/sync routing paths fail cleanly.
 type fakeZoneRouter struct{}
 
-func (fakeZoneRouter) Route(_ context.Context, _ string) (egress.Dialer, egress.Resolver, func(), error) {
+func (fakeZoneRouter) Route(_ context.Context, _ string) (tunnelpool.Dialer, tunnelpool.Resolver, func(), error) {
 	return nil, nil, nil, fmt.Errorf("fakeZoneRouter: not connected")
 }
 

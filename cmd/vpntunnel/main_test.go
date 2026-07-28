@@ -32,8 +32,8 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/application/asyncjob"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/constants"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
 )
 
@@ -243,9 +243,9 @@ func TestLoadAPICert(t *testing.T) {
 
 // compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
 var (
-	_ egress.DialerCloser   = (*smokeDialer)(nil)
-	_ egress.HealthReporter = (*smokeDialer)(nil)
-	_ egress.Resolver       = (*smokeDialer)(nil)
+	_ tunnelpool.DialerCloser   = (*smokeDialer)(nil)
+	_ tunnelpool.HealthReporter = (*smokeDialer)(nil)
+	_ tunnelpool.Resolver       = (*smokeDialer)(nil)
 )
 
 // smokeDialer is a no-op test double for the full tunnel interface set.
@@ -268,7 +268,7 @@ func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error)
 }
 
 // smokeBuilder is a tunnelpool.DeviceBuilderFn that returns a smokeDialer for any config path.
-func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
+func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (tunnelpool.DialerCloser, error) {
 	return &smokeDialer{}, nil
 }
 

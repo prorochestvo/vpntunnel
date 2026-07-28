@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/infrastructure/observability"
 )
@@ -79,32 +78,32 @@ func (h *captureHandler) captured() []captureRecord {
 // reHostPort matches a host:port token (IPv4, IPv6, or hostname with port).
 var reHostPort = regexp.MustCompile(`(?:\d{1,3}\.){3}\d{1,3}:\d+|\[[\da-fA-F:]+\]:\d+|[a-zA-Z0-9._-]+:\d+`)
 
-// dialFunc is an egress.Dialer backed by a plain function.
+// dialFunc is an dialer backed by a plain function.
 type dialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
-var _ egress.Dialer = (dialFunc)(nil)
+var _ dialer = (dialFunc)(nil)
 
 func (f dialFunc) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return f(ctx, network, address)
 }
 
-// countingDialer wraps an egress.Dialer and counts DialContext invocations.
+// countingDialer wraps an dialer and counts DialContext invocations.
 type countingDialer struct {
-	inner egress.Dialer
+	inner dialer
 	count atomic.Int64
 }
 
-var _ egress.Dialer = (*countingDialer)(nil)
+var _ dialer = (*countingDialer)(nil)
 
 func (c *countingDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	c.count.Add(1)
 	return c.inner.DialContext(ctx, network, address)
 }
 
-// resolverFunc is an egress.Resolver backed by a plain function.
+// resolverFunc is an resolver backed by a plain function.
 type resolverFunc func(ctx context.Context, host string) ([]netip.Addr, error)
 
-var _ egress.Resolver = (resolverFunc)(nil)
+var _ resolver = (resolverFunc)(nil)
 
 func (f resolverFunc) LookupHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	return f(ctx, host)
@@ -121,7 +120,7 @@ func publicResolver() resolverFunc {
 // forwardToServer returns a dialer + resolver pair that routes all connections
 // to srv, regardless of the address in the request. The resolver returns a
 // public IP so the deny-list passes; the dialer connects to the real server.
-func forwardToServer(t *testing.T, srv *httptest.Server) (egress.Dialer, egress.Resolver) {
+func forwardToServer(t *testing.T, srv *httptest.Server) (dialer, resolver) {
 	t.Helper()
 	srvURL, err := url.Parse(srv.URL)
 	require.NoError(t, err)
@@ -762,4 +761,17 @@ func TestTunnelForwarder_ForwardRaw(t *testing.T) {
 		require.Error(t, fwdErr, "ForwardRaw must return error on context cancellation")
 		assert.Zero(t, resp.StatusCode)
 	})
+}
+
+// dialer and resolver mirror the unexported ports handlers declares for its
+// transport plumbing. They are test-local copies because this is an external
+// test package; the values built here are handed to Forward/ForwardRaw, whose
+// parameters are tunnelpool.Dialer/tunnelpool.Resolver, and that assignment is
+// structural.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+type resolver interface {
+	LookupHost(ctx context.Context, host string) ([]netip.Addr, error)
 }

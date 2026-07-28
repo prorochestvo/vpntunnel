@@ -3,13 +3,13 @@ package tunnelpool
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/notify"
 
 	"github.com/prorochestvo/loginjector"
@@ -144,7 +144,7 @@ type OnDemandScheduler struct {
 	// LiveHealth. Using a mutex (not atomic) because reporter is an interface.
 	snapMu       sync.RWMutex
 	snapID       string
-	snapReporter egress.HealthReporter
+	snapReporter HealthReporter
 }
 
 // Route acquires a dialer/resolver for the given tunnel and returns a release
@@ -153,7 +153,7 @@ type OnDemandScheduler struct {
 //
 // Returns a loginjector.PublicDetailsError for unknown tunnels or device bring-up failures.
 // Returns ctx.Err() when ctx is cancelled while waiting.
-func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer egress.Dialer, resolver egress.Resolver, release func(), err error) {
+func (s *OnDemandScheduler) Route(ctx context.Context, tunnelID string) (dialer Dialer, resolver Resolver, release func(), err error) {
 	configPath, ok := s.eligible.Lookup(tunnelID)
 	if !ok {
 		// tunnelID is an opaque string (HMAC id or basename) chosen by the operator
@@ -222,8 +222,8 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 
 	var (
 		currentZone     string
-		currentDevice   egress.DialerCloser
-		currentResolver egress.Resolver
+		currentDevice   DialerCloser
+		currentResolver Resolver
 
 		activeJobs int
 
@@ -245,19 +245,19 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 		settleTimer      <-chan time.Time
 	)
 
-	setSnapshot := func(id string, rep egress.HealthReporter) {
+	setSnapshot := func(id string, rep HealthReporter) {
 		s.snapMu.Lock()
 		s.snapID = id
 		s.snapReporter = rep
 		s.snapMu.Unlock()
 	}
 
-	grant := func(req routeRequest, d egress.DialerCloser, res egress.Resolver) {
+	grant := func(req routeRequest, d DialerCloser, res Resolver) {
 		activeJobs++
 		req.replyCh <- routeReply{dialer: d, resolver: res}
 	}
 
-	grantAll := func(reqs []routeRequest, d egress.DialerCloser, res egress.Resolver) {
+	grantAll := func(reqs []routeRequest, d DialerCloser, res Resolver) {
 		for _, req := range reqs {
 			grant(req, d, res)
 		}
@@ -394,8 +394,8 @@ func (s *OnDemandScheduler) Run(ctx context.Context) {
 			return
 		}
 
-		res, _ := d.(egress.Resolver)
-		rep, _ := d.(egress.HealthReporter)
+		res, _ := d.(Resolver)
+		rep, _ := d.(HealthReporter)
 		currentZone = tunnelID
 		currentDevice = d
 		currentResolver = res
@@ -520,7 +520,7 @@ func (s *OnDemandScheduler) logger() *slog.Logger {
 // the .conf basename, so the filename/country must be derived from
 // configPath instead. It is called only on the success branch of
 // finishSwitch, after the new device is already live.
-func (s *OnDemandScheduler) notifyChange(configPath string, d egress.Dialer) {
+func (s *OnDemandScheduler) notifyChange(configPath string, d Dialer) {
 	base := filepath.Base(configPath)
 	cc := string(countryFromBasename(strings.TrimSuffix(base, ".conf")))
 	title := "on-demand: " + cc
@@ -537,6 +537,47 @@ func (s *OnDemandScheduler) notifyChange(configPath string, d egress.Dialer) {
 	})
 }
 
+// Resolver looks up the IP addresses that a tunnel's DNS would return for a
+// hostname. Implementations are concurrent-safe. The returned slice is non-nil
+// on success but may be empty if the host resolves to no addresses (NXDOMAIN /
+// empty answer — both surface as len() == 0 with err == nil; callers must map
+// an empty result to a "no such host" error themselves).
+//
+// It is exported for the same reason as Dialer: it appears in the signature of
+// handlers.Router.Route, which *OnDemandScheduler satisfies.
+type Resolver interface {
+	// LookupHost resolves host to IP addresses using the tunnel's DNS.
+	// Returns a nil slice and non-nil error on resolution failure.
+	// Returns a non-nil, possibly empty slice and nil error on NXDOMAIN.
+	LookupHost(ctx context.Context, host string) ([]netip.Addr, error)
+}
+
+// HealthReporter is implemented by Dialers that can report tunnel-level health
+// to an external probe. Today that is only the WireGuard dialer's handshake
+// age; future implementations may report different signals (e.g. last
+// successful connect, queue depth).
+//
+// HealthReporter is intentionally NOT a sub-interface of Dialer: the health
+// handler depends only on LastHandshake, not on DialContext, and coupling the
+// two would force fake reporters in tests to satisfy the full Dialer surface.
+// Callers that need both must type-assert separately — which is why it is
+// exported: both assertion sites (this file and supervisor.go) live here, and a
+// type assertion cannot name another package's unexported interface.
+type HealthReporter interface {
+	// LastHandshake returns the most recent moment the tunnel's underlying
+	// transport completed a handshake with the peer, in the implementation's
+	// local clock (typically time.Now()'s clock).
+	//
+	// A zero time.Time (IsZero() == true) means no handshake has yet
+	// completed since the dialer was constructed; callers MUST treat this as
+	// "not yet healthy", NOT as "infinitely fresh".
+	//
+	// Errors returned by LastHandshake represent a failure to query the
+	// underlying transport (UAPI parse failure, device closed). The returned
+	// time.Time is unspecified when err != nil.
+	LastHandshake() (time.Time, error)
+}
+
 // routeRequest is a single Route call enqueued to the Run loop.
 type routeRequest struct {
 	tunnelID   string
@@ -546,8 +587,8 @@ type routeRequest struct {
 
 // routeReply is the Run loop's response to a routeRequest.
 type routeReply struct {
-	dialer   egress.Dialer
-	resolver egress.Resolver
+	dialer   Dialer
+	resolver Resolver
 	err      error
 }
 

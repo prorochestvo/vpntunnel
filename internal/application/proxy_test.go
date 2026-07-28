@@ -22,13 +22,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
 	"vpntunnel/internal/infrastructure/observability"
 	"vpntunnel/internal/tools/bearerauth"
 )
 
-var _ egress.Dialer = (*mockDialer)(nil)
+var _ dialer = (*mockDialer)(nil)
 var _ application.Verifier = (*mockVerifier)(nil)
 var _ application.Verifier = (*bearerauth.BearerVerifier)(nil)
 var _ net.Conn = fakeConn{}
@@ -48,7 +47,7 @@ func (m *mockVerifier) Verify(header string) bool {
 	return false
 }
 
-// mockDialer is a test double for egress.Dialer.
+// mockDialer is a test double for the dialer port.
 type mockDialer struct {
 	dialFn func(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -88,10 +87,10 @@ func directDialer() *mockDialer {
 	}}
 }
 
-func newTestService(t *testing.T, dialer egress.Dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
+func newTestService(t *testing.T, d dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
 	t.Helper()
 	o := application.ProxyServiceOptions{
-		Dialer:      dialer,
+		Dialer:      d,
 		DialTimeout: 5 * time.Second,
 	}
 	for _, fn := range opts {
@@ -1509,4 +1508,13 @@ func TestIsLoopbackRemote(t *testing.T) {
 			assert.Equal(t, tc.want, got, "addr=%q", tc.addr)
 		})
 	}
+}
+
+// dialer mirrors the unexported outbound-connection port application declares
+// for ProxyServiceOptions.Dialer. It is a test-local copy because the
+// production contract is unexported and this is an external test package;
+// assignment into the field is structural, so the two only need matching
+// method sets.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }

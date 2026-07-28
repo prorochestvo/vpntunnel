@@ -9,7 +9,6 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/tunnelpool"
-	"vpntunnel/internal/egress"
 
 	"github.com/prorochestvo/loginjector"
 )
@@ -31,24 +30,30 @@ func NewZoneRoutingForwarder(router Router, base RawForwarder) *ZoneRoutingForwa
 }
 
 // Router is the minimal zone-routing contract. *tunnelpool.OnDemandScheduler
-// satisfies it. The local interface keeps the structural dependency narrow
-// (the scheduler is injected, not constructed here); the tunnelpool import in this
-// file is scoped to the PrefixUnknownZone constant, which is the single
-// source of truth shared with the scheduler's Route implementation.
+// satisfies it. The local interface keeps the structural dependency narrow —
+// the scheduler is injected, not constructed here.
+//
+// Route cannot name the package-local dialer/resolver ports: Go matches
+// interface method signatures by type identity, so both sides of this seam must
+// spell the parameter types with the same named types. They therefore come from
+// the producer, tunnelpool, which is also where the exported
+// BuilderFn/DeviceBuilderFn signatures need them.
 type Router interface {
 	// Route acquires a dialer and resolver for the given zone. The returned
 	// release function MUST be deferred by the caller; it signals the scheduler
 	// that the job is done so grace and idle timers remain accurate. Returns a
 	// loginjector.PublicDetailsError for unknown zones (message prefix "unknown_zone:") or
 	// device bring-up failures (message prefix "zone_bring_up_failure:").
-	Route(ctx context.Context, zoneID string) (dialer egress.Dialer, resolver egress.Resolver, release func(), err error)
+	Route(ctx context.Context, zoneID string) (dialer tunnelpool.Dialer, resolver tunnelpool.Resolver, release func(), err error)
 }
 
 // RawForwarder is the minimal async-forwarding contract. *tunnelForwarder
 // satisfies it; a local interface keeps the dependency surface narrow and
 // allows tests to inject a fake without constructing a real tunnelForwarder.
+// Its dialer/resolver parameters name tunnelpool's exported ports for the same
+// identity reason as Router.Route and Forwarder.Forward.
 type RawForwarder interface {
-	ForwardRaw(ctx context.Context, req *http.Request, tunnelID string, dialer egress.Dialer, resolver egress.Resolver) (asyncjob.UpstreamResponse, error)
+	ForwardRaw(ctx context.Context, req *http.Request, tunnelID string, dialer tunnelpool.Dialer, resolver tunnelpool.Resolver) (asyncjob.UpstreamResponse, error)
 }
 
 // ZoneRoutingForwarder implements asyncjob.Forwarder by reading the tunnel id

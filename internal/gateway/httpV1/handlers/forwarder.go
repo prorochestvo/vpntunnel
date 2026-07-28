@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/egress"
+	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/infrastructure/ipdeny"
 )
 
@@ -50,8 +50,8 @@ func (f *tunnelForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	tunnelID string,
-	dialer egress.Dialer,
-	resolver egress.Resolver,
+	dialer tunnelpool.Dialer,
+	resolver tunnelpool.Resolver,
 ) error {
 	// recover from any panic; map to 500 internal_error so the request does not hang.
 	defer func() {
@@ -100,8 +100,8 @@ func (f *tunnelForwarder) ForwardRaw(
 	ctx context.Context,
 	req *http.Request,
 	tunnelID string,
-	dialer egress.Dialer,
-	resolver egress.Resolver,
+	dialer tunnelpool.Dialer,
+	resolver tunnelpool.Resolver,
 ) (asyncjob.UpstreamResponse, error) {
 	transport := f.transportFor(tunnelID, dialer, resolver)
 
@@ -155,7 +155,7 @@ func (f *tunnelForwarder) classifyRawError(err error) error {
 // transportFor returns the cached *http.Transport for tunnelID, building and
 // storing one on first access. The transport's DialContext enforces the IP
 // deny-list before dialing through the tunnel.
-func (f *tunnelForwarder) transportFor(id string, dialer egress.Dialer, resolver egress.Resolver) *http.Transport {
+func (f *tunnelForwarder) transportFor(id string, dialer dialer, resolver resolver) *http.Transport {
 	if existing, ok := f.transports.Load(id); ok {
 		return existing.(*http.Transport)
 	}
@@ -172,6 +172,23 @@ func (f *tunnelForwarder) transportFor(id string, dialer egress.Dialer, resolver
 	return actual.(*http.Transport)
 }
 
+// dialer is the minimal outbound-connection contract the transport builder
+// needs: open a TCP connection through a tunnel. Declared here, in the
+// consumer, so the deny-list plumbing depends on no concrete egress
+// implementation. The exported Forward/ForwardRaw signatures cannot use it —
+// see Forwarder's doc comment.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// resolver looks up the addresses a tunnel's own DNS returns for a hostname.
+// denyAwareDial checks the deny-list against its results, which is why
+// resolution must happen inside the tunnel rather than on the host. A nil error
+// with an empty slice means NXDOMAIN.
+type resolver interface {
+	LookupHost(ctx context.Context, host string) ([]netip.Addr, error)
+}
+
 // denyAwareDial returns a DialContext function that resolves the target host
 // via the tunnel's Resolver, rejects any resolved IP that matches DefaultDeny,
 // and dials the first acceptable IP via the tunnel's Dialer.
@@ -181,7 +198,7 @@ func (f *tunnelForwarder) transportFor(id string, dialer egress.Dialer, resolver
 // would otherwise reach into private space. .Unmap() is called on each
 // resolved address so IPv4-mapped IPv6 addresses (::ffff:10.x.x.x) correctly
 // match their IPv4 entries in DefaultDeny.
-func (f *tunnelForwarder) denyAwareDial(dialer egress.Dialer, resolver egress.Resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
+func (f *tunnelForwarder) denyAwareDial(dialer dialer, resolver resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {

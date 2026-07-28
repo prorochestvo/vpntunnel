@@ -1,4 +1,4 @@
-// Package wireguard provides an egress.Dialer backed by a userspace WireGuard
+// Package wireguard provides an outbound TCP dialer backed by a userspace WireGuard
 // device (wireguard-go) routed through a gVisor netstack TUN. The dialer
 // owns the device's lifecycle and must be Close()d on shutdown.
 //
@@ -106,7 +106,11 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// WireGuardDialer implements egress.Dialer and egress.DialerCloser.
+// WireGuardDialer satisfies the outbound-egress ports its consumers declare:
+// tunnelpool.Dialer, tunnelpool.DialerCloser, tunnelpool.Resolver and
+// tunnelpool.HealthReporter. Nothing here imports tunnelpool — the contracts are
+// structural, and tunnelpool.DefaultBuilder returning *WireGuardDialer as a
+// DialerCloser is the compile-time guard that they still line up.
 // It routes all outbound connections through a userspace WireGuard device.
 // It is safe for concurrent use after construction. The caller must call
 // Close() on shutdown to release the wireguard-go goroutines and UDP port.

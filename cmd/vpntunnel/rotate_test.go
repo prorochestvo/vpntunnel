@@ -16,11 +16,10 @@ import (
 
 	"vpntunnel/internal/application"
 	"vpntunnel/internal/application/tunnelpool"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/tools/rotation"
 )
 
-var _ egress.Dialer = (*blockingDialer)(nil)
+var _ tunnelpool.Dialer = (*blockingDialer)(nil)
 
 // compile-time contract assertion: rotateAdapter must satisfy rotation.Rotator.
 var _ rotation.Rotator = rotateAdapter{}
@@ -40,7 +39,7 @@ func (d *blockingDialer) DialContext(ctx context.Context, _, _ string) (net.Conn
 	return nil, errors.New("blockingDialer: refused after release")
 }
 
-var _ egress.DialerCloser = (*closeSignalDevice)(nil)
+var _ tunnelpool.DialerCloser = (*closeSignalDevice)(nil)
 
 // closeSignalDevice is a minimal DialerCloser whose Close runs an optional
 // callback, letting a test observe the exact moment the supervisor tears the
@@ -148,7 +147,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 
 	t.Run("maps RotateUnavailable when no device is live", func(t *testing.T) {
 		t.Parallel()
-		alwaysFail := func(context.Context, string, string, *slog.Logger) (egress.DialerCloser, error) {
+		alwaysFail := func(context.Context, string, string, *slog.Logger) (tunnelpool.DialerCloser, error) {
 			return nil, errors.New("build always fails")
 		}
 		sup := newAdapterTestSupervisor(t, alwaysFail, 5*time.Millisecond)
@@ -179,7 +178,7 @@ func TestRotateAdapter_Rotate(t *testing.T) {
 		// not the degenerate pre-Start case.
 		torn := make(chan struct{})
 		var once sync.Once
-		builder := func(context.Context, string, string, *slog.Logger) (egress.DialerCloser, error) {
+		builder := func(context.Context, string, string, *slog.Logger) (tunnelpool.DialerCloser, error) {
 			return &closeSignalDevice{onClose: func() { once.Do(func() { close(torn) }) }}, nil
 		}
 		sup := newAdapterTestSupervisor(t, builder, 50*time.Millisecond)

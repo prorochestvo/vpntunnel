@@ -6,8 +6,7 @@ package notify
 
 import (
 	"context"
-
-	"vpntunnel/internal/egress"
+	"net"
 )
 
 // SourceStreaming and SourceOnDemand identify which tunnel-management
@@ -38,7 +37,7 @@ type Event struct {
 	// Dialer is the freshly built tunnel dialer, captured for the
 	// best-effort exit-IP probe. May be nil, in which case the probe is
 	// skipped.
-	Dialer egress.Dialer
+	Dialer dialer
 }
 
 // Notifier reports tunnel-change events to an operator-facing channel.
@@ -52,6 +51,13 @@ type Notifier interface {
 	// cancelling ctx does not abort an in-flight notification; the parameter
 	// is reserved for future request attribution/tracing.
 	Notify(ctx context.Context, ev Event)
+}
+
+// dialer is the minimal outbound-connection contract this package needs. It is
+// declared here, in the consumer, and satisfied structurally by whatever tunnel
+// dialer the caller attaches to an Event; probeExitIP is its only user.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Nop is a Notifier that discards every event. It is the default used when

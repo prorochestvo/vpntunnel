@@ -27,7 +27,6 @@ import (
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/middleware"
 	"vpntunnel/internal/gateway/router"
@@ -48,7 +47,7 @@ var (
 	_ handlers.Router = (*fakeWorkingRouter)(nil)
 )
 
-// fakeWorkingDialer satisfies egress.Dialer + egress.Resolver so that
+// fakeWorkingDialer satisfies tunnelpool.Dialer + tunnelpool.Resolver so that
 // fakeWorkingRouter can return a live dialer without constructing a real WireGuard
 // device. DialContext and LookupHost are never actually called in integration tests
 // because the injected ProxyForwarder / asyncjob.Forwarder bypasses WireGuard.
@@ -68,7 +67,7 @@ func (fakeWorkingDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, 
 // dialer and resolver. directSyncForwarder ignores both, so this is safe.
 type fakeWorkingRouter struct{}
 
-func (fakeWorkingRouter) Route(_ context.Context, _ string) (egress.Dialer, egress.Resolver, func(), error) {
+func (fakeWorkingRouter) Route(_ context.Context, _ string) (tunnelpool.Dialer, tunnelpool.Resolver, func(), error) {
 	return fakeWorkingDialer{}, fakeWorkingDialer{}, func() {}, nil
 }
 
@@ -122,8 +121,8 @@ func (directSyncForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	_ string,
-	_ egress.Dialer,
-	_ egress.Resolver,
+	_ tunnelpool.Dialer,
+	_ tunnelpool.Resolver,
 ) error {
 	client := &http.Client{
 		Transport:     http.DefaultTransport,
@@ -155,8 +154,8 @@ func (f tlsTrustingForwarder) Forward(
 	w http.ResponseWriter,
 	r *http.Request,
 	_ string,
-	_ egress.Dialer,
-	_ egress.Resolver,
+	_ tunnelpool.Dialer,
+	_ tunnelpool.Resolver,
 ) error {
 	client := &http.Client{
 		Transport:     f.rt,
@@ -190,8 +189,8 @@ func (f tlsTrustingRawForwarder) ForwardRaw(
 	ctx context.Context,
 	req *http.Request,
 	_ string,
-	_ egress.Dialer,
-	_ egress.Resolver,
+	_ tunnelpool.Dialer,
+	_ tunnelpool.Resolver,
 ) (asyncjob.UpstreamResponse, error) {
 	client := &http.Client{Transport: f.rt}
 	resp, err := client.Do(req.WithContext(ctx))

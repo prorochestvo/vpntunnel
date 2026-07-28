@@ -1,22 +1,28 @@
 package wireguard
 
 import (
+	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
-
-	"vpntunnel/internal/egress"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// compile-time assertion: WireGuardDialer satisfies egress.HealthReporter.
-// The canonical assertion lives in dialer.go; this one targets the test stub.
 var _ ipcGetter = (*failingIpcGetter)(nil)
+
+var (
+	_ healthReporter = (*WireGuardDialer)(nil)
+	_ dialer         = (*WireGuardDialer)(nil)
+	_ dialerCloser   = (*WireGuardDialer)(nil)
+	_ resolver       = (*WireGuardDialer)(nil)
+)
 
 // newHealthTestLogger returns a logger that discards output.
 func newHealthTestLogger() *slog.Logger {
@@ -84,14 +90,6 @@ func TestWireGuardDialer_LastHandshake(t *testing.T) {
 	})
 }
 
-// compile-time assertion that WireGuardDialer satisfies egress.HealthReporter
-// (duplication of the canonical one in dialer.go is intentional here: it
-// verifies the assertion from the test package's perspective).
-var _ egress.HealthReporter = (*WireGuardDialer)(nil)
-var _ egress.Dialer = (*WireGuardDialer)(nil)
-var _ egress.DialerCloser = (*WireGuardDialer)(nil)
-var _ egress.Resolver = (*WireGuardDialer)(nil)
-
 func TestParseLastHandshake(t *testing.T) {
 	t.Parallel()
 
@@ -151,4 +149,29 @@ func TestParseLastHandshake(t *testing.T) {
 		// result must be time.Unix(100, 0) — nsec is ignored.
 		assert.Equal(t, time.Unix(100, 0), ts)
 	})
+}
+
+// dialer, dialerCloser, resolver, and healthReporter are test-local
+// copies of the four egress ports tunnelpool declares. They are copies rather
+// than imports because wireguard sits below tunnelpool: importing it from here
+// would invert the layering even in test scope.
+//
+// Honest limitation: a copy no longer breaks if tunnelpool changes a port. The
+// real compile-time guard is tunnelpool.DefaultBuilder, which returns
+// *WireGuardDialer as a tunnelpool.DialerCloser — that one still breaks.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+type dialerCloser interface {
+	dialer
+	io.Closer
+}
+
+type resolver interface {
+	LookupHost(ctx context.Context, host string) ([]netip.Addr, error)
+}
+
+type healthReporter interface {
+	LastHandshake() (time.Time, error)
 }
