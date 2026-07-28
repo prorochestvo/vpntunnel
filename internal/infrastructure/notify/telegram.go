@@ -15,6 +15,8 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/prorochestvo/dsninjector"
+
+	"vpntunnel/internal/domain"
 )
 
 // NewTelegram builds a Telegram notifier from a DataSource (parsed by the
@@ -55,8 +57,8 @@ type TelegramNotifier struct {
 	done   chan struct{}
 	once   sync.Once
 
-	// mu guards the on-demand dedup/rate-limit state below. SourceStreaming
-	// events never touch this state.
+	// mu guards the on-demand dedup/rate-limit state below.
+	// domain.SourceStreaming events never touch this state.
 	mu                   sync.Mutex
 	lastOnDemandFilename string
 	lastOnDemandAt       time.Time
@@ -73,14 +75,14 @@ func (tn *TelegramNotifier) Close() {
 	<-tn.done
 }
 
-// Notify implements Notifier. For SourceOnDemand events it applies the
+// Notify implements Notifier. For domain.SourceOnDemand events it applies the
 // dedup/rate-limit policy (suppressing repeats of the same tunnel within
 // onDemandDedupWindow, and any switch within onDemandMinInterval of the last
-// one) before enqueueing; SourceStreaming events bypass this entirely and are
-// never suppressed. The enqueue is always non-blocking: a full queue drops
-// the event with a warning rather than stalling the caller.
-func (tn *TelegramNotifier) Notify(_ context.Context, ev Event) {
-	if ev.Source == SourceOnDemand && tn.suppressed(ev.Filename) {
+// one) before enqueueing; domain.SourceStreaming events bypass this entirely
+// and are never suppressed. The enqueue is always non-blocking: a full queue
+// drops the event with a warning rather than stalling the caller.
+func (tn *TelegramNotifier) Notify(_ context.Context, ev domain.TunnelChangeEvent) {
+	if ev.Source == domain.SourceOnDemand && tn.suppressed(ev.Filename) {
 		return
 	}
 
@@ -97,7 +99,7 @@ func (tn *TelegramNotifier) Notify(_ context.Context, ev Event) {
 // exit-IP probe, message formatting, and the Telegram send. It runs on the
 // sender goroutine, using the notifier's own background ctx so a per-call
 // caller ctx cancellation can never abort an in-flight send.
-func (tn *TelegramNotifier) handle(ev Event) {
+func (tn *TelegramNotifier) handle(ev domain.TunnelChangeEvent) {
 	var exit *exitInfo
 	if ev.Dialer != nil {
 		info, err := probeExitIP(tn.ctx, ev.Dialer, tn.probeURL)
@@ -192,7 +194,7 @@ var tokenPattern = regexp.MustCompile(`^\d{9,}:[a-zA-Z0-9_-]{35,}$`)
 
 // notifyJob is one unit of work handed from Notify to the sender goroutine.
 type notifyJob struct {
-	ev Event
+	ev domain.TunnelChangeEvent
 }
 
 // extractIdentity pulls the admin chat ID and bot token out of a DataSource

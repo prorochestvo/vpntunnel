@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal/infrastructure/notify"
+	"vpntunnel/internal/domain"
 )
 
 // compile-time check: fakeClock already declared in supervisor_test.go satisfies Clock.
@@ -924,9 +924,9 @@ func TestNewOnDemandScheduler_panics(t *testing.T) {
 }
 
 // TestOnDemandScheduler_Notifier tests that a successful zone bring-up
-// reports exactly one notify.Event derived from the config path (not the
-// opaque zone id), that a bring-up failure reports none, and that a nil
-// Notifier defaults to notify.Nop without panicking.
+// reports exactly one domain.TunnelChangeEvent derived from the config path
+// (not the opaque zone id), that a bring-up failure reports none, and that a
+// nil Notifier defaults to notify.Nop without panicking.
 func TestOnDemandScheduler_Notifier(t *testing.T) {
 	t.Parallel()
 
@@ -960,7 +960,7 @@ func TestOnDemandScheduler_Notifier(t *testing.T) {
 
 		awaitNotifierLen(t, notifier, 1, 500*time.Millisecond)
 		ev := notifier.recorded()[0]
-		assert.Equal(t, notify.SourceOnDemand, ev.Source)
+		assert.Equal(t, domain.SourceOnDemand, ev.Source)
 		assert.Equal(t, "se-sto-wg-001.conf", ev.Filename)
 		assert.Equal(t, "se", ev.Country)
 		assert.Equal(t, "on-demand: se", ev.Title)

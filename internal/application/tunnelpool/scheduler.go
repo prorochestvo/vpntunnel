@@ -528,8 +528,8 @@ func (s *OnDemandScheduler) notifyChange(configPath string, d Dialer) {
 		title = "on-demand: " + base
 	}
 
-	s.notifier.Notify(context.Background(), notify.Event{
-		Source:   notify.SourceOnDemand,
+	s.notifier.Notify(context.Background(), domain.TunnelChangeEvent{
+		Source:   domain.SourceOnDemand,
 		Title:    title,
 		Country:  cc,
 		Filename: base,

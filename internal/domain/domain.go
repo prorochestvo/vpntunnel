@@ -1,7 +1,12 @@
 // Package domain defines the core value types shared across the vpntunnel
-// internal packages. It has no I/O, no business logic, and no imports beyond
-// the standard library. The outbound-connection port interfaces are not here:
-// each consumer declares its own.
+// internal packages. It performs no I/O, holds no business logic, and imports
+// nothing beyond the standard library.
+//
+// Outbound-connection port interfaces are declared by their consumers, not
+// here, with one deliberate exception: TunnelChangeEvent carries a behavioural
+// dialer port (tunnelevent.go), because the event exists to hand a notifier the
+// live tunnel it reports so the exit IP can be probed through it. That port is
+// the only interface in this package; the package itself still dials nothing.
 package domain
 
 // RequestSummary holds the per-request fields written to the access log.

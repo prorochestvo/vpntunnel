@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/notify"
 )
 
@@ -184,19 +185,19 @@ func (c *fakeClock) Advance(d time.Duration) {
 // scheduler tests share this type) are race-safe.
 type fakeNotifier struct {
 	mu     sync.Mutex
-	events []notify.Event
+	events []domain.TunnelChangeEvent
 }
 
-func (f *fakeNotifier) Notify(_ context.Context, ev notify.Event) {
+func (f *fakeNotifier) Notify(_ context.Context, ev domain.TunnelChangeEvent) {
 	f.mu.Lock()
 	f.events = append(f.events, ev)
 	f.mu.Unlock()
 }
 
-func (f *fakeNotifier) recorded() []notify.Event {
+func (f *fakeNotifier) recorded() []domain.TunnelChangeEvent {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]notify.Event, len(f.events))
+	out := make([]domain.TunnelChangeEvent, len(f.events))
 	copy(out, f.events)
 	return out
 }
@@ -1059,8 +1060,8 @@ func TestNewStreamingSupervisor_panics(t *testing.T) {
 }
 
 // TestStreamingSupervisor_Notifier tests that Start and a forced reconnect
-// each report exactly one notify.Event, and that a nil Notifier defaults to
-// notify.Nop (no panic, no send).
+// each report exactly one domain.TunnelChangeEvent, and that a nil Notifier
+// defaults to notify.Nop (no panic, no send).
 func TestStreamingSupervisor_Notifier(t *testing.T) {
 	t.Parallel()
 
@@ -1085,7 +1086,7 @@ func TestStreamingSupervisor_Notifier(t *testing.T) {
 
 		awaitNotifierLen(t, notifier, 1, 500*time.Millisecond)
 		first := notifier.recorded()[0]
-		assert.Equal(t, notify.SourceStreaming, first.Source)
+		assert.Equal(t, domain.SourceStreaming, first.Source)
 		assert.Equal(t, "started", first.Title)
 		assert.Equal(t, "se-sto-wg-001.conf", first.Filename)
 
@@ -1099,7 +1100,7 @@ func TestStreamingSupervisor_Notifier(t *testing.T) {
 
 		awaitNotifierLen(t, notifier, 2, 2*time.Second)
 		second := notifier.recorded()[1]
-		assert.Equal(t, notify.SourceStreaming, second.Source)
+		assert.Equal(t, domain.SourceStreaming, second.Source)
 		assert.Equal(t, "switched tunnel", second.Title)
 		assert.Equal(t, "se-sto-wg-001.conf", second.Filename)
 	})

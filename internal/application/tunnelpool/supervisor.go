@@ -536,7 +536,7 @@ func (s *StreamingSupervisor) handleRotate(loopCtx context.Context, req rotateRe
 		slog.String("new_country", newCountry),
 		slog.String("new_tunnel_id", id),
 	)
-	s.notifyChange("rotated", id, newDev) // reuse the existing SourceStreaming notify path
+	s.notifyChange("rotated", id, newDev) // reuse the existing streaming notify path
 	req.reply <- rotateReply{result: RotateResult{Outcome: RotateRotated, Country: newCountry}}
 }
 
@@ -635,8 +635,8 @@ func (s *StreamingSupervisor) logger() *slog.Logger {
 // supervisor's run ctx: Notify never blocks, so the send is fire-and-forget
 // and outlives any single call's context.
 func (s *StreamingSupervisor) notifyChange(title, id string, d Dialer) {
-	s.notifier.Notify(context.Background(), notify.Event{
-		Source:   notify.SourceStreaming,
+	s.notifier.Notify(context.Background(), domain.TunnelChangeEvent{
+		Source:   domain.SourceStreaming,
 		Title:    title,
 		Country:  string(countryFromBasename(id)),
 		Filename: id + ".conf",

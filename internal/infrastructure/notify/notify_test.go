@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"vpntunnel/internal/domain"
 	"vpntunnel/internal/infrastructure/notify"
 )
 
@@ -14,7 +15,7 @@ func TestNop_Notify(t *testing.T) {
 	t.Run("returns without side effects or panic", func(t *testing.T) {
 		t.Parallel()
 		assert.NotPanics(t, func() {
-			notify.Nop{}.Notify(t.Context(), notify.Event{})
+			notify.Nop{}.Notify(t.Context(), domain.TunnelChangeEvent{})
 		})
 	})
 }

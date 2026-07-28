@@ -14,6 +14,8 @@ import (
 	"github.com/prorochestvo/dsninjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"vpntunnel/internal/domain"
 )
 
 func TestSendClientNoProxy(t *testing.T) {
@@ -38,8 +40,8 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
-		tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
-		tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "switched tunnel", Filename: "se-sto-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceStreaming, Title: "switched tunnel", Filename: "se-sto-wg-001.conf"})
 
 		awaitCalls(t, calls, 2, time.Second)
 	})
@@ -54,9 +56,9 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
 		defer tn.Close()
 
-		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
 		clk.advance(time.Minute)
-		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
 
 		awaitCalls(t, calls, 1, time.Second)
 		time.Sleep(50 * time.Millisecond) // ensure a second send does not sneak in
@@ -73,14 +75,14 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", clk.now, discardLogger())
 		defer tn.Close()
 
-		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceOnDemand, Title: "on-demand: se", Filename: "se-sto-wg-001.conf"})
 		clk.advance(5 * time.Second) // within onDemandMinInterval (20s)
-		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: de", Filename: "de-ber-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceOnDemand, Title: "on-demand: de", Filename: "de-ber-wg-001.conf"})
 
 		awaitCalls(t, calls, 1, time.Second)
 
 		clk.advance(onDemandMinInterval + time.Second) // past the floor
-		tn.Notify(t.Context(), Event{Source: SourceOnDemand, Title: "on-demand: de", Filename: "de-ber-wg-001.conf"})
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceOnDemand, Title: "on-demand: de", Filename: "de-ber-wg-001.conf"})
 
 		awaitCalls(t, calls, 2, time.Second)
 	})
@@ -100,8 +102,8 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		tn := mustNotifier(t, 1, validToken, testTag, srv.URL, "", fixedClock(time.Now()), discardLogger())
 		defer tn.Close()
 
-		tn.Notify(t.Context(), Event{
-			Source:   SourceStreaming,
+		tn.Notify(t.Context(), domain.TunnelChangeEvent{
+			Source:   domain.SourceStreaming,
 			Title:    "started",
 			Country:  "se",
 			Filename: "se-sto-wg-001.conf",
@@ -132,13 +134,13 @@ func TestTelegramNotifier_Notify(t *testing.T) {
 		defer tn.Close()
 
 		assert.NotPanics(t, func() {
-			tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "started"})
+			tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceStreaming, Title: "started"})
 		})
 
 		// the sender goroutine must still be alive to process a follow-up event.
 		time.Sleep(20 * time.Millisecond)
 		assert.NotPanics(t, func() {
-			tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "still alive"})
+			tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceStreaming, Title: "still alive"})
 		})
 	})
 }
@@ -153,7 +155,7 @@ func TestTelegramNotifier_SendErrorNeverLogsToken(t *testing.T) {
 	tn := mustNotifier(t, 1, validToken, testTag, "http://127.0.0.1:1", "", fixedClock(time.Now()), logger)
 	defer tn.Close()
 
-	tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
+	tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceStreaming, Title: "started", Filename: "se-sto-wg-001.conf"})
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(lb.String(), "telegram send failed")
@@ -218,7 +220,7 @@ func TestTelegramNotifier_Close(t *testing.T) {
 		tn.Close()
 
 		assert.NotPanics(t, func() {
-			tn.Notify(t.Context(), Event{Source: SourceStreaming, Title: "after close"})
+			tn.Notify(t.Context(), domain.TunnelChangeEvent{Source: domain.SourceStreaming, Title: "after close"})
 		})
 	})
 }

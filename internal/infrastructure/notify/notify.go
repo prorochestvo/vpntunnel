@@ -7,38 +7,9 @@ package notify
 import (
 	"context"
 	"net"
+
+	"vpntunnel/internal/domain"
 )
-
-// SourceStreaming and SourceOnDemand identify which tunnel-management
-// component raised an Event. SourceStreaming events (always-on supervisor:
-// startup, every successful reconnect) are never rate-limited. SourceOnDemand
-// events (on-demand scheduler zone switches) are subject to the notifier's
-// dedup/rate-limit policy, because zone switches can be frequent.
-const (
-	SourceStreaming Source = iota
-	SourceOnDemand
-)
-
-// Source identifies which tunnel-management component raised an Event.
-type Source int
-
-// Event describes one tunnel-change occurrence a Notifier may report.
-type Event struct {
-	// Source identifies which component raised the event; it determines
-	// whether the notifier's dedup/rate-limit policy applies.
-	Source Source
-	// Title is a short, caller-provided label (e.g. "started",
-	// "switched tunnel", "on-demand: se").
-	Title string
-	// Country is the lowercase two-letter tunnel country code; may be "".
-	Country string
-	// Filename is the tunnel's .conf basename (e.g. "se-sto-wg-001.conf").
-	Filename string
-	// Dialer is the freshly built tunnel dialer, captured for the
-	// best-effort exit-IP probe. May be nil, in which case the probe is
-	// skipped.
-	Dialer dialer
-}
 
 // Notifier reports tunnel-change events to an operator-facing channel.
 // Notify must never block the caller: implementations that perform I/O do so
@@ -50,12 +21,13 @@ type Notifier interface {
 	// compliant implementation performs the send on its own lifetime, so
 	// cancelling ctx does not abort an in-flight notification; the parameter
 	// is reserved for future request attribution/tracing.
-	Notify(ctx context.Context, ev Event)
+	Notify(ctx context.Context, ev domain.TunnelChangeEvent)
 }
 
 // dialer is the minimal outbound-connection contract this package needs. It is
 // declared here, in the consumer, and satisfied structurally by whatever tunnel
-// dialer the caller attaches to an Event; probeExitIP is its only user.
+// dialer the caller attached to a domain.TunnelChangeEvent; probeExitIP is its
+// only user.
 type dialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -65,4 +37,4 @@ type dialer interface {
 type Nop struct{}
 
 // Notify implements Notifier by doing nothing.
-func (Nop) Notify(context.Context, Event) {}
+func (Nop) Notify(context.Context, domain.TunnelChangeEvent) {}
