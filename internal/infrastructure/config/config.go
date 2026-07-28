@@ -18,7 +18,7 @@ import (
 
 	"github.com/prorochestvo/loginjector"
 
-	"vpntunnel/internal"
+	"vpntunnel/internal/policy"
 )
 
 // Load reads the JSON config at path, applies defaults, and validates the result.
@@ -224,7 +224,7 @@ type Config struct {
 	// consumer. When the file is absent the consumer generates a 32-byte random key
 	// and writes it at 0600. The key material (file contents) must never be logged;
 	// the derived hex id is non-secret and may appear in logs and API responses.
-	// Default: internal.DefaultTunnelIDHMACKeyFile.
+	// Default: policy.DefaultTunnelIDHMACKeyFile.
 	TunnelIDHMACKeyFile string
 	// Dir is the absolute directory holding the config file this Config was
 	// loaded from. It is derived by Load, never an operator-supplied JSON key,
@@ -542,10 +542,10 @@ func (r rawConfig) toConfig() (Config, error) {
 
 	// convert api.vpn.async — a nil block means "use the default storage path".
 	// StoragePath is handled here rather than in applyDefaults: a nil pointer means
-	// "absent, use default" so we apply internal.DefaultAsyncStoragePath immediately; a
+	// "absent, use default" so we apply policy.DefaultAsyncStoragePath immediately; a
 	// non-nil pointer to "" means the operator explicitly wrote "storage_path": ""
 	// and is stored verbatim so validate can reject it with a field-named error.
-	async := AsyncConfig{StoragePath: internal.DefaultAsyncStoragePath}
+	async := AsyncConfig{StoragePath: policy.DefaultAsyncStoragePath}
 	if r.API.VPN != nil && r.API.VPN.Async != nil {
 		if r.API.VPN.Async.StoragePath != nil {
 			async.StoragePath = *r.API.VPN.Async.StoragePath
@@ -595,10 +595,10 @@ func (r rawConfig) toConfig() (Config, error) {
 	}
 
 	// apply default for tunnel_id_hmac_key_file: a nil pointer means the field
-	// was absent, so we use internal.DefaultTunnelIDHMACKeyFile; a non-nil pointer (even
+	// was absent, so we use policy.DefaultTunnelIDHMACKeyFile; a non-nil pointer (even
 	// to "") is stored verbatim so validate can reject an explicit empty string.
 	if r.TunnelIDHMACKeyFile == nil {
-		cfg.TunnelIDHMACKeyFile = internal.DefaultTunnelIDHMACKeyFile
+		cfg.TunnelIDHMACKeyFile = policy.DefaultTunnelIDHMACKeyFile
 	} else {
 		cfg.TunnelIDHMACKeyFile = *r.TunnelIDHMACKeyFile
 	}
@@ -608,7 +608,7 @@ func (r rawConfig) toConfig() (Config, error) {
 
 // apiShutdownAbsent is the sentinel stored in API.ShutdownTimeout when the
 // "shutdown_timeout" field is absent from a present api block. applyDefaults
-// replaces it with internal.DefaultAPIShutdownTimeout; an explicit "0s" is stored as 0
+// replaces it with policy.DefaultAPIShutdownTimeout; an explicit "0s" is stored as 0
 // and passes validation (>= 0 is the contract).
 const apiShutdownAbsent = time.Duration(-1)
 
@@ -645,60 +645,60 @@ func (d *duration) UnmarshalJSON(b []byte) error {
 
 func (c *Config) applyDefaults() {
 	if c.VPNStream.Listen == "" {
-		c.VPNStream.Listen = internal.DefaultListen
+		c.VPNStream.Listen = policy.DefaultListen
 	}
 	if c.VPNStream.DialTimeout == 0 {
-		c.VPNStream.DialTimeout = internal.DefaultDialTimeout
+		c.VPNStream.DialTimeout = policy.DefaultDialTimeout
 	}
 	if c.VPNStream.IdleTimeout == 0 {
-		c.VPNStream.IdleTimeout = internal.DefaultIdleTimeout
+		c.VPNStream.IdleTimeout = policy.DefaultIdleTimeout
 	}
 	if c.VPNStream.ShutdownTimeout == 0 {
-		c.VPNStream.ShutdownTimeout = internal.DefaultShutdownTimeout
+		c.VPNStream.ShutdownTimeout = policy.DefaultShutdownTimeout
 	}
 	if c.AccessLog.Path == "" {
-		c.AccessLog.Path = internal.DefaultAccessLogPath
+		c.AccessLog.Path = policy.DefaultAccessLogPath
 	}
 	if c.AccessLog.MaxSizeMB == 0 {
-		c.AccessLog.MaxSizeMB = internal.DefaultAccessLogSizeMB
+		c.AccessLog.MaxSizeMB = policy.DefaultAccessLogSizeMB
 	}
 	if c.AccessLog.MaxAgeDays == 0 {
-		c.AccessLog.MaxAgeDays = internal.DefaultAccessLogAgeDays
+		c.AccessLog.MaxAgeDays = policy.DefaultAccessLogAgeDays
 	}
 	if c.AccessLog.MaxBackups == 0 {
-		c.AccessLog.MaxBackups = internal.DefaultAccessLogBackups
+		c.AccessLog.MaxBackups = policy.DefaultAccessLogBackups
 	}
 	if c.Operational.Level == "" {
-		c.Operational.Level = internal.DefaultOperationalLevel
+		c.Operational.Level = policy.DefaultOperationalLevel
 	}
 	if c.Operational.Format == "" {
-		c.Operational.Format = internal.DefaultOperationalFormat
+		c.Operational.Format = policy.DefaultOperationalFormat
 	}
 
 	// vpnstream streaming defaults — sentinel marks fields absent from JSON.
 	if c.VPNStream.ReconnectMin == lazyDurationAbsent {
-		c.VPNStream.ReconnectMin = internal.DefaultStreamingReconnectMin
+		c.VPNStream.ReconnectMin = policy.DefaultStreamingReconnectMin
 	}
 	if c.VPNStream.ReconnectMax == lazyDurationAbsent {
-		c.VPNStream.ReconnectMax = internal.DefaultStreamingReconnectMax
+		c.VPNStream.ReconnectMax = policy.DefaultStreamingReconnectMax
 	}
 
 	// api block defaults — always applied; if the api block was absent, toConfig
 	// already returned an error before applyDefaults is reached.
 	if c.API.ShutdownTimeout == apiShutdownAbsent {
-		c.API.ShutdownTimeout = internal.DefaultAPIShutdownTimeout
+		c.API.ShutdownTimeout = policy.DefaultAPIShutdownTimeout
 	}
 	if c.API.Listen == "" {
-		c.API.Listen = internal.DefaultAPIListen
+		c.API.Listen = policy.DefaultAPIListen
 	}
 	if c.API.MaxRequestBodyBytes == 0 {
-		c.API.MaxRequestBodyBytes = internal.DefaultAPIMaxRequestBodyBytes
+		c.API.MaxRequestBodyBytes = policy.DefaultAPIMaxRequestBodyBytes
 	}
 	if c.API.VPN.Timeout == 0 {
-		c.API.VPN.Timeout = internal.DefaultAPIUpstreamTimeout
+		c.API.VPN.Timeout = policy.DefaultAPIUpstreamTimeout
 	}
 	if c.API.VPN.MaxTimeout == 0 {
-		c.API.VPN.MaxTimeout = internal.DefaultAPIMaxUpstreamTimeout
+		c.API.VPN.MaxTimeout = policy.DefaultAPIMaxUpstreamTimeout
 	}
 
 	// async: StoragePath default is applied in toConfig so explicit "" is
@@ -707,13 +707,13 @@ func (c *Config) applyDefaults() {
 
 	// ondemand defaults — sentinel marks fields absent from JSON.
 	if c.API.VPN.Demand.Grace == lazyDurationAbsent {
-		c.API.VPN.Demand.Grace = internal.DefaultOnDemandGrace
+		c.API.VPN.Demand.Grace = policy.DefaultOnDemandGrace
 	}
 	if c.API.VPN.Demand.SettleDelay == lazyDurationAbsent {
-		c.API.VPN.Demand.SettleDelay = internal.DefaultOnDemandSettleDelay
+		c.API.VPN.Demand.SettleDelay = policy.DefaultOnDemandSettleDelay
 	}
 	if c.API.VPN.Demand.IdleTTL == lazyDurationAbsent {
-		c.API.VPN.Demand.IdleTTL = internal.DefaultOnDemandIdleTTL
+		c.API.VPN.Demand.IdleTTL = policy.DefaultOnDemandIdleTTL
 	}
 }
 

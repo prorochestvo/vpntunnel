@@ -31,10 +31,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"vpntunnel/internal"
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/infrastructure/config"
+	"vpntunnel/internal/policy"
 )
 
 func TestResolveAuthToken(t *testing.T) {
@@ -721,7 +721,7 @@ func TestRun(t *testing.T) {
 		})
 
 		const malformedDSN = "tbot://not-a-valid-dsn"
-		t.Setenv(internal.EnvTelegramBotDSN, malformedDSN)
+		t.Setenv(policy.EnvTelegramBotDSN, malformedDSN)
 
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()

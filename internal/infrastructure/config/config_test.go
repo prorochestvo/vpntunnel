@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vpntunnel/internal"
 	"vpntunnel/internal/infrastructure/config"
+	"vpntunnel/internal/policy"
 )
 
 // validAPIBlock returns a minimal valid api block for use in test JSON payloads.
@@ -57,17 +57,17 @@ func TestLoad(t *testing.T) {
 		path := writeJSON(t, validConfigJSON("./tunnels/se.conf"))
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultListen, cfg.VPNStream.Listen)
-		assert.Equal(t, internal.DefaultDialTimeout, cfg.VPNStream.DialTimeout)
-		assert.Equal(t, internal.DefaultIdleTimeout, cfg.VPNStream.IdleTimeout)
-		assert.Equal(t, internal.DefaultShutdownTimeout, cfg.VPNStream.ShutdownTimeout)
-		assert.Equal(t, internal.DefaultAccessLogPath, cfg.AccessLog.Path)
-		assert.Equal(t, internal.DefaultAccessLogSizeMB, cfg.AccessLog.MaxSizeMB)
-		assert.Equal(t, internal.DefaultAccessLogAgeDays, cfg.AccessLog.MaxAgeDays)
-		assert.Equal(t, internal.DefaultAccessLogBackups, cfg.AccessLog.MaxBackups)
+		assert.Equal(t, policy.DefaultListen, cfg.VPNStream.Listen)
+		assert.Equal(t, policy.DefaultDialTimeout, cfg.VPNStream.DialTimeout)
+		assert.Equal(t, policy.DefaultIdleTimeout, cfg.VPNStream.IdleTimeout)
+		assert.Equal(t, policy.DefaultShutdownTimeout, cfg.VPNStream.ShutdownTimeout)
+		assert.Equal(t, policy.DefaultAccessLogPath, cfg.AccessLog.Path)
+		assert.Equal(t, policy.DefaultAccessLogSizeMB, cfg.AccessLog.MaxSizeMB)
+		assert.Equal(t, policy.DefaultAccessLogAgeDays, cfg.AccessLog.MaxAgeDays)
+		assert.Equal(t, policy.DefaultAccessLogBackups, cfg.AccessLog.MaxBackups)
 		assert.True(t, cfg.AccessLog.Compress)
-		assert.Equal(t, internal.DefaultOperationalLevel, cfg.Operational.Level)
-		assert.Equal(t, internal.DefaultOperationalFormat, cfg.Operational.Format)
+		assert.Equal(t, policy.DefaultOperationalLevel, cfg.Operational.Level)
+		assert.Equal(t, policy.DefaultOperationalFormat, cfg.Operational.Format)
 	})
 
 	t.Run("missing file returns plain error", func(t *testing.T) {
@@ -100,7 +100,7 @@ func TestLoad(t *testing.T) {
 		})
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultListen, cfg.VPNStream.Listen)
+		assert.Equal(t, policy.DefaultListen, cfg.VPNStream.Listen)
 	})
 
 	t.Run("invalid listen host:port with multiple colons returns PublicError", func(t *testing.T) {
@@ -447,20 +447,20 @@ func TestLoad(t *testing.T) {
 		})
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultListen, cfg.VPNStream.Listen)
-		assert.Equal(t, internal.DefaultDialTimeout, cfg.VPNStream.DialTimeout)
-		assert.Equal(t, internal.DefaultIdleTimeout, cfg.VPNStream.IdleTimeout)
-		assert.Equal(t, internal.DefaultShutdownTimeout, cfg.VPNStream.ShutdownTimeout)
-		assert.Equal(t, internal.DefaultAPIListen, cfg.API.Listen)
-		assert.Equal(t, internal.DefaultAPIShutdownTimeout, cfg.API.ShutdownTimeout)
-		assert.Equal(t, internal.DefaultAPIMaxRequestBodyBytes, cfg.API.MaxRequestBodyBytes)
-		assert.Equal(t, internal.DefaultAPIUpstreamTimeout, cfg.API.VPN.Timeout)
-		assert.Equal(t, internal.DefaultAPIMaxUpstreamTimeout, cfg.API.VPN.MaxTimeout)
-		assert.Equal(t, internal.DefaultAsyncStoragePath, cfg.API.VPN.Async.StoragePath)
-		assert.Equal(t, internal.DefaultOnDemandGrace, cfg.API.VPN.Demand.Grace)
-		assert.Equal(t, internal.DefaultOnDemandSettleDelay, cfg.API.VPN.Demand.SettleDelay)
-		assert.Equal(t, internal.DefaultOnDemandIdleTTL, cfg.API.VPN.Demand.IdleTTL)
-		assert.Equal(t, internal.DefaultTunnelIDHMACKeyFile, cfg.TunnelIDHMACKeyFile)
+		assert.Equal(t, policy.DefaultListen, cfg.VPNStream.Listen)
+		assert.Equal(t, policy.DefaultDialTimeout, cfg.VPNStream.DialTimeout)
+		assert.Equal(t, policy.DefaultIdleTimeout, cfg.VPNStream.IdleTimeout)
+		assert.Equal(t, policy.DefaultShutdownTimeout, cfg.VPNStream.ShutdownTimeout)
+		assert.Equal(t, policy.DefaultAPIListen, cfg.API.Listen)
+		assert.Equal(t, policy.DefaultAPIShutdownTimeout, cfg.API.ShutdownTimeout)
+		assert.Equal(t, policy.DefaultAPIMaxRequestBodyBytes, cfg.API.MaxRequestBodyBytes)
+		assert.Equal(t, policy.DefaultAPIUpstreamTimeout, cfg.API.VPN.Timeout)
+		assert.Equal(t, policy.DefaultAPIMaxUpstreamTimeout, cfg.API.VPN.MaxTimeout)
+		assert.Equal(t, policy.DefaultAsyncStoragePath, cfg.API.VPN.Async.StoragePath)
+		assert.Equal(t, policy.DefaultOnDemandGrace, cfg.API.VPN.Demand.Grace)
+		assert.Equal(t, policy.DefaultOnDemandSettleDelay, cfg.API.VPN.Demand.SettleDelay)
+		assert.Equal(t, policy.DefaultOnDemandIdleTTL, cfg.API.VPN.Demand.IdleTTL)
+		assert.Equal(t, policy.DefaultTunnelIDHMACKeyFile, cfg.TunnelIDHMACKeyFile)
 	})
 
 	t.Run("upstream_timeout_equal_to_max_accepted", func(t *testing.T) {
@@ -484,7 +484,7 @@ func TestLoad(t *testing.T) {
 		path := writeJSON(t, validConfigJSON("./tunnels/se.conf"))
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultAsyncStoragePath, cfg.API.VPN.Async.StoragePath)
+		assert.Equal(t, policy.DefaultAsyncStoragePath, cfg.API.VPN.Async.StoragePath)
 	})
 
 	t.Run("async_defaults_applied_when_block_present_but_fields_absent", func(t *testing.T) {
@@ -500,7 +500,7 @@ func TestLoad(t *testing.T) {
 		})
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultAsyncStoragePath, cfg.API.VPN.Async.StoragePath)
+		assert.Equal(t, policy.DefaultAsyncStoragePath, cfg.API.VPN.Async.StoragePath)
 	})
 
 	t.Run("async_valid_full_config_accepted", func(t *testing.T) {
@@ -700,11 +700,11 @@ func TestLoad(t *testing.T) {
 		path := writeJSON(t, validConfigJSON("./tunnels/se.conf"))
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultStreamingReconnectMin, cfg.VPNStream.ReconnectMin)
-		assert.Equal(t, internal.DefaultStreamingReconnectMax, cfg.VPNStream.ReconnectMax)
-		assert.Equal(t, internal.DefaultOnDemandGrace, cfg.API.VPN.Demand.Grace)
-		assert.Equal(t, internal.DefaultOnDemandSettleDelay, cfg.API.VPN.Demand.SettleDelay)
-		assert.Equal(t, internal.DefaultOnDemandIdleTTL, cfg.API.VPN.Demand.IdleTTL)
+		assert.Equal(t, policy.DefaultStreamingReconnectMin, cfg.VPNStream.ReconnectMin)
+		assert.Equal(t, policy.DefaultStreamingReconnectMax, cfg.VPNStream.ReconnectMax)
+		assert.Equal(t, policy.DefaultOnDemandGrace, cfg.API.VPN.Demand.Grace)
+		assert.Equal(t, policy.DefaultOnDemandSettleDelay, cfg.API.VPN.Demand.SettleDelay)
+		assert.Equal(t, policy.DefaultOnDemandIdleTTL, cfg.API.VPN.Demand.IdleTTL)
 	})
 
 	t.Run("streaming block with explicit values accepted", func(t *testing.T) {
@@ -987,7 +987,7 @@ func TestLoad(t *testing.T) {
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
 		assert.Equal(t, 5*time.Minute, cfg.VPNStream.ReconnectMin)
-		assert.Equal(t, internal.DefaultStreamingReconnectMax, cfg.VPNStream.ReconnectMax)
+		assert.Equal(t, policy.DefaultStreamingReconnectMax, cfg.VPNStream.ReconnectMax)
 	})
 
 	// Wave 11: exhaustive migration-probe tests. Each subtest verifies that exactly
@@ -1351,7 +1351,7 @@ func TestLoad(t *testing.T) {
 		path := writeJSON(t, validConfigJSON("./tunnels/se.conf"))
 		cfg, err := config.Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, internal.DefaultTunnelIDHMACKeyFile, cfg.TunnelIDHMACKeyFile)
+		assert.Equal(t, policy.DefaultTunnelIDHMACKeyFile, cfg.TunnelIDHMACKeyFile)
 	})
 
 	t.Run("tunnel_id_hmac_key_file_explicit_path_preserved", func(t *testing.T) {

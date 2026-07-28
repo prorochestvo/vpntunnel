@@ -8,7 +8,7 @@ package ipdeny
 import (
 	"net/netip"
 
-	"vpntunnel/internal"
+	"vpntunnel/internal/policy"
 )
 
 // DefaultDeny returns the immutable list of CIDR ranges that block outbound
@@ -18,7 +18,7 @@ import (
 // The list is deliberately non-configurable — operators MUST NOT widen it
 // via config; tightening (subnet add) requires a code change and review.
 func DefaultDeny() []netip.Prefix {
-	return internal.DenyCIDRs
+	return policy.DenyCIDRs
 }
 
 // Contains reports whether ip is covered by any prefix in the set. The caller
