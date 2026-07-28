@@ -42,10 +42,10 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 
+	"vpntunnel/internal"
 	"vpntunnel/internal/application"
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/tunnelpool"
-	"vpntunnel/internal/constants"
 	"vpntunnel/internal/gateway/httpV1/handlers"
 	"vpntunnel/internal/gateway/httpserver"
 	"vpntunnel/internal/gateway/middleware"
@@ -154,7 +154,7 @@ func run(
 	// notifier later) purely for its Close lifecycle at shutdown.
 	var notifier notify.Notifier = notify.Nop{}
 	var tgNotifier *notify.TelegramNotifier
-	if dsn := os.Getenv(constants.EnvTelegramBotDSN); dsn != "" {
+	if dsn := os.Getenv(internal.EnvTelegramBotDSN); dsn != "" {
 		// dsninjector.Parse embeds its raw input — which IS the bot token — in
 		// its error text, so a parse failure must NEVER log or format that error;
 		// it warns with a generic message only. The DataSource is built here (not

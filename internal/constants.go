@@ -1,7 +1,11 @@
-// Package constants holds cross-cutting constant values shared across the
+// Package internal holds cross-cutting constant values shared across the
 // vpntunnel binary, starting with the names of the environment variables the
 // daemon reads at startup.
-package constants
+//
+// It occupies the module's internal root, so every .go file placed directly
+// under internal/ must declare package internal too; anything that wants its
+// own package name belongs in a subdirectory.
+package internal
 
 // EnvTelegramBotDSN is the name of the environment variable carrying the
 // optional Telegram bot DSN used for tunnel-change notifications. Only this
