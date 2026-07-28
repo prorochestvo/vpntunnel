@@ -32,29 +32,10 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/application/tunnelpool"
 	"vpntunnel/internal/constants"
 	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
 )
-
-// withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the streaming supervisor. Intended for tests only.
-func withSupervisorBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.supervisorBuilder = b }
-}
-
-// withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the on-demand scheduler. Intended for tests only.
-func withSchedulerBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.schedulerBuilder = b }
-}
-
-// withShutdownCtx returns a runOpt that replaces signal.NotifyContext with the
-// caller-owned context as the shutdown trigger. Test-only seam.
-func withShutdownCtx(ctx context.Context) runOpt {
-	return func(o *runOptions) { o.shutdownCtx = ctx }
-}
 
 func TestResolveAuthToken(t *testing.T) {
 	t.Parallel()
@@ -354,7 +335,7 @@ func TestRun(t *testing.T) {
 		// run in a goroutine; collect the return value.
 		done := make(chan error, 1)
 		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
 		}()
 
 		// wait for both servers to become reachable (up to 5 s).
@@ -402,7 +383,7 @@ func TestRun(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
 		}()
 
 		// wait for the API to become reachable (proves boot + recovery completed).
@@ -446,7 +427,7 @@ func TestRun(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
 		}()
 
 		// wait until the API is up — guarantees GC goroutine has been launched.
@@ -491,7 +472,7 @@ func TestRun(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
 		}()
 
 		// API reachability proves the store opened, which proves the dir was created.
@@ -530,11 +511,10 @@ func TestRun(t *testing.T) {
 		// waitHTTPS to the same port is the negative control (TLS dial to a
 		// plain-HTTP listener must fail fast).
 		go func() {
-			done <- run(cfgPath,
+			done <- run(shutdownCtx, cfgPath,
 				tlsOptions{CertDir: "", Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
-				withSupervisorBuilder(smokeBuilder),
-				withSchedulerBuilder(smokeBuilder),
-				withShutdownCtx(shutdownCtx),
+				smokeBuilder,
+				smokeBuilder,
 			)
 		}()
 
@@ -588,11 +568,10 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		err := run(cfgPath,
+		err := run(shutdownCtx, cfgPath,
 			tlsOptions{CertDir: poisonDir, Hostname: "localhost", IPSANs: nil},
-			withSupervisorBuilder(smokeBuilder),
-			withSchedulerBuilder(smokeBuilder),
-			withShutdownCtx(shutdownCtx),
+			smokeBuilder,
+			smokeBuilder,
 		)
 		// exercises the FAIL-not-fallback contract via the wrong-perms path
 		// (apitls.ensureCertDir returns a loginjector.PublicDetailsError for non-0700 dirs).
@@ -658,8 +637,8 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		err := run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
-			withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+		err := run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
+			smokeBuilder, smokeBuilder)
 		require.Error(t, err, "expected startup error when allowed_countries matches no config")
 		assert.Contains(t, err.Error(), "streaming tunnel set",
 			"error must identify the streaming tunnel set as the failing component")
@@ -684,7 +663,7 @@ func TestRun(t *testing.T) {
 		done := make(chan error, 1)
 		stdout := captureStdout(t, func() {
 			go func() {
-				done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+				done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
 			}()
 
 			apiReady := waitHTTPS(t, "https://127.0.0.1:18900/v1/admin/health", 10*time.Second)
@@ -724,7 +703,7 @@ func TestRun(t *testing.T) {
 		done := make(chan error, 1)
 		stdout := captureStdout(t, func() {
 			go func() {
-				done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
+				done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
 			}()
 
 			apiReady := waitHTTPS(t, "https://127.0.0.1:18902/v1/admin/health", 10*time.Second)

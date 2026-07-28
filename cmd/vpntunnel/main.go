@@ -62,26 +62,6 @@ import (
 // notification (see notify.NewTelegram). It is non-secret and safe to log.
 const telegramAppTag = "#VPNTUNNEL"
 
-// runOpt is a functional option for run, used to override internals in
-// tests without altering the production code path.
-type runOpt func(*runOptions)
-
-// runOptions holds optional overrides for run. Zero value is the production
-// configuration (real WireGuard builder, no injection).
-type runOptions struct {
-	// supervisorBuilder overrides the DeviceBuilderFn for the streaming supervisor.
-	// When nil (the default), DefaultDeviceBuilder is used.
-	supervisorBuilder tunnelpool.DeviceBuilderFn
-	// schedulerBuilder overrides the DeviceBuilderFn for the on-demand scheduler.
-	// When nil (the default), DefaultDeviceBuilder is used.
-	schedulerBuilder tunnelpool.DeviceBuilderFn
-	// shutdownCtx, when non-nil, replaces signal.NotifyContext as the
-	// cancellation source. Test-only seam — production omits this to get the
-	// default signal-handling behaviour. The matching cancel func is held by
-	// the caller; run never calls it.
-	shutdownCtx context.Context
-}
-
 // tlsOptions carries the TLS settings sourced from CLI flags, parsed and
 // validated before run is called. Relative cert-dir paths are resolved
 // against the process cwd during parsing; production default is absolute.
@@ -183,7 +163,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := run(configPath, tlsOpts); err != nil {
+	// the shutdown context is owned by main so the signal handler covers the
+	// whole run, and so run takes its cancellation source as a plain parameter
+	// instead of carrying a test-only injection seam.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, configPath, tlsOpts, tunnelpool.DefaultDeviceBuilder, tunnelpool.DefaultDeviceBuilder); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -218,15 +204,19 @@ func resolveAuthToken(a config.Auth, configDir string) (string, error) {
 	return tok, nil
 }
 
-// run is the full startup / run / shutdown path. tlsOpts carries the TLS
-// settings resolved from CLI flags. opts allow tests to inject fakes (e.g. a
-// fake device builder) without altering the production path.
-func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
-	var ro runOptions
-	for _, o := range opts {
-		o(&ro)
-	}
-
+// run is the full startup / run / shutdown path. ctx is the caller-owned
+// shutdown trigger: cancelling it starts the graceful shutdown sequence.
+// tlsOpts carries the TLS settings resolved from CLI flags. streamingBuilder
+// and onDemandBuilder construct the tunnel devices for the always-on streaming
+// supervisor and the on-demand scheduler respectively; production passes
+// tunnelpool.DefaultDeviceBuilder for both, tests pass a fake.
+func run(
+	ctx context.Context,
+	configPath string,
+	tlsOpts tlsOptions,
+	streamingBuilder tunnelpool.DeviceBuilderFn,
+	onDemandBuilder tunnelpool.DeviceBuilderFn,
+) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -286,17 +276,10 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	opLog.Info("access log sanitiser configured", slog.Int("patterns", len(sanitizers)))
 	defer func() { _ = access.Close() }()
 
-	// set up the shutdown context early so that a hung startup DNS lookup is
-	// interrupted. In production, signal.NotifyContext is used; in tests a
-	// caller-owned context is injected via withShutdownCtx to avoid sending
-	// SIGTERM to the entire test process.
-	var ctx context.Context
-	var stop context.CancelFunc
-	if ro.shutdownCtx != nil {
-		ctx, stop = context.WithCancel(ro.shutdownCtx)
-	} else {
-		ctx, stop = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	}
+	// derive a cancellable child of the caller's shutdown context so the deferred
+	// stop bounds a hung startup (e.g. a stalled DNS lookup) and releases every
+	// goroutine started below on all return paths, not only the shutdown one.
+	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
 	configDir := filepath.Dir(configPath)
@@ -351,7 +334,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// build the streaming supervisor (always-on role).
 	supervisor := tunnelpool.NewStreamingSupervisor(tunnelpool.SupervisorOptions{
 		Eligible:        streamingSet,
-		DeviceBuilder:   ro.supervisorBuilder,
+		DeviceBuilder:   streamingBuilder,
 		HandshakeMaxAge: tunnelpool.DefaultHandshakeMaxAge,
 		ReconnectMin:    cfg.VPNStream.ReconnectMin,
 		ReconnectMax:    cfg.VPNStream.ReconnectMax,
@@ -372,7 +355,7 @@ func run(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// build the on-demand scheduler.
 	scheduler := tunnelpool.NewOnDemandScheduler(tunnelpool.SchedulerOptions{
 		Eligible:      fullSet,
-		DeviceBuilder: ro.schedulerBuilder,
+		DeviceBuilder: onDemandBuilder,
 		SettleDelay:   cfg.API.VPN.Demand.SettleDelay,
 		Grace:         cfg.API.VPN.Demand.Grace,
 		IdleTTL:       cfg.API.VPN.Demand.IdleTTL,
