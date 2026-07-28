@@ -77,6 +77,23 @@ func main() {
 	}
 }
 
+const (
+	modeManual = "1"
+	modeZip    = "2"
+
+	// zipMaxEntries is the maximum number of .conf entries accepted from a zip.
+	// sized to admit a full Mullvad all-servers download (~700 today) with
+	// headroom, while still bounding a malicious zip's entry count.
+	zipMaxEntries = 2048
+	// zipMaxEntryBytes is the maximum decompressed size per .conf entry.
+	// Mullvad confs are well under 1 KB; 8 KB is generous headroom.
+	zipMaxEntryBytes = 8 * 1024
+)
+
+// safeNameRe is the regexp that conf names must match: alphanumeric, dot,
+// underscore, and hyphen only. No slashes, no leading dot.
+var safeNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // runConfig holds injected dependencies for run, making it testable without a
 // real terminal.
 type runConfig struct {
@@ -90,6 +107,21 @@ type runConfig struct {
 	// isTTY reports whether the current stdin is an interactive terminal.
 	// injected at construction so tests bypass the real fd check.
 	isTTY func() bool
+}
+
+// zipConf is a single .conf entry extracted in memory from a zip archive.
+type zipConf struct {
+	// name is the sanitized basename of the entry without the .conf extension.
+	name string
+	// body is the full decompressed content of the .conf file.
+	body string
+}
+
+// preparedConf is a zip entry resolved to its final on-disk name and body,
+// ready to write. body already carries the correct [Interface] private key.
+type preparedConf struct {
+	name string
+	body string
 }
 
 // run is the testable entry point. It generates a WireGuard keypair, prints
@@ -237,23 +269,6 @@ func runZipMode(cfg runConfig, key wgtypes.Key, pub wgtypes.Key, sc *bufio.Scann
 
 	return nil
 }
-
-const (
-	modeManual = "1"
-	modeZip    = "2"
-
-	// zipMaxEntries is the maximum number of .conf entries accepted from a zip.
-	// sized to admit a full Mullvad all-servers download (~700 today) with
-	// headroom, while still bounding a malicious zip's entry count.
-	zipMaxEntries = 2048
-	// zipMaxEntryBytes is the maximum decompressed size per .conf entry.
-	// Mullvad confs are well under 1 KB; 8 KB is generous headroom.
-	zipMaxEntryBytes = 8 * 1024
-)
-
-// safeNameRe is the regexp that conf names must match: alphanumeric, dot,
-// underscore, and hyphen only. No slashes, no leading dot.
-var safeNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // applyPrefix returns name with prefix prepended and a single '-' separator,
 // e.g. applyPrefix("mullvad", "al-tia-wg-001") == "mullvad-al-tia-wg-001". An
@@ -547,14 +562,6 @@ func writeAtomicConf(dir, finalPath, body string) error {
 	return nil
 }
 
-// zipConf is a single .conf entry extracted in memory from a zip archive.
-type zipConf struct {
-	// name is the sanitized basename of the entry without the .conf extension.
-	name string
-	// body is the full decompressed content of the .conf file.
-	body string
-}
-
 // promptMode writes the assembly-mode menu to out and reads from sc until the
 // user supplies "1", "2", or empty (which defaults to "1"). It re-prompts on
 // invalid input and returns an error on EOF.
@@ -773,13 +780,6 @@ func ingestZip(cfg runConfig, key wgtypes.Key, zipPath string) ([]string, error)
 
 	checkAddressConsistency(cfg.out, parsedCfgs)
 	return names, nil
-}
-
-// preparedConf is a zip entry resolved to its final on-disk name and body,
-// ready to write. body already carries the correct [Interface] private key.
-type preparedConf struct {
-	name string
-	body string
 }
 
 // prepareEntries resolves every zip entry to its final name and body without
