@@ -125,69 +125,119 @@ func TestResolveAuthToken(t *testing.T) {
 	})
 }
 
-func TestParseTLSOptions(t *testing.T) {
+func TestResolveCertDir(t *testing.T) {
 	t.Parallel()
-
-	t.Run("empty hostname rejected", func(t *testing.T) {
-		t.Parallel()
-		_, err := parseTLSOptions("/tmp/tls", "", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "-tls-hostname")
-	})
 
 	t.Run("relative cert dir resolves against cwd", func(t *testing.T) {
 		t.Parallel()
 		cwd, err := os.Getwd()
 		require.NoError(t, err)
-		opts, err := parseTLSOptions("reltls", "localhost", "")
+		got, err := resolveCertDir("reltls")
 		require.NoError(t, err)
-		assert.Equal(t, filepath.Join(cwd, "reltls"), opts.CertDir)
+		assert.Equal(t, filepath.Join(cwd, "reltls"), got)
 	})
 
 	t.Run("absolute cert dir passed through unchanged", func(t *testing.T) {
 		t.Parallel()
-		opts, err := parseTLSOptions("/opt/vpntunnel/tls/", "localhost", "")
+		got, err := resolveCertDir("/opt/vpntunnel/tls/")
 		require.NoError(t, err)
-		assert.Equal(t, "/opt/vpntunnel/tls/", opts.CertDir)
+		assert.Equal(t, "/opt/vpntunnel/tls/", got)
 	})
+
+	t.Run("empty cert dir stays empty", func(t *testing.T) {
+		t.Parallel()
+		// regression guard: filepath.Abs("") returns the cwd, which would
+		// silently re-enable HTTPS against an unintended directory.
+		got, err := resolveCertDir("")
+		require.NoError(t, err)
+		assert.Equal(t, "", got, "empty cert dir must stay empty (not resolved to cwd)")
+	})
+}
+
+func TestParseIPSANs(t *testing.T) {
+	t.Parallel()
 
 	t.Run("comma-separated ip sans parsed", func(t *testing.T) {
 		t.Parallel()
-		opts, err := parseTLSOptions("/tmp/tls", "localhost", "127.0.0.1,::1")
+		got, err := parseIPSANs("127.0.0.1,::1")
 		require.NoError(t, err)
-		assert.Len(t, opts.IPSANs, 2)
+		assert.Len(t, got, 2)
 	})
 
 	t.Run("invalid ip rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := parseTLSOptions("/tmp/tls", "localhost", "127.0.0.1,not-an-ip")
+		_, err := parseIPSANs("127.0.0.1,not-an-ip")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not-an-ip")
 	})
 
 	t.Run("empty ip-sans yields none", func(t *testing.T) {
 		t.Parallel()
-		opts, err := parseTLSOptions("/tmp/tls", "localhost", "")
+		got, err := parseIPSANs("")
 		require.NoError(t, err)
-		assert.Len(t, opts.IPSANs, 0)
+		assert.Len(t, got, 0)
 	})
 
 	t.Run("trailing comma tolerated", func(t *testing.T) {
 		t.Parallel()
-		opts, err := parseTLSOptions("/tmp/tls", "localhost", "127.0.0.1,")
+		got, err := parseIPSANs("127.0.0.1,")
 		require.NoError(t, err)
-		assert.Len(t, opts.IPSANs, 1)
+		assert.Len(t, got, 1)
+	})
+}
+
+func TestLoadAPICert(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty hostname rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := loadAPICert("/tmp/tls", "", "", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "-tls-hostname")
 	})
 
-	t.Run("empty cert dir yields HTTP-mode tlsOptions", func(t *testing.T) {
+	t.Run("invalid ip san rejected before any disk access", func(t *testing.T) {
 		t.Parallel()
-		// regression guard: filepath.Abs("") returns the cwd, which would
-		// silently re-enable HTTPS. The empty branch must preserve CertDir as "".
-		got, err := parseTLSOptions("", "localhost", "127.0.0.1")
+		// the SAN list is validated in both modes, so a typo is reported even
+		// when no certificate is minted.
+		_, err := loadAPICert("", "localhost", "not-an-ip", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-an-ip")
+	})
+
+	t.Run("empty cert dir yields no certificate", func(t *testing.T) {
+		t.Parallel()
+		// nil is the one and only spelling of plain-HTTP mode.
+		cert, err := loadAPICert("", "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
 		require.NoError(t, err)
-		assert.Equal(t, "", got.CertDir, "CertDir must stay empty (not resolved to cwd)")
-		assert.Equal(t, "localhost", got.Hostname)
-		assert.Len(t, got.IPSANs, 1)
+		assert.Nil(t, cert, "empty cert dir must yield no certificate (HTTP mode)")
+	})
+
+	t.Run("unloadable cert dir returns an error", func(t *testing.T) {
+		t.Parallel()
+		// exercises the FAIL-not-fallback contract via the wrong-perms path:
+		// apitls.ensureCertDir rejects a cert dir whose permissions are not 0700
+		// with a loginjector.PublicDetailsError (apitls.go:121).
+		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
+		poisonDir := filepath.Join(t.TempDir(), "badtls")
+		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
+		require.NoError(t, os.Chmod(poisonDir, 0o777))
+
+		cert, err := loadAPICert(poisonDir, "localhost", "", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Nil(t, cert)
+		assert.Contains(t, err.Error(), "load tls cert")
+	})
+
+	t.Run("fresh cert dir yields a usable certificate", func(t *testing.T) {
+		t.Parallel()
+		certDir := filepath.Join(t.TempDir(), "tls")
+		require.NoError(t, os.MkdirAll(certDir, 0o700))
+
+		cert, err := loadAPICert(certDir, "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
+		require.NoError(t, err)
+		require.NotNil(t, cert)
+		assert.NotEmpty(t, cert.Certificate)
 	})
 }
 
@@ -293,7 +343,7 @@ func TestRun(t *testing.T) {
 
 		// write a v6 fixture proxy.json. Tunnels are auto-discovered from
 		// <configDir>/tunnels/ so no "configs" field is needed. TLS settings
-		// travel via tlsOptions (CLI flags), not the JSON config.
+		// travel as CLI flags, not the JSON config.
 		// vpnstream.auth is omitted (proxy auth disabled); api.auth holds the
 		// two API role tokens.
 		asyncDBPath := filepath.Join(dir, "async.db")
@@ -332,10 +382,12 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
 		// run in a goroutine; collect the return value.
 		done := make(chan error, 1)
 		go func() {
-			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 		}()
 
 		// wait for both servers to become reachable (up to 5 s).
@@ -381,9 +433,11 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
 		done := make(chan error, 1)
 		go func() {
-			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 		}()
 
 		// wait for the API to become reachable (proves boot + recovery completed).
@@ -425,9 +479,11 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
 		done := make(chan error, 1)
 		go func() {
-			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 		}()
 
 		// wait until the API is up — guarantees GC goroutine has been launched.
@@ -470,9 +526,11 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
 		done := make(chan error, 1)
 		go func() {
-			done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 		}()
 
 		// API reachability proves the store opened, which proves the dir was created.
@@ -505,17 +563,16 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		// an empty cert dir is the HTTP-mode trigger: loadAPICert skips
+		// apitls.LoadOrGenerate, emits the no-TLS WARN, and hands run a nil
+		// certificate. waitHTTPS to the same port is the negative control (TLS
+		// dial to a plain-HTTP listener must fail fast).
+		cfg, cert, opLog := bootFixture(t, cfgPath, "")
+		require.Nil(t, cert, "empty cert dir must select plain-HTTP mode")
+
 		done := make(chan error, 1)
-		// pass an empty CertDir — this is the HTTP-mode trigger. run
-		// skips apitls.LoadOrGenerate and emits the no-TLS WARN instead.
-		// waitHTTPS to the same port is the negative control (TLS dial to a
-		// plain-HTTP listener must fail fast).
 		go func() {
-			done <- run(shutdownCtx, cfgPath,
-				tlsOptions{CertDir: "", Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
-				smokeBuilder,
-				smokeBuilder,
-			)
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 		}()
 
 		// plain-HTTP reachability proves the API is running in HTTP mode.
@@ -539,47 +596,10 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("https mode with unloadable cert dir fails startup", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17798 / 18898 but returns
-		// before any listener starts (startup fails at the cert-load step).
-		// Port choice: next available pair after the HTTP-mode smoke above.
-
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "proxy.json")
-		// the fixture config must be otherwise valid so the pre-cert startup
-		// steps succeed (access log, async store, recovery) and the cert-load
-		// branch is reached. Poison only tlsOptions.CertDir via wrong perms.
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr: "127.0.0.1:17798",
-			apiAddr:   "127.0.0.1:18898",
-		})
-
-		// create a dir with wrong permissions (0777 instead of 0700).
-		// apitls.ensureCertDir rejects dirs whose permissions are not 0700,
-		// giving a deterministic FAIL via a loginjector.PublicDetailsError (apitls.go:121).
-		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
-		// NOTE: do NOT call parseTLSOptions — we inject the tlsOptions directly
-		// to exercise the Wave 3 cert-load branch inside run in isolation.
-		// parseTLSOptions is only invoked from parseFlags (via main) to parse CLI flags.
-		poisonDir := filepath.Join(t.TempDir(), "badtls")
-		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
-		require.NoError(t, os.Chmod(poisonDir, 0o777))
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		err := run(shutdownCtx, cfgPath,
-			tlsOptions{CertDir: poisonDir, Hostname: "localhost", IPSANs: nil},
-			smokeBuilder,
-			smokeBuilder,
-		)
-		// exercises the FAIL-not-fallback contract via the wrong-perms path
-		// (apitls.ensureCertDir returns a loginjector.PublicDetailsError for non-0700 dirs).
-		// the existing-but-unparseable-cert FAIL variant is gated on a sibling
-		// apitls change and is not asserted here.
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "load tls cert")
-	})
+	// the former "https mode with unloadable cert dir fails startup" subtest now
+	// lives in TestLoadAPICert/"unloadable cert dir returns an error": run no
+	// longer loads the certificate, so the wrong-perms FAIL-not-fallback
+	// contract is asserted at the cert-load step instead of end to end.
 
 	t.Run("startup fails when allowed_countries matches no discovered config", func(t *testing.T) {
 		// no port binding — run returns before any listener starts.
@@ -637,8 +657,9 @@ func TestRun(t *testing.T) {
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		err := run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
-			smokeBuilder, smokeBuilder)
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+		err := run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 		require.Error(t, err, "expected startup error when allowed_countries matches no config")
 		assert.Contains(t, err.Error(), "streaming tunnel set",
 			"error must identify the streaming tunnel set as the failing component")
@@ -662,8 +683,13 @@ func TestRun(t *testing.T) {
 
 		done := make(chan error, 1)
 		stdout := captureStdout(t, func() {
+			// built inside the captured region: newOperationalLogger binds
+			// os.Stdout at construction, so a logger built before the swap would
+			// write past the pipe and make the assertion below vacuous.
+			cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
 			go func() {
-				done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
+				done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 			}()
 
 			apiReady := waitHTTPS(t, "https://127.0.0.1:18900/v1/admin/health", 10*time.Second)
@@ -702,8 +728,12 @@ func TestRun(t *testing.T) {
 
 		done := make(chan error, 1)
 		stdout := captureStdout(t, func() {
+			// see the sibling subtest: the logger must be constructed after
+			// captureStdout has swapped os.Stdout.
+			cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
 			go func() {
-				done <- run(shutdownCtx, cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, smokeBuilder, smokeBuilder)
+				done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
 			}()
 
 			apiReady := waitHTTPS(t, "https://127.0.0.1:18902/v1/admin/health", 10*time.Second)
@@ -734,9 +764,33 @@ type fixtureConfig struct {
 	asyncDBPath string
 	// certDir is the directory where apitls.LoadOrGenerate will store/generate
 	// the TLS cert. When empty, writeFixtureConfig derives it as
-	// filepath.Join(dir, "tls"). The caller must pass the same path as
-	// tlsOptions.CertDir to run so the on-disk dir and the flag agree.
+	// filepath.Join(dir, "tls"). The caller must pass the same path to
+	// bootFixture so the on-disk dir and the flag-equivalent argument agree.
 	certDir string
+}
+
+// bootFixture builds the three objects bootstrap builds in production — the
+// loaded config, the API certificate, and the operational logger — from a
+// fixture config path, so TestRun exercises run with production-shaped inputs.
+// An empty certDir selects plain-HTTP mode and yields a nil certificate.
+//
+// Call it from wherever the log output must go: newOperationalLogger binds
+// os.Stdout at construction, so a subtest using captureStdout has to call this
+// inside the captured region.
+func bootFixture(tb testing.TB, cfgPath, certDir string) (config.Config, *tls.Certificate, *slog.Logger) {
+	tb.Helper()
+	cfg, err := config.Load(cfgPath)
+	require.NoError(tb, err, "load fixture config")
+	opLog := newOperationalLogger(cfg.Operational)
+	cert, err := loadAPICert(certDir, "localhost", "127.0.0.1", cfg.API.Listen, opLog)
+	require.NoError(tb, err, "load fixture api certificate")
+	return cfg, cert, opLog
+}
+
+// discardLogger returns a logger that writes nowhere. The TLS helper tests
+// assert on returned values, not on log output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // writeFixtureConfig writes a proxy.json at cfgPath suitable for running
@@ -746,8 +800,8 @@ type fixtureConfig struct {
 //
 // The cert dir is derived from cfg.certDir; when empty it defaults to
 // filepath.Join(dir, "tls"). The caller must pass the same cert-dir path as
-// tlsOptions.CertDir to run — writeFixtureConfig no longer embeds TLS
-// settings in the JSON; they travel as CLI-flag-equivalent tlsOptions.
+// cert-dir path to bootFixture — writeFixtureConfig does not embed TLS
+// settings in the JSON; they travel as CLI flags.
 func writeFixtureConfig(tb testing.TB, cfgPath string, cfg fixtureConfig) {
 	tb.Helper()
 	dir := filepath.Dir(cfgPath)
@@ -794,7 +848,7 @@ func writeFixtureConfig(tb testing.TB, cfgPath string, cfg fixtureConfig) {
 	// v6 config shape: vpnstream block for proxy listener settings; api.vpn
 	// for on-demand VPN knobs; api.auth for the two API role tokens.
 	// Tunnels are auto-discovered from <configDir>/tunnels/; TLS settings
-	// travel via tlsOptions (CLI flags), not the JSON config.
+	// travel as CLI flags, not the JSON config.
 	cfgJSON := fmt.Sprintf(`{
   "vpnstream": {
     "listen": %q,

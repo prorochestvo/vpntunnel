@@ -62,75 +62,16 @@ import (
 // notification (see notify.NewTelegram). It is non-secret and safe to log.
 const telegramAppTag = "#VPNTUNNEL"
 
-// tlsOptions carries the TLS settings sourced from CLI flags, parsed and
-// validated before run is called. Relative cert-dir paths are resolved
-// against the process cwd during parsing; production default is absolute.
-type tlsOptions struct {
-	// CertDir is the directory holding the API TLS cert/key. Always absolute.
-	CertDir string
-	// Hostname is the TLS server name embedded in the certificate.
-	Hostname string
-	// IPSANs is the optional list of IP Subject Alternative Names.
-	IPSANs []net.IP
-}
-
-// parseTLSOptions validates and resolves the raw CLI flag values into a
-// tlsOptions ready for use. An empty certDir is the HTTP-mode trigger: it is
-// preserved as-is (not resolved via filepath.Abs, which would return the cwd
-// and silently re-enable HTTPS). A non-empty relative CertDir is resolved
-// against the process cwd via filepath.Abs. Returns a descriptive error for
-// any invalid input.
-func parseTLSOptions(certDir, hostname, ipSANsRaw string) (tlsOptions, error) {
-	if hostname == "" {
-		return tlsOptions{}, errors.New("-tls-hostname: must not be empty")
-	}
-
-	// parse IP SANs once; both the HTTP-mode early return and the HTTPS path use
-	// the same result.
-	var ipSANs []net.IP
-	for _, raw := range strings.Split(ipSANsRaw, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		ip := net.ParseIP(raw)
-		if ip == nil {
-			return tlsOptions{}, fmt.Errorf("-tls-ip-sans: %q is not a valid IP address", raw)
-		}
-		ipSANs = append(ipSANs, ip)
-	}
-
-	if certDir == "" {
-		// empty cert dir is the HTTP-mode trigger: leave CertDir empty (do NOT
-		// resolve it to an absolute path, which would yield the cwd and silently
-		// re-enable HTTPS). Hostname stays required but its only use is the cert
-		// SAN, so it is harmless when no cert is generated.
-		return tlsOptions{CertDir: "", Hostname: hostname, IPSANs: ipSANs}, nil
-	}
-
-	resolvedDir := certDir
-	if !filepath.IsAbs(certDir) {
-		abs, err := filepath.Abs(certDir)
-		if err != nil {
-			return tlsOptions{}, fmt.Errorf("-tls-cert-dir: resolve %q: %w", certDir, err)
-		}
-		resolvedDir = abs
-	}
-
-	return tlsOptions{
-		CertDir:  resolvedDir,
-		Hostname: hostname,
-		IPSANs:   ipSANs,
-	}, nil
-}
-
-// parseFlags defines and parses the process CLI flags, resolving the config
-// path to an absolute path (so configDir, tunnelsDir, and every operator-facing
-// error message are cwd-independent) and validating the TLS settings into a
-// tlsOptions. It is called only from main: keeping flag.Parse out of init lets
-// this package's tests run without flag.Parse hitting the -test.* flags and
-// aborting the process.
-func parseFlags() (configPath string, tlsOpts tlsOptions, err error) {
+// bootstrap parses the process CLI flags and turns them into the finished
+// startup objects run needs: the validated configuration, the API TLS
+// certificate (nil in plain-HTTP mode), and the operational logger. The order
+// is forced — the logger is built from cfg.Operational, and the TLS
+// load/generate step logs through it — so config load, logger construction and
+// cert load all happen here rather than inside run.
+//
+// It calls flag.Parse, so it is only ever called from main, never from a test:
+// flag.Parse in a test process hits the -test.* flags and aborts.
+func bootstrap() (config.Config, *tls.Certificate, *slog.Logger, error) {
 	var (
 		rawConfigPath string
 		tlsCertDir    string
@@ -143,92 +84,69 @@ func parseFlags() (configPath string, tlsOpts tlsOptions, err error) {
 	flag.StringVar(&tlsIPSANsRaw, "tls-ip-sans", "", "comma-separated list of IP Subject Alternative Names")
 	flag.Parse()
 
-	configPath, err = filepath.Abs(rawConfigPath)
+	// resolve the config path so cfg.Dir, tunnelsDir, and every operator-facing
+	// error message are cwd-independent.
+	configPath, err := filepath.Abs(rawConfigPath)
 	if err != nil {
-		return "", tlsOptions{}, fmt.Errorf("resolve config path %q: %w", rawConfigPath, err)
+		return config.Config{}, nil, nil, fmt.Errorf("resolve config path %q: %w", rawConfigPath, err)
 	}
 
-	tlsOpts, err = parseTLSOptions(tlsCertDir, tlsHostname, tlsIPSANsRaw)
+	certDir, err := resolveCertDir(tlsCertDir)
 	if err != nil {
-		return "", tlsOptions{}, err
+		return config.Config{}, nil, nil, err
 	}
 
-	return configPath, tlsOpts, nil
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return config.Config{}, nil, nil, fmt.Errorf("load config: %w", err)
+	}
+
+	opLog := newOperationalLogger(cfg.Operational)
+
+	cert, err := loadAPICert(certDir, tlsHostname, tlsIPSANsRaw, cfg.API.Listen, opLog)
+	if err != nil {
+		return config.Config{}, nil, nil, err
+	}
+
+	return cfg, cert, opLog, nil
 }
 
 func main() {
-	configPath, tlsOpts, err := parseFlags()
+	cfg, cert, opLog, err := bootstrap()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	// the shutdown context is owned by main so the signal handler covers the
-	// whole run, and so run takes its cancellation source as a plain parameter
-	// instead of carrying a test-only injection seam.
+	// the signal handler is installed only after bootstrap's blocking startup
+	// I/O (config read, cert load/generate) has finished. Until a handler
+	// exists SIGINT/SIGTERM keeps its default action and kills the process
+	// immediately; installing it earlier would capture the signal into a
+	// context nothing is watching yet, leaving startup uninterruptible.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, configPath, tlsOpts, tunnelpool.DefaultDeviceBuilder, tunnelpool.DefaultDeviceBuilder); err != nil {
+	if err := run(ctx, cfg, cert, opLog, tunnelpool.DefaultDeviceBuilder, tunnelpool.DefaultDeviceBuilder); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-// resolveAuthToken returns the Bearer token to enforce. An empty string means
-// auth is disabled. When a.TokenFile is set, the file is read and its contents
-// are trimmed of surrounding whitespace; relative paths are resolved against
-// configDir. The token value is never returned in any error message.
-//
-// Precondition: not both Token and TokenFile are non-empty (enforced by config
-// validation). If that precondition is violated, Token takes precedence.
-func resolveAuthToken(a config.Auth, configDir string) (string, error) {
-	if a.Token != "" {
-		return strings.TrimSpace(a.Token), nil
-	}
-	if a.TokenFile == "" {
-		return "", nil
-	}
-	path := a.TokenFile
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(configDir, path)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read auth.token_file %s: %w", path, err)
-	}
-	tok := strings.TrimSpace(string(raw))
-	if tok == "" {
-		return "", fmt.Errorf("auth.token_file %s: token is empty after trim", path)
-	}
-	return tok, nil
-}
-
 // run is the full startup / run / shutdown path. ctx is the caller-owned
-// shutdown trigger: cancelling it starts the graceful shutdown sequence.
-// tlsOpts carries the TLS settings resolved from CLI flags. streamingBuilder
-// and onDemandBuilder construct the tunnel devices for the always-on streaming
-// supervisor and the on-demand scheduler respectively; production passes
+// shutdown trigger: cancelling it starts the graceful shutdown sequence. cfg,
+// cert and opLog are the finished objects bootstrap produced; a nil cert means
+// the API listener serves plain HTTP. streamingBuilder and onDemandBuilder
+// construct the tunnel devices for the always-on streaming supervisor and the
+// on-demand scheduler respectively; production passes
 // tunnelpool.DefaultDeviceBuilder for both, tests pass a fake.
 func run(
 	ctx context.Context,
-	configPath string,
-	tlsOpts tlsOptions,
+	cfg config.Config,
+	cert *tls.Certificate,
+	opLog *slog.Logger,
 	streamingBuilder tunnelpool.DeviceBuilderFn,
 	onDemandBuilder tunnelpool.DeviceBuilderFn,
 ) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	// wrap the base slog handler with a scrub handler that redacts host:port
-	// patterns from all operational log messages and attributes.
-	baseOpLog := observability.NewOperationalLogger(cfg.Operational)
-	scrubbed := observability.NewScrubHandler(baseOpLog.Handler())
-	opLog := slog.New(scrubbed)
-	opLog.Info("operational log scrubbing active", slog.String("strategy", "host-port-redact"))
-
 	// build the Telegram tunnel-change notifier from the environment. Absent or
 	// malformed input both leave the proxy running: a bad DSN is auxiliary
 	// telemetry misconfiguration, never a reason to crash-loop the actual
@@ -282,7 +200,7 @@ func run(
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	configDir := filepath.Dir(configPath)
+	configDir := cfg.Dir
 
 	// discover all *.conf files in <configDir>/tunnels/. Discovery never parses
 	// file contents — it returns a sorted list of absolute paths.
@@ -329,6 +247,15 @@ func run(
 	// deposited, not just the ones currently enabled by allowed_countries.
 	if err := tunnelpool.VerifySingleKey(discovered, configDir, opLog); err != nil {
 		return fmt.Errorf("single-key guard: %w", err)
+	}
+
+	// a signal delivered while the startup I/O above was running cancelled ctx
+	// before anything was watching it. Check once here, before the first
+	// goroutine and listener, so startup aborts instead of building the whole
+	// daemon only to tear it straight back down.
+	if ctx.Err() != nil {
+		opLog.Info("shutdown signal received during startup; aborting before any listener starts")
+		return nil
 	}
 
 	// build the streaming supervisor (always-on role).
@@ -456,23 +383,6 @@ func run(
 	}
 	// log token count (never values, never individual lengths beyond the count).
 	opLog.Info("api tokens loaded", slog.Int("token_count", middleware.TokenRoleCount))
-
-	var cert *tls.Certificate
-	if tlsOpts.CertDir == "" {
-		opLog.Warn("API running WITHOUT TLS — bearer tokens are sent in plaintext; intended for loopback/dev only",
-			slog.String("api_listen", cfg.API.Listen),
-		)
-	} else {
-		c, fp, err := apitls.LoadOrGenerate(tlsOpts.CertDir, tlsOpts.Hostname, tlsOpts.IPSANs, opLog)
-		if err != nil {
-			return fmt.Errorf("load tls cert: %w", err)
-		}
-		cert = c
-		opLog.Info("API TLS enabled",
-			slog.String("cert_dir", tlsOpts.CertDir),
-			slog.String("sha256_fingerprint", fp),
-		)
-	}
 
 	// svc is constructed before apiSrv (reordered from the historical layout)
 	// so the rotateAdapter below can close over it: apiSrv's Options
@@ -609,4 +519,118 @@ func run(
 	}
 	opLog.Info("shutdown complete")
 	return nil
+}
+
+// loadAPICert returns the API TLS certificate, or (nil, nil) when certDir is
+// empty — the plain-HTTP mode trigger. hostname is the server name embedded in
+// the certificate and is required in both modes; ipSANsRaw is the raw
+// comma-separated -tls-ip-sans flag value, validated in both modes so a typo is
+// reported even when no certificate is minted. apiListen is used only as an
+// attribute on the no-TLS warning.
+//
+// The only certificate facts logged are the cert dir and the SHA256
+// fingerprint; key material never reaches a log line.
+func loadAPICert(certDir, hostname, ipSANsRaw, apiListen string, opLog *slog.Logger) (*tls.Certificate, error) {
+	if hostname == "" {
+		return nil, errors.New("-tls-hostname: must not be empty")
+	}
+
+	ipSANs, err := parseIPSANs(ipSANsRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	if certDir == "" {
+		opLog.Warn("API running WITHOUT TLS — bearer tokens are sent in plaintext; intended for loopback/dev only",
+			slog.String("api_listen", apiListen),
+		)
+		return nil, nil
+	}
+
+	cert, fp, err := apitls.LoadOrGenerate(certDir, hostname, ipSANs, opLog)
+	if err != nil {
+		return nil, fmt.Errorf("load tls cert: %w", err)
+	}
+	opLog.Info("API TLS enabled",
+		slog.String("cert_dir", certDir),
+		slog.String("sha256_fingerprint", fp),
+	)
+	return cert, nil
+}
+
+// newOperationalLogger builds the operational logger wrapped in the scrub
+// handler that redacts host:port patterns from every message and attribute. It
+// is a named function rather than three inline lines so production and tests
+// construct identically-configured loggers.
+//
+// The underlying handler binds os.Stdout at construction time: a caller that
+// redirects os.Stdout must do so before calling this.
+func newOperationalLogger(cfg config.Operational) *slog.Logger {
+	base := observability.NewOperationalLogger(cfg)
+	opLog := slog.New(observability.NewScrubHandler(base.Handler()))
+	opLog.Info("operational log scrubbing active", slog.String("strategy", "host-port-redact"))
+	return opLog
+}
+
+// parseIPSANs parses the comma-separated -tls-ip-sans flag value into IP
+// Subject Alternative Names. Blank entries (including the one a trailing comma
+// produces) are skipped; an unparseable entry is an error naming the offending
+// value.
+func parseIPSANs(raw string) ([]net.IP, error) {
+	var ipSANs []net.IP
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		ip := net.ParseIP(entry)
+		if ip == nil {
+			return nil, fmt.Errorf("-tls-ip-sans: %q is not a valid IP address", entry)
+		}
+		ipSANs = append(ipSANs, ip)
+	}
+	return ipSANs, nil
+}
+
+// resolveAuthToken returns the Bearer token to enforce. An empty string means
+// auth is disabled. When a.TokenFile is set, the file is read and its contents
+// are trimmed of surrounding whitespace; relative paths are resolved against
+// configDir. The token value is never returned in any error message.
+//
+// Precondition: not both Token and TokenFile are non-empty (enforced by config
+// validation). If that precondition is violated, Token takes precedence.
+func resolveAuthToken(a config.Auth, configDir string) (string, error) {
+	if a.Token != "" {
+		return strings.TrimSpace(a.Token), nil
+	}
+	if a.TokenFile == "" {
+		return "", nil
+	}
+	path := a.TokenFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(configDir, path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read auth.token_file %s: %w", path, err)
+	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
+		return "", fmt.Errorf("auth.token_file %s: token is empty after trim", path)
+	}
+	return tok, nil
+}
+
+// resolveCertDir returns certDir as an absolute path. An empty certDir is the
+// plain-HTTP mode trigger and is preserved as-is: filepath.Abs("") returns the
+// cwd, which would silently re-enable HTTPS against an unintended directory.
+func resolveCertDir(certDir string) (string, error) {
+	if certDir == "" || filepath.IsAbs(certDir) {
+		return certDir, nil
+	}
+	abs, err := filepath.Abs(certDir)
+	if err != nil {
+		return "", fmt.Errorf("-tls-cert-dir: resolve %q: %w", certDir, err)
+	}
+	return abs, nil
 }

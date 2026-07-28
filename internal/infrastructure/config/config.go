@@ -67,7 +67,9 @@ const (
 )
 
 // Load reads the JSON config at path, applies defaults, and validates the result.
-// It returns a loginjector.PublicDetailsError for fields the operator must correct, or a
+// The returned Config carries Dir, the absolute directory of path, so consumers
+// need no second copy of the config path. It returns a
+// loginjector.PublicDetailsError for fields the operator must correct, or a
 // plain wrapped error for I/O and JSON failures.
 func Load(path string) (Config, error) {
 	return LoadWithLogger(path, slog.Default())
@@ -232,6 +234,15 @@ func LoadWithLogger(path string, logger *slog.Logger) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+
+	// derive Dir from the absolute config path so consumers anchor relative
+	// paths cwd-independently, whatever path the caller passed in.
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve config path %s: %w", path, err)
+	}
+	cfg.Dir = filepath.Dir(absPath)
+
 	cfg.applyDefaults()
 
 	if err := cfg.validate(logger); err != nil {
@@ -260,6 +271,11 @@ type Config struct {
 	// the derived hex id is non-secret and may appear in logs and API responses.
 	// Default: DefaultTunnelIDHMACKeyFile.
 	TunnelIDHMACKeyFile string
+	// Dir is the absolute directory holding the config file this Config was
+	// loaded from. It is derived by Load, never an operator-supplied JSON key,
+	// and is the anchor consumers resolve every relative config-tree path
+	// against (tunnels/, the HMAC key file, the auth token files).
+	Dir string
 }
 
 // VPNStream configures the forward-HTTP/CONNECT proxy listener and its upstream WireGuard
