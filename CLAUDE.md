@@ -81,7 +81,10 @@ Proxy-egress config lives under `vpnstream`; on-demand VPN proxy config lives un
 `api.vpn`. TLS settings are CLI flags, not part of `proxy.json`. Tunnels are
 auto-discovered from `<configDir>/tunnels/`.
 
-The full config shape (every key + default) is the `raw*` struct set in `internal/config/config.go`, mirrored by the committed `configs/proxy.json`. Only the non-obvious semantics are documented below.
+The full config shape (every key) is the `raw*` struct set in
+`internal/infrastructure/config/config.go`, mirrored by the committed `configs/proxy.json`;
+the value applied when a key is absent is the matching `Default*` constant in
+`internal/defaults.go`. Only the non-obvious semantics are documented below.
 
 `tunnel_id_hmac_key_file` — optional top-level field (default `./auth/tunnel-id.key`), resolved
 relative to the config directory by the binary. Points to a 0600 file holding 64 random bytes.

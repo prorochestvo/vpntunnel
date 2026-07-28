@@ -5,7 +5,11 @@
 // daemon.
 package ipdeny
 
-import "net/netip"
+import (
+	"net/netip"
+
+	"vpntunnel/internal"
+)
 
 // DefaultDeny returns the immutable list of CIDR ranges that block outbound
 // proxy dials. The returned slice MUST NOT be modified; it is shared across
@@ -14,7 +18,7 @@ import "net/netip"
 // The list is deliberately non-configurable — operators MUST NOT widen it
 // via config; tightening (subnet add) requires a code change and review.
 func DefaultDeny() []netip.Prefix {
-	return defaultDeny
+	return internal.DenyCIDRs
 }
 
 // Contains reports whether ip is covered by any prefix in the set. The caller
@@ -28,17 +32,4 @@ func Contains(prefixes []netip.Prefix, ip netip.Addr) bool {
 		}
 	}
 	return false
-}
-
-// defaultDeny is the unexported backing slice. Never modify or append to it.
-// Callers consume the list via the exported DefaultDeny accessor.
-var defaultDeny = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),      // Linux connect(2) routes 0.x.x.x to loopback
-	netip.MustParsePrefix("127.0.0.0/8"),    // IPv4 loopback
-	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
-	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
-	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
-	netip.MustParsePrefix("169.254.0.0/16"), // link-local
-	netip.MustParsePrefix("::1/128"),        // IPv6 loopback
-	netip.MustParsePrefix("fc00::/7"),       // IPv6 unique-local
 }

@@ -1,6 +1,9 @@
-// Package internal holds cross-cutting constant values shared across the
-// vpntunnel binary, starting with the names of the environment variables the
-// daemon reads at startup.
+// Package internal holds the cross-cutting application-policy values shared
+// across the vpntunnel binary: the names of the environment variables the
+// daemon reads at startup, the defaults applied to absent config keys, and the
+// SSRF deny list. They live here rather than in the packages that consume them
+// because deciding these values is a policy call, not part of parsing a config
+// file or filtering an IP. Each concern keeps its own file.
 //
 // It occupies the module's internal root, so every .go file placed directly
 // under internal/ must declare package internal too; anything that wants its
