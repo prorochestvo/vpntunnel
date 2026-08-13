@@ -12,7 +12,10 @@ require (
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 )
 
-require golang.org/x/net v0.55.0 // indirect
+require (
+	github.com/quasilyte/go-ruleguard/dsl v0.3.23 // indirect
+	golang.org/x/net v0.55.0 // indirect
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

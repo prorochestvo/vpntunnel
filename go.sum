@@ -12,6 +12,8 @@ github.com/prorochestvo/dsninjector v0.0.2 h1:xx0cMafXVta60ow7u/LxI0PeAdPPNTYNi1
 github.com/prorochestvo/dsninjector v0.0.2/go.mod h1:IkuIIFYaBlrF4QUX2y1v+wbb6NPcZBhSuRwhZn6xrPU=
 github.com/prorochestvo/loginjector v1.0.8 h1:Dfpk9w3bgLyRj226/GdmVC1oMsjvkapYiMZNv2MxeF4=
 github.com/prorochestvo/loginjector v1.0.8/go.mod h1:QV4NPjcRNOb1mqHHlKkb1Xv8kOTcMn6hj0ZjuEyH/i8=
+github.com/quasilyte/go-ruleguard/dsl v0.3.23 h1:lxjt5B6ZCiBeeNO8/oQsegE6fLeCzuMRoVWSkXC4uvY=
+github.com/quasilyte/go-ruleguard/dsl v0.3.23/go.mod h1:KeCP03KrjuSO0H1kTuZQCWlQPulDV6YMIXmpQss17rU=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.etcd.io/bbolt v1.4.3 h1:dEadXpI6G79deX5prL3QRNP6JB8UxVkqo4UPnHaNXJo=
