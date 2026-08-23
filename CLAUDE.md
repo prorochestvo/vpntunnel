@@ -180,6 +180,6 @@ it before starting non-trivial work. Project delta:
 
 - **Gate:** `make test` (verified against the `Makefile`: it chains `lint` first, then gofmt +
   `go vet` + `go test -race ./...`)
-- **Lenses:** standard three
+- **Lenses:** standard set — see `pipeline:working-agreement`, which includes lens O.
 - **Branching:** standard (`type/<issue>-<slug>`, PR into `main`). Production deploys on each
   `v*` tag after a manual approval gate; `main` and PRs run lint + tests only.
