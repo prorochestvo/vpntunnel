@@ -1,6 +1,6 @@
 ---
 name: vpntunnel-config
-description: The vpntunnel v6 `proxy.json` schema and the wg-quick tunnel discovery behind it — the `vpnstream` / `api` / `api.vpn` block split, which keys are optional and what an absent one applies, the streaming-only scope of `allowed_countries` and the single-key guard, the HMAC tunnel-id key file, the on-demand `grace` / `settle_delay` / `idle_ttl` timers, and the TLS settings that are CLI flags rather than config. Load before touching `internal/infrastructure/config/config.go`, `internal/policy/defaults.go`, `internal/policy/constants.go`, `internal/infrastructure/wireguard/wgconf`, `internal/application/tunnelpool` (`discover.go`, `verify.go`, `build.go`, `supervisor.go`), `configs/proxy.json` or `configs/proxy.example.json`; before adding, renaming, defaulting or validating any config key (`vpnstream`, `listen`, `allowed_countries`, `reconnect_min`, `reconnect_max`, `dial_timeout`, `idle_timeout`, `shutdown_timeout`, `auth.token`, `auth.token_file`, `access_log`, `operational`, `api`, `api.auth.admin_token_file`, `api.auth.proxy_token_file`, `api.max_request_body_bytes`, `api.log.path_sanitize_patterns`, `api.vpn.timeout`, `api.vpn.max_timeout`, `api.vpn.demand.grace`, `api.vpn.demand.settle_delay`, `api.vpn.demand.idle_ttl`, `api.vpn.async.storage_path`, `tunnel_id_hmac_key_file`) or any `Default*` constant; and before changing `VerifySingleKey`, `ParsedConfig`, `tunnelpool.DefaultHandshakeMaxAge`, the `raw*` decoder structs, tunnel discovery under `<configDir>/tunnels/`, or the `-tls-cert-dir` / `-tls-hostname` / `-tls-ip-sans` flags.
+description: The vpntunnel v6 `proxy.json` schema and wg-quick tunnel discovery — the `vpnstream` / `api` / `api.vpn` / `access_log` / `operational` block split, the streaming-only `allowed_countries` scope, the single-key guard, the HMAC tunnel-id key file, the on-demand timers, and the CLI-flag-only TLS settings. Load before touching `internal/infrastructure/config/config.go`, `internal/policy` (`defaults.go`, `constants.go`), `internal/infrastructure/wireguard/wgconf`, `internal/application/tunnelpool`, or `configs/proxy*.json`; before adding, renaming, defaulting or validating any `vpnstream.*` or `api.*` key, `tunnel_id_hmac_key_file`, or any `Default*` constant; and before changing `VerifySingleKey`, `ParsedConfig`, `tunnelpool.DefaultHandshakeMaxAge`, the `raw*` decoder structs, tunnel discovery under `<configDir>/tunnels/`, or the `-tls-cert-dir` / `-tls-hostname` / `-tls-ip-sans` flags.
 ---
 
 # vpntunnel configuration (v6)
@@ -15,7 +15,18 @@ listed in config — they are auto-discovered from `<configDir>/tunnels/`.
 `internal/infrastructure/config/config.go`**, mirrored by the committed
 `configs/proxy.json`. **The value applied when a key is absent is the matching `Default*`
 constant in `internal/policy/defaults.go`.** Read those two files rather than any prose list —
-this skill documents only the semantics that are non-obvious or that fail silently.
+this skill documents only the semantics that are non-obvious or that fail silently. Env var
+name constants sit in `internal/policy/constants.go`.
+
+Key inventory (v6): top level — `vpnstream`, `access_log`, `operational`, `api`,
+`tunnel_id_hmac_key_file`. Under `vpnstream` — `listen`, `allowed_countries`, `auth.token` /
+`auth.token_file`, `reconnect_min` / `reconnect_max`, `dial_timeout`, `idle_timeout`,
+`shutdown_timeout`. Under `access_log` — `path`, `max_size_mb`, `max_age_days`, `max_backups`,
+`compress`; under `operational` — `level`, `format`. Under `api` — `listen`,
+`shutdown_timeout`, `auth.admin_token_file` / `auth.proxy_token_file`,
+`max_request_body_bytes`, `log.path_sanitize_patterns`, `vpn`; under `api.vpn` — `timeout`,
+`max_timeout`, `demand.grace` / `demand.settle_delay` / `demand.idle_ttl`,
+`async.storage_path`.
 
 `api` block is **required**. All other top-level blocks are optional — missing means defaults
 apply. `api.vpn` absent applies all vpn defaults; `vpnstream` absent applies all vpnstream
@@ -57,13 +68,13 @@ and the design is non-viable.
 
 ## Tunnel discovery
 
-Scans `<configDir>/tunnels/` for **top-level** `*.conf` files.
+Scans `<configDir>/tunnels/` (`discover.go`) for **top-level** `*.conf` files.
 
 - Only regular files (**no symlinks**) with a `.conf` suffix are included.
 - Dotfiles (including `.gitkeep`) and subdirectories are ignored.
 - A **missing** tunnels directory is a startup error. An **empty** directory is also a
   startup error.
-- **Unparseable `.conf` files are warn-skipped at device-build time** — they do not fail
+- **Unparseable `.conf` files are warn-skipped at device-build time** (`build.go`) — they do not fail
   startup. A malformed config therefore shrinks the pool with only a log line to show for it.
 
 WireGuard parameters are the standard wg-quick `[Interface]` / `[Peer]` fields, read from the
@@ -73,7 +84,7 @@ WireGuard parameters are the standard wg-quick `[Interface]` / `[Peer]` fields, 
 ## Timers
 
 `vpnstream.reconnect_min` / `vpnstream.reconnect_max` — initial and maximum exponential
-backoff between reconnect attempts for the always-on streaming device.
+backoff between reconnect attempts for the always-on streaming device (`supervisor.go`).
 
 `api.vpn.demand.grace` — after the last active job on the current zone finishes, how long the
 scheduler stays on that zone before switching to the next zone with a backlog. Each new
