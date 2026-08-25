@@ -18,51 +18,6 @@ var ErrNotFound = errors.New("asyncjob: tag not found")
 // distinguish a lost race from a missing record.
 var ErrStatusMismatch = errors.New("asyncjob: status mismatch")
 
-// JobCounts holds the count of records in each of the three counted states.
-// Records in StatusFailed or StatusFailedTimeout are not included.
-type JobCounts struct {
-	Pending   int
-	Completed int
-	Tombstone int
-}
-
-// Store defines the persistence operations for async job records keyed by
-// retry-tag. All methods are safe for concurrent use.
-//
-// Get returns the record for tag. The bool is false (and error is nil) when
-// the tag is absent.
-//
-// Put writes rec under tag, overwriting any existing record.
-//
-// CompareAndSwapStatus atomically replaces the record for tag only when its
-// current on-disk status equals expected. It returns ErrStatusMismatch when
-// the status does not match and ErrNotFound when the tag is absent. When CAS
-// succeeds it returns the record produced by mutate.
-//
-// BatchTransition calls mutate on every record for which filter returns true,
-// writing the result back in one transaction. It returns the number of records
-// mutated.
-//
-// BatchDelete removes every record for which filter returns true in one
-// transaction. It returns the number of records deleted.
-//
-// Counts returns the count of records in StatusPending, StatusCompleted, and
-// StatusTombstone states. Records in StatusFailed or StatusFailedTimeout are
-// not counted.
-//
-// Close releases the file lock and closes the database. It is safe to call
-// Close more than once; subsequent calls return the same error as the first
-// call and are otherwise no-ops.
-type Store interface {
-	Get(tag string) (Record, bool, error)
-	Put(tag string, rec Record) error
-	CompareAndSwapStatus(tag string, expected Status, mutate func(Record) Record) (Record, error)
-	BatchTransition(filter func(Record) bool, mutate func(Record) Record) (int, error)
-	BatchDelete(filter func(Record) bool) (int, error)
-	Counts() (JobCounts, error)
-	Close() error
-}
-
 // NewStore opens or creates the bbolt database at path and returns a Store
 // backed by it. The parent directory must already exist; NewStore surfaces a
 // wrapped error if it does not. The file is opened with mode 0600. An
@@ -306,6 +261,51 @@ func (s *bboltStore) BatchDelete(filter func(Record) bool) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// JobCounts holds the count of records in each of the three counted states.
+// Records in StatusFailed or StatusFailedTimeout are not included.
+type JobCounts struct {
+	Pending   int
+	Completed int
+	Tombstone int
+}
+
+// Store defines the persistence operations for async job records keyed by
+// retry-tag. All methods are safe for concurrent use.
+//
+// Get returns the record for tag. The bool is false (and error is nil) when
+// the tag is absent.
+//
+// Put writes rec under tag, overwriting any existing record.
+//
+// CompareAndSwapStatus atomically replaces the record for tag only when its
+// current on-disk status equals expected. It returns ErrStatusMismatch when
+// the status does not match and ErrNotFound when the tag is absent. When CAS
+// succeeds it returns the record produced by mutate.
+//
+// BatchTransition calls mutate on every record for which filter returns true,
+// writing the result back in one transaction. It returns the number of records
+// mutated.
+//
+// BatchDelete removes every record for which filter returns true in one
+// transaction. It returns the number of records deleted.
+//
+// Counts returns the count of records in StatusPending, StatusCompleted, and
+// StatusTombstone states. Records in StatusFailed or StatusFailedTimeout are
+// not counted.
+//
+// Close releases the file lock and closes the database. It is safe to call
+// Close more than once; subsequent calls return the same error as the first
+// call and are otherwise no-ops.
+type Store interface {
+	Get(tag string) (Record, bool, error)
+	Put(tag string, rec Record) error
+	CompareAndSwapStatus(tag string, expected Status, mutate func(Record) Record) (Record, error)
+	BatchTransition(filter func(Record) bool, mutate func(Record) Record) (int, error)
+	BatchDelete(filter func(Record) bool) (int, error)
+	Counts() (JobCounts, error)
+	Close() error
 }
 
 // maxTagEchoLen caps the number of bytes echoed from a client-supplied tag in

@@ -14,33 +14,6 @@ import (
 	"vpntunnel/internal/application/asyncjob"
 )
 
-// openStore creates a new bbolt-backed store in a unique temp file and
-// registers t.Cleanup to close it. Each caller gets its own isolated database.
-func openStore(t *testing.T) asyncjob.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "jobs.db")
-	s, err := asyncjob.NewStore(path)
-	require.NoError(t, err, "NewStore should succeed for a fresh temp file")
-	t.Cleanup(func() {
-		require.NoError(t, s.Close())
-	})
-	return s
-}
-
-// seedRecord puts a Record directly into the store and returns it.
-func seedRecord(t *testing.T, s asyncjob.Store, tag string, status asyncjob.Status) asyncjob.Record {
-	t.Helper()
-	now := time.Now().UTC().Truncate(time.Second)
-	rec := asyncjob.Record{
-		Tag:       tag,
-		Status:    status,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	require.NoError(t, s.Put(tag, rec))
-	return rec
-}
-
 func TestNewStore(t *testing.T) {
 	t.Parallel()
 
@@ -58,6 +31,82 @@ func TestNewStore(t *testing.T) {
 		_, err := asyncjob.NewStore(path)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "asyncjob:")
+	})
+}
+
+func TestStore_Close(t *testing.T) {
+	t.Parallel()
+
+	t.Run("close is idempotent — second call returns nil", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "jobs.db")
+		s, err := asyncjob.NewStore(path)
+		require.NoError(t, err)
+
+		require.NoError(t, s.Close())
+		// second Close must not panic or return a non-nil error.
+		require.NoError(t, s.Close())
+	})
+}
+func TestStore_Counts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty bucket returns all zeros", func(t *testing.T) {
+		t.Parallel()
+		s := openStore(t)
+		counts, err := s.Counts()
+		require.NoError(t, err)
+		assert.Equal(t, 0, counts.Pending)
+		assert.Equal(t, 0, counts.Completed)
+		assert.Equal(t, 0, counts.Tombstone)
+	})
+
+	t.Run("counts mixed-status records correctly", func(t *testing.T) {
+		t.Parallel()
+		s := openStore(t)
+
+		seedRecord(t, s, "p1", asyncjob.StatusPending)
+		seedRecord(t, s, "p2", asyncjob.StatusPending)
+		seedRecord(t, s, "c1", asyncjob.StatusCompleted)
+		seedRecord(t, s, "ts1", asyncjob.StatusTombstone)
+		// failed and failed_timeout are intentionally excluded from counts.
+		seedRecord(t, s, "f1", asyncjob.StatusFailed)
+		seedRecord(t, s, "ft1", asyncjob.StatusFailedTimeout)
+
+		counts, err := s.Counts()
+		require.NoError(t, err)
+		assert.Equal(t, 2, counts.Pending, "pending count")
+		assert.Equal(t, 1, counts.Completed, "completed count")
+		assert.Equal(t, 1, counts.Tombstone, "tombstone count")
+	})
+
+	t.Run("corrupt record in bucket returns wrapped error", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "jobs.db")
+
+		rawDB, err := bbolt.Open(path, 0600, &bbolt.Options{Timeout: 5 * time.Second})
+		require.NoError(t, err)
+		require.NoError(t, rawDB.Update(func(tx *bbolt.Tx) error {
+			b, err := tx.CreateBucketIfNotExists([]byte("jobs"))
+			if err != nil {
+				return err
+			}
+			return b.Put([]byte("bad-tag"), []byte(`{"tag":"bad-tag","status":"oops","created_at":1,"updated_at":1}`))
+		}))
+		require.NoError(t, rawDB.Close())
+
+		s, err := asyncjob.NewStore(path)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, s.Close()) })
+
+		_, err = s.Counts()
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus))
+		// tag bytes must not appear in the error string — the tag is
+		// client-controlled and must not leak into operational logs.
+		assert.NotContains(t, err.Error(), "bad-tag")
+		assert.Contains(t, err.Error(), "counts scan")
 	})
 }
 
@@ -361,79 +410,29 @@ func TestStore_BatchDelete(t *testing.T) {
 	})
 }
 
-func TestStore_Counts(t *testing.T) {
-	t.Parallel()
-
-	t.Run("empty bucket returns all zeros", func(t *testing.T) {
-		t.Parallel()
-		s := openStore(t)
-		counts, err := s.Counts()
-		require.NoError(t, err)
-		assert.Equal(t, 0, counts.Pending)
-		assert.Equal(t, 0, counts.Completed)
-		assert.Equal(t, 0, counts.Tombstone)
+// openStore creates a new bbolt-backed store in a unique temp file and
+// registers t.Cleanup to close it. Each caller gets its own isolated database.
+func openStore(t *testing.T) asyncjob.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	s, err := asyncjob.NewStore(path)
+	require.NoError(t, err, "NewStore should succeed for a fresh temp file")
+	t.Cleanup(func() {
+		require.NoError(t, s.Close())
 	})
-
-	t.Run("counts mixed-status records correctly", func(t *testing.T) {
-		t.Parallel()
-		s := openStore(t)
-
-		seedRecord(t, s, "p1", asyncjob.StatusPending)
-		seedRecord(t, s, "p2", asyncjob.StatusPending)
-		seedRecord(t, s, "c1", asyncjob.StatusCompleted)
-		seedRecord(t, s, "ts1", asyncjob.StatusTombstone)
-		// failed and failed_timeout are intentionally excluded from counts.
-		seedRecord(t, s, "f1", asyncjob.StatusFailed)
-		seedRecord(t, s, "ft1", asyncjob.StatusFailedTimeout)
-
-		counts, err := s.Counts()
-		require.NoError(t, err)
-		assert.Equal(t, 2, counts.Pending, "pending count")
-		assert.Equal(t, 1, counts.Completed, "completed count")
-		assert.Equal(t, 1, counts.Tombstone, "tombstone count")
-	})
-
-	t.Run("corrupt record in bucket returns wrapped error", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		path := filepath.Join(dir, "jobs.db")
-
-		rawDB, err := bbolt.Open(path, 0600, &bbolt.Options{Timeout: 5 * time.Second})
-		require.NoError(t, err)
-		require.NoError(t, rawDB.Update(func(tx *bbolt.Tx) error {
-			b, err := tx.CreateBucketIfNotExists([]byte("jobs"))
-			if err != nil {
-				return err
-			}
-			return b.Put([]byte("bad-tag"), []byte(`{"tag":"bad-tag","status":"oops","created_at":1,"updated_at":1}`))
-		}))
-		require.NoError(t, rawDB.Close())
-
-		s, err := asyncjob.NewStore(path)
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, s.Close()) })
-
-		_, err = s.Counts()
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus))
-		// tag bytes must not appear in the error string — the tag is
-		// client-controlled and must not leak into operational logs.
-		assert.NotContains(t, err.Error(), "bad-tag")
-		assert.Contains(t, err.Error(), "counts scan")
-	})
+	return s
 }
 
-func TestStore_Close(t *testing.T) {
-	t.Parallel()
-
-	t.Run("close is idempotent — second call returns nil", func(t *testing.T) {
-		t.Parallel()
-		path := filepath.Join(t.TempDir(), "jobs.db")
-		s, err := asyncjob.NewStore(path)
-		require.NoError(t, err)
-
-		require.NoError(t, s.Close())
-		// second Close must not panic or return a non-nil error.
-		require.NoError(t, s.Close())
-	})
+// seedRecord puts a Record directly into the store and returns it.
+func seedRecord(t *testing.T, s asyncjob.Store, tag string, status asyncjob.Status) asyncjob.Record {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	rec := asyncjob.Record{
+		Tag:       tag,
+		Status:    status,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	require.NoError(t, s.Put(tag, rec))
+	return rec
 }

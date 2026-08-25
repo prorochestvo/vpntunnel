@@ -65,41 +65,6 @@ func NewProxyService(opts ProxyServiceOptions) *ProxyService {
 	return svc
 }
 
-// ProxyServiceOptions holds all dependencies for ProxyService. Pass by value;
-// all pointers inside must be non-nil except OpLog (defaults to slog.Default)
-// and Verifier (nil disables auth).
-type ProxyServiceOptions struct {
-	// Dialer routes outbound TCP connections. Required.
-	Dialer dialer
-	// Access is the rotating access log writer.
-	Access *observability.AccessLogger
-	// OpLog is the operational slog logger. If nil, slog.Default() is used.
-	OpLog *slog.Logger
-	// DialTimeout bounds each upstream dial attempt and the wait for the first
-	// response byte from upstream (ResponseHeaderTimeout on the transport).
-	DialTimeout time.Duration
-	// Verifier authenticates incoming proxy requests via Proxy-Authorization.
-	// Optional — when nil, auth is disabled and all requests pass through.
-	Verifier Verifier
-}
-
-// Verifier checks a Proxy-Authorization header value and reports whether it
-// carries valid credentials. It is defined here, in the sole consumer, so the
-// forward-proxy logic does not depend on any concrete verifier implementation;
-// the composition root supplies one (e.g. bearerauth.BearerVerifier). The
-// argument is the raw single value of the Proxy-Authorization header.
-type Verifier interface {
-	Verify(header string) bool
-}
-
-// dialer is the minimal outbound-connection contract the proxy service needs:
-// open a TCP connection through whatever egress it represents. It is declared
-// here, in the sole consumer, so the service depends on no concrete egress
-// implementation; the composition root supplies one (the streaming supervisor).
-type dialer interface {
-	DialContext(ctx context.Context, network, address string) (net.Conn, error)
-}
-
 // ProxyService implements forward HTTP proxying (HandleHTTP) and HTTPS
 // tunnelling (HandleCONNECT). Methods are safe for concurrent use.
 type ProxyService struct {
@@ -453,6 +418,67 @@ func (s *ProxyService) checkAuth(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func (s *ProxyService) logAccess(summary domain.RequestSummary) {
+	if s.access != nil {
+		s.access.Log(summary)
+	}
+}
+
+func (s *ProxyService) logger() *slog.Logger {
+	if s.opLog != nil {
+		return s.opLog
+	}
+	return slog.Default()
+}
+
+// ProxyServiceOptions holds all dependencies for ProxyService. Pass by value;
+// all pointers inside must be non-nil except OpLog (defaults to slog.Default)
+// and Verifier (nil disables auth).
+type ProxyServiceOptions struct {
+	// Dialer routes outbound TCP connections. Required.
+	Dialer dialer
+	// Access is the rotating access log writer.
+	Access *observability.AccessLogger
+	// OpLog is the operational slog logger. If nil, slog.Default() is used.
+	OpLog *slog.Logger
+	// DialTimeout bounds each upstream dial attempt and the wait for the first
+	// response byte from upstream (ResponseHeaderTimeout on the transport).
+	DialTimeout time.Duration
+	// Verifier authenticates incoming proxy requests via Proxy-Authorization.
+	// Optional — when nil, auth is disabled and all requests pass through.
+	Verifier Verifier
+}
+
+// Verifier checks a Proxy-Authorization header value and reports whether it
+// carries valid credentials. It is defined here, in the sole consumer, so the
+// forward-proxy logic does not depend on any concrete verifier implementation;
+// the composition root supplies one (e.g. bearerauth.BearerVerifier). The
+// argument is the raw single value of the Proxy-Authorization header.
+type Verifier interface {
+	Verify(header string) bool
+}
+
+// hopByHopHeaders lists the standard hop-by-hop header names defined in
+// RFC 7230 §6.1. These are stripped from both inbound and outbound headers.
+var hopByHopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"TE",
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// dialer is the minimal outbound-connection contract the proxy service needs:
+// open a TCP connection through whatever egress it represents. It is declared
+// here, in the sole consumer, so the service depends on no concrete egress
+// implementation; the composition root supplies one (the streaming supervisor).
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
 // classifyAuthFailure derives the operational-log reason enum for a failed
 // Proxy-Authorization header. It does not look at the token value, only at
 // the structural shape of the header.
@@ -481,19 +507,6 @@ func classifyAuthFailure(header string) string {
 		return "wrong_scheme"
 	}
 	return "wrong_token"
-}
-
-func (s *ProxyService) logAccess(summary domain.RequestSummary) {
-	if s.access != nil {
-		s.access.Log(summary)
-	}
-}
-
-func (s *ProxyService) logger() *slog.Logger {
-	if s.opLog != nil {
-		return s.opLog
-	}
-	return slog.Default()
 }
 
 // authLogTarget picks the appropriate sanitised target for auth failure logging.
@@ -546,19 +559,6 @@ func isLoopbackRemote(addr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
-}
-
-// hopByHopHeaders lists the standard hop-by-hop header names defined in
-// RFC 7230 §6.1. These are stripped from both inbound and outbound headers.
-var hopByHopHeaders = []string{
-	"Connection",
-	"Keep-Alive",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"TE",
-	"Trailers",
-	"Transfer-Encoding",
-	"Upgrade",
 }
 
 // copyHeaders copies all headers from src to dst without modifying either.

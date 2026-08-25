@@ -12,33 +12,6 @@ import (
 	"vpntunnel/internal/application/asyncjob"
 )
 
-// sec returns t truncated to second precision (the wire format stores Unix
-// seconds, so sub-second precision is lost on round-trip).
-func sec(t time.Time) time.Time { return t.UTC().Truncate(time.Second) }
-
-func TestStatus_String(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		status asyncjob.Status
-		want   string
-	}{
-		{asyncjob.StatusPending, "pending"},
-		{asyncjob.StatusCompleted, "completed"},
-		{asyncjob.StatusFailed, "failed"},
-		{asyncjob.StatusFailedTimeout, "failed_timeout"},
-		{asyncjob.StatusTombstone, "tombstone"},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.want, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.want, tc.status.String())
-		})
-	}
-}
-
 func TestNewPendingRecord(t *testing.T) {
 	t.Parallel()
 
@@ -67,6 +40,45 @@ func TestNewPendingRecord(t *testing.T) {
 	})
 }
 
+func TestUnmarshal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unknown status returns ErrUnknownStatus", func(t *testing.T) {
+		t.Parallel()
+		data := []byte(`{"tag":"x","status":"bogus","created_at":1749981600,"updated_at":1749981600}`)
+		_, err := asyncjob.Unmarshal(data)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus), "expected ErrUnknownStatus, got: %v", err)
+	})
+
+	t.Run("malformed JSON returns wrapped error", func(t *testing.T) {
+		t.Parallel()
+		_, err := asyncjob.Unmarshal([]byte(`{not valid json`))
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, asyncjob.ErrUnknownStatus))
+	})
+
+	t.Run("empty status string returns ErrUnknownStatus", func(t *testing.T) {
+		t.Parallel()
+		data := []byte(`{"tag":"x","status":"","created_at":1749981600,"updated_at":1749981600}`)
+		_, err := asyncjob.Unmarshal(data)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus))
+	})
+
+	t.Run("128-byte garbage status produces bounded error message", func(t *testing.T) {
+		t.Parallel()
+		garbage := make([]byte, 128)
+		for i := range garbage {
+			garbage[i] = 'A'
+		}
+		data := []byte(`{"tag":"x","status":"` + string(garbage) + `","created_at":1749981600,"updated_at":1749981600}`)
+		_, err := asyncjob.Unmarshal(data)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus))
+		assert.LessOrEqual(t, len(err.Error()), 80, "error message must be bounded, got %d chars: %s", len(err.Error()), err.Error())
+	})
+}
 func TestRecord_Marshal(t *testing.T) {
 	t.Parallel()
 
@@ -307,42 +319,29 @@ func TestRecord_Marshal(t *testing.T) {
 	})
 }
 
-func TestUnmarshal(t *testing.T) {
+func TestStatus_String(t *testing.T) {
 	t.Parallel()
 
-	t.Run("unknown status returns ErrUnknownStatus", func(t *testing.T) {
-		t.Parallel()
-		data := []byte(`{"tag":"x","status":"bogus","created_at":1749981600,"updated_at":1749981600}`)
-		_, err := asyncjob.Unmarshal(data)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus), "expected ErrUnknownStatus, got: %v", err)
-	})
+	cases := []struct {
+		status asyncjob.Status
+		want   string
+	}{
+		{asyncjob.StatusPending, "pending"},
+		{asyncjob.StatusCompleted, "completed"},
+		{asyncjob.StatusFailed, "failed"},
+		{asyncjob.StatusFailedTimeout, "failed_timeout"},
+		{asyncjob.StatusTombstone, "tombstone"},
+	}
 
-	t.Run("malformed JSON returns wrapped error", func(t *testing.T) {
-		t.Parallel()
-		_, err := asyncjob.Unmarshal([]byte(`{not valid json`))
-		require.Error(t, err)
-		assert.False(t, errors.Is(err, asyncjob.ErrUnknownStatus))
-	})
-
-	t.Run("empty status string returns ErrUnknownStatus", func(t *testing.T) {
-		t.Parallel()
-		data := []byte(`{"tag":"x","status":"","created_at":1749981600,"updated_at":1749981600}`)
-		_, err := asyncjob.Unmarshal(data)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus))
-	})
-
-	t.Run("128-byte garbage status produces bounded error message", func(t *testing.T) {
-		t.Parallel()
-		garbage := make([]byte, 128)
-		for i := range garbage {
-			garbage[i] = 'A'
-		}
-		data := []byte(`{"tag":"x","status":"` + string(garbage) + `","created_at":1749981600,"updated_at":1749981600}`)
-		_, err := asyncjob.Unmarshal(data)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, asyncjob.ErrUnknownStatus))
-		assert.LessOrEqual(t, len(err.Error()), 80, "error message must be bounded, got %d chars: %s", len(err.Error()), err.Error())
-	})
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.want, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.status.String())
+		})
+	}
 }
+
+// sec returns t truncated to second precision (the wire format stores Unix
+// seconds, so sub-second precision is lost on round-trip).
+func sec(t time.Time) time.Time { return t.UTC().Truncate(time.Second) }

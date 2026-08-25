@@ -20,145 +20,77 @@ var _ Store = (*bboltStore)(nil)
 var _ Store = (*panicStore)(nil)
 var _ Store = (*errorTransitionStore)(nil)
 
-// panicStore is a test-only fake that panics on the first call to
-// BatchTransition and then delegates to a real store for subsequent calls.
-// This lets us verify that a batch-level panic is recovered and the remaining
-// batches in the same pass still execute.
-type panicStore struct {
-	delegate    Store
-	panicOnce   bool
-	panicCalled bool
-}
+func TestGC_Run(t *testing.T) {
+	t.Parallel()
 
-func (p *panicStore) Get(tag string) (Record, bool, error) { return p.delegate.Get(tag) }
-func (p *panicStore) Put(tag string, rec Record) error     { return p.delegate.Put(tag, rec) }
-func (p *panicStore) CompareAndSwapStatus(tag string, expected Status, mutate func(Record) Record) (Record, error) {
-	return p.delegate.CompareAndSwapStatus(tag, expected, mutate)
-}
-func (p *panicStore) Counts() (JobCounts, error) { return p.delegate.Counts() }
-func (p *panicStore) Close() error               { return p.delegate.Close() }
+	const (
+		pendingTimeout = 5 * time.Minute
+		completeTTL    = 30 * time.Minute
+		tombstoneTTL   = 24 * time.Hour
+	)
 
-func (p *panicStore) BatchTransition(filter func(Record) bool, mutate func(Record) Record) (int, error) {
-	if p.panicOnce && !p.panicCalled {
-		p.panicCalled = true
-		panic("injected test panic")
-	}
-	return p.delegate.BatchTransition(filter, mutate)
-}
-
-func (p *panicStore) BatchDelete(filter func(Record) bool) (int, error) {
-	return p.delegate.BatchDelete(filter)
-}
-
-// errorTransitionStore is a test-only fake that returns an error on the first
-// BatchTransition call only, then delegates to the real store. This lets us
-// verify that a batch-level error does not abort subsequent batches.
-type errorTransitionStore struct {
-	delegate     Store
-	errOnce      bool
-	errTriggered bool
-}
-
-func (e *errorTransitionStore) Get(tag string) (Record, bool, error) { return e.delegate.Get(tag) }
-func (e *errorTransitionStore) Put(tag string, rec Record) error     { return e.delegate.Put(tag, rec) }
-func (e *errorTransitionStore) CompareAndSwapStatus(tag string, expected Status, mutate func(Record) Record) (Record, error) {
-	return e.delegate.CompareAndSwapStatus(tag, expected, mutate)
-}
-func (e *errorTransitionStore) Counts() (JobCounts, error) { return e.delegate.Counts() }
-func (e *errorTransitionStore) Close() error               { return e.delegate.Close() }
-
-func (e *errorTransitionStore) BatchTransition(filter func(Record) bool, mutate func(Record) Record) (int, error) {
-	if e.errOnce && !e.errTriggered {
-		e.errTriggered = true
-		return 0, errors.New("injected batch transition error")
-	}
-	return e.delegate.BatchTransition(filter, mutate)
-}
-
-func (e *errorTransitionStore) BatchDelete(filter func(Record) bool) (int, error) {
-	return e.delegate.BatchDelete(filter)
-}
-
-// captureHandler is a test-only slog.Handler that records every log record.
-type captureHandler struct {
-	mu      sync.Mutex
-	records []slog.Record
-}
-
-func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
-func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.records = append(h.records, r)
-	return nil
-}
-func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
-
-func (h *captureHandler) all() []slog.Record {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]slog.Record, len(h.records))
-	copy(out, h.records)
-	return out
-}
-
-// openGCStore creates a bbolt-backed Store in a fresh temp directory.
-func openGCStore(t *testing.T) Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "jobs.db")
-	s, err := NewStore(path)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, s.Close()) })
-	return s
-}
-
-// fixedClock returns a func() time.Time that always returns t.
-func fixedClock(t time.Time) func() time.Time {
-	return func() time.Time { return t }
-}
-
-// seedWithStatus creates a Record in the given status directly via Put.
-// For tombstone records, EvictedAt must be set by the caller.
-func seedWithStatusAt(t *testing.T, s Store, tag string, status Status, updatedAt time.Time) Record {
-	t.Helper()
-	rec := Record{
-		Tag:       tag,
-		Status:    status,
-		CreatedAt: updatedAt,
-		UpdatedAt: updatedAt,
-	}
-	if status == StatusCompleted || status == StatusFailed || status == StatusFailedTimeout {
-		rec.UpstreamResponse = &UpstreamResponse{
-			StatusCode: 200,
-			Header:     http.Header{"X-Test": []string{"1"}},
-			Body:       []byte("body"),
+	t.Run("ctx cancellation exits Run and returns ctx.Err", func(t *testing.T) {
+		t.Parallel()
+		s := openGCStore(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		g := NewGC(GCConfig{
+			Store:          s,
+			Logger:         discardLogger(),
+			PendingTimeout: pendingTimeout,
+			CompleteTTL:    completeTTL,
+			TombstoneTTL:   tombstoneTTL,
+			Now:            time.Now,
+			TickInterval:   50 * time.Millisecond,
+		})
+		done := make(chan error, 1)
+		go func() { done <- g.Run(ctx) }()
+		cancel()
+		select {
+		case err := <-done:
+			assert.ErrorIs(t, err, context.Canceled)
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run did not return within 2s after ctx cancellation")
 		}
-	}
-	require.NoError(t, s.Put(tag, rec))
-	return rec
-}
+	})
 
-// seedTombstoneAt creates a tombstone record with the given evictedAt time.
-func seedTombstoneAt(t *testing.T, s Store, tag string, evictedAt time.Time) Record {
-	t.Helper()
-	rec := Record{
-		Tag:       tag,
-		Status:    StatusTombstone,
-		CreatedAt: evictedAt,
-		UpdatedAt: evictedAt,
-		EvictedAt: evictedAt,
-	}
-	require.NoError(t, s.Put(tag, rec))
-	return rec
-}
+	t.Run("Run executes initial pass before first tick", func(t *testing.T) {
+		t.Parallel()
+		s := openGCStore(t)
 
-// discardLogger returns a *slog.Logger that discards all output. Keeps test
-// output clean while still exercising the log paths.
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
-}
+		base := time.Now().UTC().Truncate(time.Second)
+		// seed a pending record old enough to be timed out.
+		seedWithStatusAt(t, s, "pre-tick-tag", StatusPending, base.Add(-pendingTimeout-time.Second))
 
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		g := NewGC(GCConfig{
+			Store:          s,
+			Logger:         discardLogger(),
+			PendingTimeout: pendingTimeout,
+			CompleteTTL:    completeTTL,
+			TombstoneTTL:   tombstoneTTL,
+			Now:            fixedClock(base),
+			// use a long tick so we can observe the pre-tick pass.
+			TickInterval: 10 * time.Second,
+		})
+
+		done := make(chan error, 1)
+		go func() { done <- g.Run(ctx) }()
+
+		// wait briefly for the initial pass to execute.
+		require.Eventually(t, func() bool {
+			got, found, err := s.Get("pre-tick-tag")
+			if err != nil || !found {
+				return false
+			}
+			return got.Status == StatusFailedTimeout
+		}, 2*time.Second, 20*time.Millisecond, "initial pass must transition pending record before first tick")
+
+		cancel()
+		<-done
+	})
+}
 func TestGC_PassOnce(t *testing.T) {
 	t.Parallel()
 
@@ -492,74 +424,141 @@ func TestGC_PassOnce(t *testing.T) {
 	})
 }
 
-func TestGC_Run(t *testing.T) {
-	t.Parallel()
+// panicStore is a test-only fake that panics on the first call to
+// BatchTransition and then delegates to a real store for subsequent calls.
+// This lets us verify that a batch-level panic is recovered and the remaining
+// batches in the same pass still execute.
+type panicStore struct {
+	delegate    Store
+	panicOnce   bool
+	panicCalled bool
+}
 
-	const (
-		pendingTimeout = 5 * time.Minute
-		completeTTL    = 30 * time.Minute
-		tombstoneTTL   = 24 * time.Hour
-	)
+func (p *panicStore) Get(tag string) (Record, bool, error) { return p.delegate.Get(tag) }
+func (p *panicStore) Put(tag string, rec Record) error     { return p.delegate.Put(tag, rec) }
+func (p *panicStore) CompareAndSwapStatus(tag string, expected Status, mutate func(Record) Record) (Record, error) {
+	return p.delegate.CompareAndSwapStatus(tag, expected, mutate)
+}
+func (p *panicStore) Counts() (JobCounts, error) { return p.delegate.Counts() }
+func (p *panicStore) Close() error               { return p.delegate.Close() }
 
-	t.Run("ctx cancellation exits Run and returns ctx.Err", func(t *testing.T) {
-		t.Parallel()
-		s := openGCStore(t)
-		ctx, cancel := context.WithCancel(t.Context())
-		g := NewGC(GCConfig{
-			Store:          s,
-			Logger:         discardLogger(),
-			PendingTimeout: pendingTimeout,
-			CompleteTTL:    completeTTL,
-			TombstoneTTL:   tombstoneTTL,
-			Now:            time.Now,
-			TickInterval:   50 * time.Millisecond,
-		})
-		done := make(chan error, 1)
-		go func() { done <- g.Run(ctx) }()
-		cancel()
-		select {
-		case err := <-done:
-			assert.ErrorIs(t, err, context.Canceled)
-		case <-time.After(2 * time.Second):
-			t.Fatal("Run did not return within 2s after ctx cancellation")
+func (p *panicStore) BatchTransition(filter func(Record) bool, mutate func(Record) Record) (int, error) {
+	if p.panicOnce && !p.panicCalled {
+		p.panicCalled = true
+		panic("injected test panic")
+	}
+	return p.delegate.BatchTransition(filter, mutate)
+}
+
+func (p *panicStore) BatchDelete(filter func(Record) bool) (int, error) {
+	return p.delegate.BatchDelete(filter)
+}
+
+// errorTransitionStore is a test-only fake that returns an error on the first
+// BatchTransition call only, then delegates to the real store. This lets us
+// verify that a batch-level error does not abort subsequent batches.
+type errorTransitionStore struct {
+	delegate     Store
+	errOnce      bool
+	errTriggered bool
+}
+
+func (e *errorTransitionStore) Get(tag string) (Record, bool, error) { return e.delegate.Get(tag) }
+func (e *errorTransitionStore) Put(tag string, rec Record) error     { return e.delegate.Put(tag, rec) }
+func (e *errorTransitionStore) CompareAndSwapStatus(tag string, expected Status, mutate func(Record) Record) (Record, error) {
+	return e.delegate.CompareAndSwapStatus(tag, expected, mutate)
+}
+func (e *errorTransitionStore) Counts() (JobCounts, error) { return e.delegate.Counts() }
+func (e *errorTransitionStore) Close() error               { return e.delegate.Close() }
+
+func (e *errorTransitionStore) BatchTransition(filter func(Record) bool, mutate func(Record) Record) (int, error) {
+	if e.errOnce && !e.errTriggered {
+		e.errTriggered = true
+		return 0, errors.New("injected batch transition error")
+	}
+	return e.delegate.BatchTransition(filter, mutate)
+}
+
+func (e *errorTransitionStore) BatchDelete(filter func(Record) bool) (int, error) {
+	return e.delegate.BatchDelete(filter)
+}
+
+// captureHandler is a test-only slog.Handler that records every log record.
+type captureHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *captureHandler) all() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]slog.Record, len(h.records))
+	copy(out, h.records)
+	return out
+}
+
+// openGCStore creates a bbolt-backed Store in a fresh temp directory.
+func openGCStore(t *testing.T) Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	s, err := NewStore(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
+	return s
+}
+
+// fixedClock returns a func() time.Time that always returns t.
+func fixedClock(t time.Time) func() time.Time {
+	return func() time.Time { return t }
+}
+
+// seedWithStatus creates a Record in the given status directly via Put.
+// For tombstone records, EvictedAt must be set by the caller.
+func seedWithStatusAt(t *testing.T, s Store, tag string, status Status, updatedAt time.Time) Record {
+	t.Helper()
+	rec := Record{
+		Tag:       tag,
+		Status:    status,
+		CreatedAt: updatedAt,
+		UpdatedAt: updatedAt,
+	}
+	if status == StatusCompleted || status == StatusFailed || status == StatusFailedTimeout {
+		rec.UpstreamResponse = &UpstreamResponse{
+			StatusCode: 200,
+			Header:     http.Header{"X-Test": []string{"1"}},
+			Body:       []byte("body"),
 		}
-	})
+	}
+	require.NoError(t, s.Put(tag, rec))
+	return rec
+}
 
-	t.Run("Run executes initial pass before first tick", func(t *testing.T) {
-		t.Parallel()
-		s := openGCStore(t)
+// seedTombstoneAt creates a tombstone record with the given evictedAt time.
+func seedTombstoneAt(t *testing.T, s Store, tag string, evictedAt time.Time) Record {
+	t.Helper()
+	rec := Record{
+		Tag:       tag,
+		Status:    StatusTombstone,
+		CreatedAt: evictedAt,
+		UpdatedAt: evictedAt,
+		EvictedAt: evictedAt,
+	}
+	require.NoError(t, s.Put(tag, rec))
+	return rec
+}
 
-		base := time.Now().UTC().Truncate(time.Second)
-		// seed a pending record old enough to be timed out.
-		seedWithStatusAt(t, s, "pre-tick-tag", StatusPending, base.Add(-pendingTimeout-time.Second))
-
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-
-		g := NewGC(GCConfig{
-			Store:          s,
-			Logger:         discardLogger(),
-			PendingTimeout: pendingTimeout,
-			CompleteTTL:    completeTTL,
-			TombstoneTTL:   tombstoneTTL,
-			Now:            fixedClock(base),
-			// use a long tick so we can observe the pre-tick pass.
-			TickInterval: 10 * time.Second,
-		})
-
-		done := make(chan error, 1)
-		go func() { done <- g.Run(ctx) }()
-
-		// wait briefly for the initial pass to execute.
-		require.Eventually(t, func() bool {
-			got, found, err := s.Get("pre-tick-tag")
-			if err != nil || !found {
-				return false
-			}
-			return got.Status == StatusFailedTimeout
-		}, 2*time.Second, 20*time.Millisecond, "initial pass must transition pending record before first tick")
-
-		cancel()
-		<-done
-	})
+// discardLogger returns a *slog.Logger that discards all output. Keeps test
+// output clean while still exercising the log paths.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }

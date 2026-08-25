@@ -5,13 +5,6 @@ import (
 	"strings"
 )
 
-// Country is a validated two-letter country code, normalized to lowercase.
-// The zero value "" means "no/unknown country". Non-empty values are
-// constructed only via ParseCountry, so a Country is always either empty or a
-// well-formed two-letter lowercase code — callers never need to re-validate or
-// re-lowercase it.
-type Country string
-
 // ParseCountry validates that s is exactly two ASCII letters (either case) and
 // returns it normalized to lowercase. It returns an error otherwise, so an
 // ill-formed Country cannot be constructed. The two-ASCII-letter rule is the
@@ -23,6 +16,13 @@ func ParseCountry(s string) (Country, error) {
 	}
 	return Country(strings.ToLower(s)), nil
 }
+
+// Country is a validated two-letter country code, normalized to lowercase.
+// The zero value "" means "no/unknown country". Non-empty values are
+// constructed only via ParseCountry, so a Country is always either empty or a
+// well-formed two-letter lowercase code — callers never need to re-validate or
+// re-lowercase it.
+type Country string
 
 // isASCIILetter reports whether b is an ASCII letter (a–z or A–Z).
 func isASCIILetter(b byte) bool {

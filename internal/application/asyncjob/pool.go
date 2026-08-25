@@ -24,65 +24,6 @@ var ErrBodyTooLarge = errors.New("asyncjob: request body exceeds 10 MB limit")
 // worker after cancellation would be immediately doomed.
 var ErrPoolClosed = errors.New("asyncjob: pool is shut down")
 
-// Outcome is a sealed discriminated union returned by SubmitOrFetch. The only
-// valid concrete types are OutcomePending, OutcomeCompleted, OutcomeTombstoned,
-// and OutcomeQueueFull. The unexported method prevents external packages from
-// adding new variants.
-type Outcome interface{ isOutcome() }
-
-// OutcomePending is returned when the job has been accepted but the upstream
-// has not yet responded, or when a second submit arrives for the same tag
-// while the first worker is still in-flight.
-type OutcomePending struct{}
-
-func (OutcomePending) isOutcome() {}
-
-// OutcomeCompleted is returned when the upstream has already responded
-// (status completed, failed, or failed_timeout). Response holds the stored
-// upstream result.
-type OutcomeCompleted struct{ Response UpstreamResponse }
-
-func (OutcomeCompleted) isOutcome() {}
-
-// OutcomeTombstoned is returned when the tag has been logically deleted. The
-// caller should treat the job as permanently gone.
-type OutcomeTombstoned struct{}
-
-func (OutcomeTombstoned) isOutcome() {}
-
-// OutcomeQueueFull is returned when all semaphore slots are occupied and the
-// new job cannot be accepted. No record is written; no slot is held.
-type OutcomeQueueFull struct{}
-
-func (OutcomeQueueFull) isOutcome() {}
-
-// Forwarder executes a single proxy request against the upstream and returns
-// the materialised response. The pool owns req.Body; the implementation MUST
-// close it. The ctx passed here is the pool's own context (not the inbound
-// request ctx, which may already be cancelled by the time the worker runs).
-type Forwarder interface {
-	Forward(ctx context.Context, req *http.Request) (UpstreamResponse, error)
-}
-
-// Pool is a semaphore-bounded async job executor. It accepts inbound HTTP
-// requests keyed by a retry-tag, dispatches them to a Forwarder on a
-// background goroutine, and persists the result in a Store. Callers retrieve
-// previously submitted jobs by passing the same tag again via SubmitOrFetch.
-//
-// Pool must be created via NewPool. The zero value is not usable. Caller must
-// call Shutdown when done to drain in-flight workers.
-type Pool struct {
-	store        Store
-	forwarder    Forwarder
-	slots        chan struct{}
-	logger       *slog.Logger
-	wg           sync.WaitGroup
-	ctx          context.Context //nolint:containedctx // pool owns its lifetime ctx
-	cancel       context.CancelFunc
-	shutdownOnce sync.Once
-	shutdownErr  error
-}
-
 // NewPool creates a Pool that forwards requests via forwarder, persists state
 // in store, and limits concurrency to maxConcurrent in-flight jobs. logger is
 // used for internal diagnostic messages; pass slog.Default() when no custom
@@ -104,6 +45,25 @@ func NewPool(store Store, forwarder Forwarder, maxConcurrent int, logger *slog.L
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+}
+
+// Pool is a semaphore-bounded async job executor. It accepts inbound HTTP
+// requests keyed by a retry-tag, dispatches them to a Forwarder on a
+// background goroutine, and persists the result in a Store. Callers retrieve
+// previously submitted jobs by passing the same tag again via SubmitOrFetch.
+//
+// Pool must be created via NewPool. The zero value is not usable. Caller must
+// call Shutdown when done to drain in-flight workers.
+type Pool struct {
+	store        Store
+	forwarder    Forwarder
+	slots        chan struct{}
+	logger       *slog.Logger
+	wg           sync.WaitGroup
+	ctx          context.Context //nolint:containedctx // pool owns its lifetime ctx
+	cancel       context.CancelFunc
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 // SubmitOrFetch either fetches the current state for tag or submits req as a
@@ -192,6 +152,101 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	return p.shutdownErr
 }
 
+// runWorker calls the Forwarder and CAS-transitions the stored record to
+// completed or failed. A CAS race (e.g. the GC pass already transitioned to
+// failed_timeout) is logged at debug level and not treated as fatal.
+func (p *Pool) runWorker(tag string, req *http.Request) {
+	resp, fwdErr := p.forwarder.Forward(p.ctx, req)
+
+	echo := tag
+	if len(echo) > maxTagEchoLenLog {
+		echo = echo[:maxTagEchoLenLog]
+	}
+
+	var (
+		targetStatus Status
+		targetResp   UpstreamResponse
+	)
+	if fwdErr == nil {
+		targetStatus = StatusCompleted
+		targetResp = resp
+	} else {
+		// log before writing the synthetic 502 so the operator has a breadcrumb
+		// tying a failed record to a time and tag. fwdErr.Error() is intentionally
+		// not logged — it may contain host:port or upstream data.
+		p.logger.Debug("submit_or_fetch: forwarder failed, writing synthetic 502",
+			"tag", echo,
+		)
+		targetStatus = StatusFailed
+		targetResp = UpstreamResponse{
+			StatusCode: 502,
+			Header:     nil,
+			Body:       []byte("upstream error"),
+		}
+	}
+
+	_, casErr := p.store.CompareAndSwapStatus(tag, StatusPending, func(r Record) Record {
+		r.Status = targetStatus
+		r.UpdatedAt = time.Now().UTC()
+		r.UpstreamResponse = &targetResp
+		return r
+	})
+	if casErr != nil {
+		errLabel := "unknown"
+		switch {
+		case errors.Is(casErr, ErrStatusMismatch):
+			errLabel = "status_mismatch"
+		case errors.Is(casErr, ErrNotFound):
+			errLabel = "not_found"
+		}
+		p.logger.Debug("submit_or_fetch: cas race on completion",
+			"tag", echo,
+			"prev", string(StatusPending),
+			"cas_err", errLabel,
+		)
+	}
+}
+
+// OutcomePending is returned when the job has been accepted but the upstream
+// has not yet responded, or when a second submit arrives for the same tag
+// while the first worker is still in-flight.
+type OutcomePending struct{}
+
+func (OutcomePending) isOutcome() {}
+
+// OutcomeCompleted is returned when the upstream has already responded
+// (status completed, failed, or failed_timeout). Response holds the stored
+// upstream result.
+type OutcomeCompleted struct{ Response UpstreamResponse }
+
+func (OutcomeCompleted) isOutcome() {}
+
+// OutcomeTombstoned is returned when the tag has been logically deleted. The
+// caller should treat the job as permanently gone.
+type OutcomeTombstoned struct{}
+
+func (OutcomeTombstoned) isOutcome() {}
+
+// OutcomeQueueFull is returned when all semaphore slots are occupied and the
+// new job cannot be accepted. No record is written; no slot is held.
+type OutcomeQueueFull struct{}
+
+func (OutcomeQueueFull) isOutcome() {}
+
+// Outcome is a sealed discriminated union returned by SubmitOrFetch. The only
+// valid concrete types are OutcomePending, OutcomeCompleted, OutcomeTombstoned,
+// and OutcomeQueueFull. The unexported method prevents external packages from
+// adding new variants.
+type Outcome interface{ isOutcome() }
+
+// Forwarder executes a single proxy request against the upstream and returns
+// the materialised response. The pool owns req.Body; the implementation MUST
+// close it. The ctx passed here is the pool's own context (not the inbound
+// request ctx, which may already be cancelled by the time the worker runs).
+type Forwarder interface {
+	Forward(ctx context.Context, req *http.Request) (UpstreamResponse, error)
+}
+
 // maxBodyBytes is the hard cap on the request body size accepted by SubmitOrFetch.
 const maxBodyBytes = 10 * 1024 * 1024 // 10 MB
 
@@ -259,59 +314,4 @@ func cloneRequest(poolCtx context.Context, src *http.Request, body []byte) *http
 		r.Body = http.NoBody
 	}
 	return r
-}
-
-// runWorker calls the Forwarder and CAS-transitions the stored record to
-// completed or failed. A CAS race (e.g. the GC pass already transitioned to
-// failed_timeout) is logged at debug level and not treated as fatal.
-func (p *Pool) runWorker(tag string, req *http.Request) {
-	resp, fwdErr := p.forwarder.Forward(p.ctx, req)
-
-	echo := tag
-	if len(echo) > maxTagEchoLenLog {
-		echo = echo[:maxTagEchoLenLog]
-	}
-
-	var (
-		targetStatus Status
-		targetResp   UpstreamResponse
-	)
-	if fwdErr == nil {
-		targetStatus = StatusCompleted
-		targetResp = resp
-	} else {
-		// log before writing the synthetic 502 so the operator has a breadcrumb
-		// tying a failed record to a time and tag. fwdErr.Error() is intentionally
-		// not logged — it may contain host:port or upstream data.
-		p.logger.Debug("submit_or_fetch: forwarder failed, writing synthetic 502",
-			"tag", echo,
-		)
-		targetStatus = StatusFailed
-		targetResp = UpstreamResponse{
-			StatusCode: 502,
-			Header:     nil,
-			Body:       []byte("upstream error"),
-		}
-	}
-
-	_, casErr := p.store.CompareAndSwapStatus(tag, StatusPending, func(r Record) Record {
-		r.Status = targetStatus
-		r.UpdatedAt = time.Now().UTC()
-		r.UpstreamResponse = &targetResp
-		return r
-	})
-	if casErr != nil {
-		errLabel := "unknown"
-		switch {
-		case errors.Is(casErr, ErrStatusMismatch):
-			errLabel = "status_mismatch"
-		case errors.Is(casErr, ErrNotFound):
-			errLabel = "not_found"
-		}
-		p.logger.Debug("submit_or_fetch: cas race on completion",
-			"tag", echo,
-			"prev", string(StatusPending),
-			"cas_err", errLabel,
-		)
-	}
 }

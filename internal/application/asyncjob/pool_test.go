@@ -23,123 +23,8 @@ import (
 // compile-time assertion that fakeForwarder satisfies asyncjob.Forwarder.
 var _ asyncjob.Forwarder = (*fakeForwarder)(nil)
 
-// fakeForwarder is a test double for asyncjob.Forwarder.
-// When block is non-nil the goroutine waits for it to be closed before
-// returning. When errOut is non-nil it is returned as the forwarding error.
-type fakeForwarder struct {
-	mu     sync.Mutex
-	block  chan struct{} // if non-nil, Forward waits until this is closed
-	resp   asyncjob.UpstreamResponse
-	errOut error
-	calls  int
-}
-
-func (f *fakeForwarder) Forward(_ context.Context, req *http.Request) (asyncjob.UpstreamResponse, error) {
-	// always drain + close the body as the contract requires.
-	if req.Body != nil {
-		_, _ = io.Copy(io.Discard, req.Body)
-		_ = req.Body.Close()
-	}
-
-	f.mu.Lock()
-	blk := f.block
-	f.calls++
-	f.mu.Unlock()
-
-	if blk != nil {
-		<-blk
-	}
-
-	f.mu.Lock()
-	resp := f.resp
-	err := f.errOut
-	f.mu.Unlock()
-	return resp, err
-}
-
-func (f *fakeForwarder) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
 // compile-time assertion that blockingForwarder satisfies asyncjob.Forwarder.
 var _ asyncjob.Forwarder = (*blockingForwarder)(nil)
-
-// blockingForwarder blocks until either the block channel is closed OR the
-// request context is cancelled. It models a real upstream call that honours
-// context cancellation so the pool's ctx cancel propagates correctly.
-type blockingForwarder struct {
-	block chan struct{}
-}
-
-func (b *blockingForwarder) Forward(ctx context.Context, req *http.Request) (asyncjob.UpstreamResponse, error) {
-	if req.Body != nil {
-		_, _ = io.Copy(io.Discard, req.Body)
-		_ = req.Body.Close()
-	}
-	select {
-	case <-b.block:
-		return asyncjob.UpstreamResponse{StatusCode: 200}, nil
-	case <-ctx.Done():
-		return asyncjob.UpstreamResponse{}, ctx.Err()
-	}
-}
-
-// newPool creates a Pool backed by a temp bbolt store and registers cleanup
-// via t.Cleanup. The pool's Shutdown is NOT called in cleanup — tests that
-// care about cleanup do it explicitly so they can inspect the result.
-func newPool(t *testing.T, fwd asyncjob.Forwarder, maxConcurrent int) (*asyncjob.Pool, asyncjob.Store) {
-	t.Helper()
-	if maxConcurrent == 0 {
-		maxConcurrent = 4
-	}
-	path := filepath.Join(t.TempDir(), "jobs.db")
-	store, err := asyncjob.NewStore(path)
-	require.NoError(t, err, "NewStore must succeed for temp file")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	pool := asyncjob.NewPool(store, fwd, maxConcurrent, logger)
-	return pool, store
-}
-
-// drainPool shuts the pool down with a 3-second timeout and asserts no error.
-func drainPool(t *testing.T, pool *asyncjob.Pool) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	require.NoError(t, pool.Shutdown(ctx))
-}
-
-// makeReq builds a minimal *http.Request suitable for passing to SubmitOrFetch.
-func makeReq(t *testing.T, body string) *http.Request {
-	t.Helper()
-	var bodyReader io.ReadCloser
-	if body != "" {
-		bodyReader = io.NopCloser(strings.NewReader(body))
-	} else {
-		bodyReader = http.NoBody
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://example.com/", bodyReader)
-	require.NoError(t, err)
-	return req
-}
-
-// waitForStatus polls the store until the record for tag reaches wantStatus or
-// the deadline expires.
-func waitForStatus(t *testing.T, store asyncjob.Store, tag string, wantStatus asyncjob.Status, timeout time.Duration) asyncjob.Record {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		rec, found, err := store.Get(tag)
-		require.NoError(t, err)
-		if found && rec.Status == wantStatus {
-			return rec
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for tag %q to reach status %q", tag, wantStatus)
-	return asyncjob.Record{}
-}
 
 func TestPool_SubmitOrFetch(t *testing.T) {
 	t.Parallel()
@@ -498,6 +383,7 @@ func TestPool_Shutdown(t *testing.T) {
 // counted as pool-introduced goroutines; the post-drain delta reflects only
 // what the pool started.
 func TestPool_GoroutineLeak(t *testing.T) {
+	// not t.Parallel() — runtime.NumGoroutine() is a process-global counter; parallel siblings would skew the baseline.
 	baseline := runtime.NumGoroutine()
 
 	block := make(chan struct{})
@@ -516,4 +402,119 @@ func TestPool_GoroutineLeak(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	after := runtime.NumGoroutine()
 	assert.InDelta(t, baseline, after, 2, "goroutine leak: baseline=%d after=%d", baseline, after)
+}
+
+// fakeForwarder is a test double for asyncjob.Forwarder.
+// When block is non-nil the goroutine waits for it to be closed before
+// returning. When errOut is non-nil it is returned as the forwarding error.
+type fakeForwarder struct {
+	mu     sync.Mutex
+	block  chan struct{} // if non-nil, Forward waits until this is closed
+	resp   asyncjob.UpstreamResponse
+	errOut error
+	calls  int
+}
+
+func (f *fakeForwarder) Forward(_ context.Context, req *http.Request) (asyncjob.UpstreamResponse, error) {
+	// always drain + close the body as the contract requires.
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+	}
+
+	f.mu.Lock()
+	blk := f.block
+	f.calls++
+	f.mu.Unlock()
+
+	if blk != nil {
+		<-blk
+	}
+
+	f.mu.Lock()
+	resp := f.resp
+	err := f.errOut
+	f.mu.Unlock()
+	return resp, err
+}
+
+func (f *fakeForwarder) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// blockingForwarder blocks until either the block channel is closed OR the
+// request context is cancelled. It models a real upstream call that honours
+// context cancellation so the pool's ctx cancel propagates correctly.
+type blockingForwarder struct {
+	block chan struct{}
+}
+
+func (b *blockingForwarder) Forward(ctx context.Context, req *http.Request) (asyncjob.UpstreamResponse, error) {
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+	}
+	select {
+	case <-b.block:
+		return asyncjob.UpstreamResponse{StatusCode: 200}, nil
+	case <-ctx.Done():
+		return asyncjob.UpstreamResponse{}, ctx.Err()
+	}
+}
+
+// newPool creates a Pool backed by a temp bbolt store and registers cleanup
+// via t.Cleanup. The pool's Shutdown is NOT called in cleanup — tests that
+// care about cleanup do it explicitly so they can inspect the result.
+func newPool(t *testing.T, fwd asyncjob.Forwarder, maxConcurrent int) (*asyncjob.Pool, asyncjob.Store) {
+	t.Helper()
+	if maxConcurrent == 0 {
+		maxConcurrent = 4
+	}
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	store, err := asyncjob.NewStore(path)
+	require.NoError(t, err, "NewStore must succeed for temp file")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pool := asyncjob.NewPool(store, fwd, maxConcurrent, logger)
+	return pool, store
+}
+
+// drainPool shuts the pool down with a 3-second timeout and asserts no error.
+func drainPool(t *testing.T, pool *asyncjob.Pool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, pool.Shutdown(ctx))
+}
+
+// makeReq builds a minimal *http.Request suitable for passing to SubmitOrFetch.
+func makeReq(t *testing.T, body string) *http.Request {
+	t.Helper()
+	var bodyReader io.ReadCloser
+	if body != "" {
+		bodyReader = io.NopCloser(strings.NewReader(body))
+	} else {
+		bodyReader = http.NoBody
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://example.com/", bodyReader)
+	require.NoError(t, err)
+	return req
+}
+
+// waitForStatus polls the store until the record for tag reaches wantStatus or
+// the deadline expires.
+func waitForStatus(t *testing.T, store asyncjob.Store, tag string, wantStatus asyncjob.Status, timeout time.Duration) asyncjob.Record {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		rec, found, err := store.Get(tag)
+		require.NoError(t, err)
+		if found && rec.Status == wantStatus {
+			return rec
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for tag %q to reach status %q", tag, wantStatus)
+	return asyncjob.Record{}
 }

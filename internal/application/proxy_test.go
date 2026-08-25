@@ -35,68 +35,217 @@ var _ net.Addr = fakeAddr{}
 var _ http.ResponseWriter = (*fakeHijackWriter)(nil)
 var _ http.Hijacker = (*fakeHijackWriter)(nil)
 
-// mockVerifier is a test double for application.Verifier.
-type mockVerifier struct {
-	verifyFn func(string) bool
-}
+// TestProxyService_ActiveSessions drives every HandleHTTP/HandleCONNECT path
+// (success, each error branch, and a mid-flight snapshot) and asserts the
+// gauge contract documented on ActiveSessions: it is 1 while a session is in
+// flight and returns to exactly 0 on every path, including every CONNECT
+// error branch between the increment and the tunnel-goroutine handoff.
+func TestProxyService_ActiveSessions(t *testing.T) {
+	t.Parallel()
 
-func (m *mockVerifier) Verify(header string) bool {
-	if m.verifyFn != nil {
-		return m.verifyFn(header)
-	}
-	return false
-}
+	t.Run("HTTP success returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, "ok")
+		}))
+		t.Cleanup(upstream.Close)
 
-// mockDialer is a test double for the dialer port.
-type mockDialer struct {
-	dialFn func(ctx context.Context, network, address string) (net.Conn, error)
-}
+		svc := newTestService(t, directDialer())
+		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
 
-func (m *mockDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	if m.dialFn != nil {
-		return m.dialFn(ctx, network, address)
-	}
-	return net.Dial(network, address)
-}
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
 
-// lockedBuffer is a bytes.Buffer guarded by a mutex. It satisfies io.Writer
-// and is safe for concurrent use, meeting the contract required by
-// slog.NewJSONHandler when the underlying writer is shared across goroutines.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
+	t.Run("HTTP non-absolute-URI early return never moves the gauge", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, directDialer())
+		req := httptest.NewRequest(http.MethodGet, "/relative/path", nil)
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
 
-func (lb *lockedBuffer) Write(p []byte) (int, error) {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	return lb.buf.Write(p)
-}
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
 
-func (lb *lockedBuffer) String() string {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	return lb.buf.String()
-}
+	t.Run("HTTP upstream error returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		failDialer := &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errors.New("nope")
+		}}
+		svc := newTestService(t, failDialer)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		rr := httptest.NewRecorder()
+		svc.HandleHTTP(rr, req)
 
-// directDialer routes DialContext directly to net.Dial.
-func directDialer() *mockDialer {
-	return &mockDialer{dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, network, address)
-	}}
-}
+		require.Equal(t, http.StatusBadGateway, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
 
-func newTestService(t *testing.T, d dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
-	t.Helper()
-	o := application.ProxyServiceOptions{
-		Dialer:      d,
-		DialTimeout: 5 * time.Second,
-	}
-	for _, fn := range opts {
-		fn(&o)
-	}
-	return application.NewProxyService(o)
+	t.Run("HTTP mid-flight gauge reads 1 while dial is blocked", func(t *testing.T) {
+		t.Parallel()
+		release := make(chan struct{})
+		blockDialer := &mockDialer{dialFn: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil, errors.New("released")
+		}}
+		svc := newTestService(t, blockDialer)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		rr := httptest.NewRecorder()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			svc.HandleHTTP(rr, req)
+		}()
+
+		require.Eventually(t, func() bool { return svc.ActiveSessions() == 1 }, time.Second, time.Millisecond,
+			"gauge must read 1 while the dial is blocked")
+		close(release)
+		<-done
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT happy path returns gauge to 0 only after the tunnel goroutine finishes", func(t *testing.T) {
+		t.Parallel()
+		echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = echoLn.Close() })
+		go func() {
+			for {
+				conn, err := echoLn.Accept()
+				if err != nil {
+					return
+				}
+				go func(c net.Conn) {
+					defer func() { _ = c.Close() }()
+					_, _ = io.Copy(c, c)
+				}(conn)
+			}
+		}()
+
+		svc := newTestService(t, directDialer())
+		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			svc.HandleCONNECT(w, r)
+		}))
+		t.Cleanup(proxyServer.Close)
+
+		conn, err := net.Dial("tcp", proxyServer.Listener.Addr().String())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		target := echoLn.Addr().String()
+		_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		require.NoError(t, err)
+
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		_ = resp.Body.Close()
+
+		// the handler has already returned (200 written) but the tunnel
+		// goroutine still owns the session — the gauge must still read 1.
+		assert.Equal(t, int64(1), svc.ActiveSessions(),
+			"gauge must stay 1 while the tunnel goroutine is still copying")
+
+		require.NoError(t, conn.(*net.TCPConn).CloseWrite())
+		_, _ = io.ReadAll(conn)
+		_ = conn.Close()
+
+		require.Eventually(t, func() bool { return svc.ActiveSessions() == 0 }, 2*time.Second, 5*time.Millisecond,
+			"gauge must return to 0 once both conns are closed by the tunnel goroutine")
+	})
+
+	t.Run("CONNECT dial failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		failDialer := &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errors.New("dial refused")
+		}}
+		svc := newTestService(t, failDialer)
+		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			svc.HandleCONNECT(w, r)
+		}))
+		t.Cleanup(proxyServer.Close)
+
+		req, err := http.NewRequest(http.MethodConnect, proxyServer.URL, nil)
+		require.NoError(t, err)
+		req.Host = "example.com:443"
+
+		resp, err := proxyServer.Client().Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT no hijacker support returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		rr := httptest.NewRecorder() // *httptest.ResponseRecorder does not implement http.Hijacker
+
+		svc.HandleCONNECT(rr, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT hijack failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
+			return nil, nil, errors.New("hijack refused")
+		})
+
+		svc.HandleCONNECT(w, req)
+
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT post-hijack write failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		client := fakeConn{writeErr: errors.New("write refused")}
+		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
+			// a 1-byte write buffer forces the 200-response write to reach the
+			// underlying (failing) conn immediately, inside fmt.Fprint itself.
+			bw := bufio.NewWriterSize(client, 1)
+			return client, bufio.NewReadWriter(bufio.NewReader(client), bw), nil
+		})
+
+		svc.HandleCONNECT(w, req)
+
+		assert.Zero(t, svc.ActiveSessions())
+	})
+
+	t.Run("CONNECT post-hijack flush failure returns gauge to 0", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestService(t, dialToFakeConn())
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
+		req.Host = "example.com:443"
+		client := fakeConn{writeErr: errors.New("write refused")}
+		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
+			// the default-size write buffer holds the whole 200 response, so
+			// fmt.Fprint succeeds (buffered) and only the explicit Flush call
+			// reaches the underlying (failing) conn.
+			return client, bufio.NewReadWriter(bufio.NewReader(client), bufio.NewWriter(client)), nil
+		})
+
+		svc.HandleCONNECT(w, req)
+
+		assert.Zero(t, svc.ActiveSessions())
+	})
 }
 
 func TestProxyService_HandleHTTP(t *testing.T) {
@@ -1206,6 +1355,108 @@ func TestProxyService_HandleCONNECT(t *testing.T) {
 	})
 }
 
+func TestIsLoopbackRemote(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:12345", true},
+		{"127.0.0.1:0", true},
+		{"[::1]:12345", true},
+		{"[::ffff:127.0.0.1]:80", true},
+		{"192.0.2.4:12345", false},
+		{"", false},
+		{"garbage", false},
+		{"127.0.0.1", false},       // no port — SplitHostPort error
+		{"127.0.0.1.:1234", false}, // trailing dot — ParseIP returns nil
+		{"notanip:1234", false},    // not an IP address
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.addr, func(t *testing.T) {
+			t.Parallel()
+			got := application.IsLoopbackRemote(tc.addr)
+			assert.Equal(t, tc.want, got, "addr=%q", tc.addr)
+		})
+	}
+}
+
+// dialer mirrors the unexported outbound-connection port application declares
+// for ProxyServiceOptions.Dialer. It is a test-local copy because the
+// production contract is unexported and this is an external test package;
+// assignment into the field is structural, so the two only need matching
+// method sets.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// mockVerifier is a test double for application.Verifier.
+type mockVerifier struct {
+	verifyFn func(string) bool
+}
+
+func (m *mockVerifier) Verify(header string) bool {
+	if m.verifyFn != nil {
+		return m.verifyFn(header)
+	}
+	return false
+}
+
+// mockDialer is a test double for the dialer port.
+type mockDialer struct {
+	dialFn func(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+func (m *mockDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if m.dialFn != nil {
+		return m.dialFn(ctx, network, address)
+	}
+	return net.Dial(network, address)
+}
+
+// lockedBuffer is a bytes.Buffer guarded by a mutex. It satisfies io.Writer
+// and is safe for concurrent use, meeting the contract required by
+// slog.NewJSONHandler when the underlying writer is shared across goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (lb *lockedBuffer) Write(p []byte) (int, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.buf.Write(p)
+}
+
+func (lb *lockedBuffer) String() string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.buf.String()
+}
+
+// directDialer routes DialContext directly to net.Dial.
+func directDialer() *mockDialer {
+	return &mockDialer{dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, address)
+	}}
+}
+
+func newTestService(t *testing.T, d dialer, opts ...func(*application.ProxyServiceOptions)) *application.ProxyService {
+	t.Helper()
+	o := application.ProxyServiceOptions{
+		Dialer:      d,
+		DialTimeout: 5 * time.Second,
+	}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return application.NewProxyService(o)
+}
+
 // fakeConn is a minimal net.Conn double used by the CONNECT error-path
 // ActiveSessions tests. Read always returns io.EOF; Write returns writeErr
 // (nil unless configured). It serves two roles: as an upstream dial result
@@ -1266,255 +1517,4 @@ func dialToFakeConn() *mockDialer {
 	return &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
 		return fakeConn{}, nil
 	}}
-}
-
-// TestProxyService_ActiveSessions drives every HandleHTTP/HandleCONNECT path
-// (success, each error branch, and a mid-flight snapshot) and asserts the
-// gauge contract documented on ActiveSessions: it is 1 while a session is in
-// flight and returns to exactly 0 on every path, including every CONNECT
-// error branch between the increment and the tunnel-goroutine handoff.
-func TestProxyService_ActiveSessions(t *testing.T) {
-	t.Parallel()
-
-	t.Run("HTTP success returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = fmt.Fprint(w, "ok")
-		}))
-		t.Cleanup(upstream.Close)
-
-		svc := newTestService(t, directDialer())
-		req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
-		rr := httptest.NewRecorder()
-		svc.HandleHTTP(rr, req)
-
-		require.Equal(t, http.StatusOK, rr.Code)
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("HTTP non-absolute-URI early return never moves the gauge", func(t *testing.T) {
-		t.Parallel()
-		svc := newTestService(t, directDialer())
-		req := httptest.NewRequest(http.MethodGet, "/relative/path", nil)
-		rr := httptest.NewRecorder()
-		svc.HandleHTTP(rr, req)
-
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("HTTP upstream error returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		failDialer := &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
-			return nil, errors.New("nope")
-		}}
-		svc := newTestService(t, failDialer)
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-		rr := httptest.NewRecorder()
-		svc.HandleHTTP(rr, req)
-
-		require.Equal(t, http.StatusBadGateway, rr.Code)
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("HTTP mid-flight gauge reads 1 while dial is blocked", func(t *testing.T) {
-		t.Parallel()
-		release := make(chan struct{})
-		blockDialer := &mockDialer{dialFn: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			select {
-			case <-release:
-			case <-ctx.Done():
-			}
-			return nil, errors.New("released")
-		}}
-		svc := newTestService(t, blockDialer)
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-		rr := httptest.NewRecorder()
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			svc.HandleHTTP(rr, req)
-		}()
-
-		require.Eventually(t, func() bool { return svc.ActiveSessions() == 1 }, time.Second, time.Millisecond,
-			"gauge must read 1 while the dial is blocked")
-		close(release)
-		<-done
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("CONNECT happy path returns gauge to 0 only after the tunnel goroutine finishes", func(t *testing.T) {
-		t.Parallel()
-		echoLn, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = echoLn.Close() })
-		go func() {
-			for {
-				conn, err := echoLn.Accept()
-				if err != nil {
-					return
-				}
-				go func(c net.Conn) {
-					defer func() { _ = c.Close() }()
-					_, _ = io.Copy(c, c)
-				}(conn)
-			}
-		}()
-
-		svc := newTestService(t, directDialer())
-		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			svc.HandleCONNECT(w, r)
-		}))
-		t.Cleanup(proxyServer.Close)
-
-		conn, err := net.Dial("tcp", proxyServer.Listener.Addr().String())
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = conn.Close() })
-
-		target := echoLn.Addr().String()
-		_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
-		require.NoError(t, err)
-
-		br := bufio.NewReader(conn)
-		resp, err := http.ReadResponse(br, nil)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		_ = resp.Body.Close()
-
-		// the handler has already returned (200 written) but the tunnel
-		// goroutine still owns the session — the gauge must still read 1.
-		assert.Equal(t, int64(1), svc.ActiveSessions(),
-			"gauge must stay 1 while the tunnel goroutine is still copying")
-
-		require.NoError(t, conn.(*net.TCPConn).CloseWrite())
-		_, _ = io.ReadAll(conn)
-		_ = conn.Close()
-
-		require.Eventually(t, func() bool { return svc.ActiveSessions() == 0 }, 2*time.Second, 5*time.Millisecond,
-			"gauge must return to 0 once both conns are closed by the tunnel goroutine")
-	})
-
-	t.Run("CONNECT dial failure returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		failDialer := &mockDialer{dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
-			return nil, errors.New("dial refused")
-		}}
-		svc := newTestService(t, failDialer)
-		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			svc.HandleCONNECT(w, r)
-		}))
-		t.Cleanup(proxyServer.Close)
-
-		req, err := http.NewRequest(http.MethodConnect, proxyServer.URL, nil)
-		require.NoError(t, err)
-		req.Host = "example.com:443"
-
-		resp, err := proxyServer.Client().Do(req)
-		require.NoError(t, err)
-		defer func() { _ = resp.Body.Close() }()
-		assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("CONNECT no hijacker support returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		svc := newTestService(t, dialToFakeConn())
-		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
-		req.Host = "example.com:443"
-		rr := httptest.NewRecorder() // *httptest.ResponseRecorder does not implement http.Hijacker
-
-		svc.HandleCONNECT(rr, req)
-
-		assert.Equal(t, http.StatusInternalServerError, rr.Code)
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("CONNECT hijack failure returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		svc := newTestService(t, dialToFakeConn())
-		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
-		req.Host = "example.com:443"
-		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
-			return nil, nil, errors.New("hijack refused")
-		})
-
-		svc.HandleCONNECT(w, req)
-
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("CONNECT post-hijack write failure returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		svc := newTestService(t, dialToFakeConn())
-		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
-		req.Host = "example.com:443"
-		client := fakeConn{writeErr: errors.New("write refused")}
-		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
-			// a 1-byte write buffer forces the 200-response write to reach the
-			// underlying (failing) conn immediately, inside fmt.Fprint itself.
-			bw := bufio.NewWriterSize(client, 1)
-			return client, bufio.NewReadWriter(bufio.NewReader(client), bw), nil
-		})
-
-		svc.HandleCONNECT(w, req)
-
-		assert.Zero(t, svc.ActiveSessions())
-	})
-
-	t.Run("CONNECT post-hijack flush failure returns gauge to 0", func(t *testing.T) {
-		t.Parallel()
-		svc := newTestService(t, dialToFakeConn())
-		req := httptest.NewRequest(http.MethodConnect, "http://example.com/", nil)
-		req.Host = "example.com:443"
-		client := fakeConn{writeErr: errors.New("write refused")}
-		w := newFakeHijackWriter(func() (net.Conn, *bufio.ReadWriter, error) {
-			// the default-size write buffer holds the whole 200 response, so
-			// fmt.Fprint succeeds (buffered) and only the explicit Flush call
-			// reaches the underlying (failing) conn.
-			return client, bufio.NewReadWriter(bufio.NewReader(client), bufio.NewWriter(client)), nil
-		})
-
-		svc.HandleCONNECT(w, req)
-
-		assert.Zero(t, svc.ActiveSessions())
-	})
-}
-
-func TestIsLoopbackRemote(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"127.0.0.1:12345", true},
-		{"127.0.0.1:0", true},
-		{"[::1]:12345", true},
-		{"[::ffff:127.0.0.1]:80", true},
-		{"192.0.2.4:12345", false},
-		{"", false},
-		{"garbage", false},
-		{"127.0.0.1", false},       // no port — SplitHostPort error
-		{"127.0.0.1.:1234", false}, // trailing dot — ParseIP returns nil
-		{"notanip:1234", false},    // not an IP address
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.addr, func(t *testing.T) {
-			t.Parallel()
-			got := application.IsLoopbackRemote(tc.addr)
-			assert.Equal(t, tc.want, got, "addr=%q", tc.addr)
-		})
-	}
-}
-
-// dialer mirrors the unexported outbound-connection port application declares
-// for ProxyServiceOptions.Dialer. It is a test-local copy because the
-// production contract is unexported and this is an external test package;
-// assignment into the field is structural, so the two only need matching
-// method sets.
-type dialer interface {
-	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }

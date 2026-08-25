@@ -6,48 +6,6 @@ import (
 	"time"
 )
 
-// GC runs periodic garbage-collection passes over an asyncjob Store. Each pass
-// transitions stale records in three ordered steps: pending → failed_timeout,
-// terminal → tombstone (stripping the response payload), tombstone → DELETE.
-//
-// Create via NewGC. The zero value is not usable. Call Run to start the loop.
-type GC struct {
-	store          Store
-	logger         *slog.Logger
-	pendingTimeout time.Duration
-	completeTTL    time.Duration
-	tombstoneTTL   time.Duration
-	now            func() time.Time
-	tickInterval   time.Duration
-}
-
-// GCConfig holds the configuration for a GC instance.
-//
-// Store is required. Logger defaults to slog.Default() when nil. Now defaults
-// to time.Now when nil. TickInterval defaults to 60 seconds when zero.
-type GCConfig struct {
-	// Store is the persistence layer the GC operates on. Required.
-	Store Store
-	// Logger receives diagnostic messages from each GC pass. Defaults to
-	// slog.Default() when nil.
-	Logger *slog.Logger
-	// PendingTimeout is the age threshold after which a pending record is
-	// transitioned to failed_timeout. Measured from UpdatedAt.
-	PendingTimeout time.Duration
-	// CompleteTTL is the age threshold after which a completed, failed, or
-	// failed_timeout record is transitioned to tombstone. Measured from UpdatedAt.
-	CompleteTTL time.Duration
-	// TombstoneTTL is the age threshold after which a tombstone record is
-	// permanently deleted from the store. Measured from EvictedAt.
-	TombstoneTTL time.Duration
-	// Now returns the current time. Defaults to time.Now when nil. Injectable
-	// for deterministic tests.
-	Now func() time.Time
-	// TickInterval controls how often the GC executes a pass. Defaults to
-	// 60 seconds when zero. Injectable for fast-cycling tests.
-	TickInterval time.Duration
-}
-
 // NewGC creates a GC from cfg, applying defaults for nil Logger, nil Now, and
 // zero TickInterval. cfg.Store must not be nil.
 func NewGC(cfg GCConfig) *GC {
@@ -72,6 +30,21 @@ func NewGC(cfg GCConfig) *GC {
 		now:            nowFn,
 		tickInterval:   tick,
 	}
+}
+
+// GC runs periodic garbage-collection passes over an asyncjob Store. Each pass
+// transitions stale records in three ordered steps: pending → failed_timeout,
+// terminal → tombstone (stripping the response payload), tombstone → DELETE.
+//
+// Create via NewGC. The zero value is not usable. Call Run to start the loop.
+type GC struct {
+	store          Store
+	logger         *slog.Logger
+	pendingTimeout time.Duration
+	completeTTL    time.Duration
+	tombstoneTTL   time.Duration
+	now            func() time.Time
+	tickInterval   time.Duration
 }
 
 // Run starts the GC tick loop. It runs one pass immediately, then repeats on
@@ -215,4 +188,31 @@ func (g *GC) runBatchDelete(op string, filter func(Record) bool) int {
 		return 0
 	}
 	return n
+}
+
+// GCConfig holds the configuration for a GC instance.
+//
+// Store is required. Logger defaults to slog.Default() when nil. Now defaults
+// to time.Now when nil. TickInterval defaults to 60 seconds when zero.
+type GCConfig struct {
+	// Store is the persistence layer the GC operates on. Required.
+	Store Store
+	// Logger receives diagnostic messages from each GC pass. Defaults to
+	// slog.Default() when nil.
+	Logger *slog.Logger
+	// PendingTimeout is the age threshold after which a pending record is
+	// transitioned to failed_timeout. Measured from UpdatedAt.
+	PendingTimeout time.Duration
+	// CompleteTTL is the age threshold after which a completed, failed, or
+	// failed_timeout record is transitioned to tombstone. Measured from UpdatedAt.
+	CompleteTTL time.Duration
+	// TombstoneTTL is the age threshold after which a tombstone record is
+	// permanently deleted from the store. Measured from EvictedAt.
+	TombstoneTTL time.Duration
+	// Now returns the current time. Defaults to time.Now when nil. Injectable
+	// for deterministic tests.
+	Now func() time.Time
+	// TickInterval controls how often the GC executes a pass. Defaults to
+	// 60 seconds when zero. Injectable for fast-cycling tests.
+	TickInterval time.Duration
 }

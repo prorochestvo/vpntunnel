@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// Status is a typed string representing the lifecycle state of an async job.
-// The five valid values are declared as Status* constants below.
-type Status string
-
 // StatusPending indicates the job has been accepted and is waiting for the
 // upstream response.
 const StatusPending Status = "pending"
@@ -34,23 +30,46 @@ const StatusFailedTimeout Status = "failed_timeout"
 // is set and UpstreamResponse is stripped to keep the on-disk record small.
 const StatusTombstone Status = "tombstone"
 
-// String returns the underlying string value of s.
-func (s Status) String() string { return string(s) }
+// ErrUnknownStatus is returned by Unmarshal when the stored status string does
+// not match any of the five known Status values.
+var ErrUnknownStatus = errors.New("asyncjob: unknown status")
 
-// UpstreamResponse holds the HTTP response captured from the upstream for
-// completed, failed, and failed_timeout records. It is omitted entirely from
-// tombstone records.
-type UpstreamResponse struct {
-	// StatusCode is the HTTP response status code from the upstream.
-	StatusCode int `json:"status_code"`
-	// Header contains the upstream response headers. Keys are preserved
-	// verbatim — they are not passed through http.Header.Set or CanonicalMIME
-	// so header casing round-trips exactly.
-	Header http.Header `json:"header"`
-	// Body is the raw upstream response body. A nil value means no body was
-	// recorded; an empty []byte means the upstream sent a zero-length body.
-	// The distinction is preserved across marshal/unmarshal.
-	Body []byte `json:"body"`
+// NewPendingRecord returns a Record in StatusPending state for the given tag,
+// with CreatedAt and UpdatedAt set to now (UTC). EvictedAt and UpstreamResponse
+// are zero / nil.
+func NewPendingRecord(tag string, now time.Time) Record {
+	t := now.UTC()
+	return Record{
+		Tag:       tag,
+		Status:    StatusPending,
+		CreatedAt: t,
+		UpdatedAt: t,
+	}
+}
+
+// Unmarshal deserialises a Record from JSON bytes produced by Marshal.
+// It returns ErrUnknownStatus (sentinel) when the stored status string is not
+// one of the five known values. All time.Time values in the returned Record
+// are in UTC.
+func Unmarshal(data []byte) (Record, error) {
+	var w wireRecord
+	if err := json.Unmarshal(data, &w); err != nil {
+		return Record{}, fmt.Errorf("asyncjob: unmarshal record: %w", err)
+	}
+	if err := validateStatus(w.Status); err != nil {
+		return Record{}, err
+	}
+	r := Record{
+		Tag:              w.Tag,
+		Status:           w.Status,
+		CreatedAt:        time.Unix(w.CreatedAt, 0).UTC(),
+		UpdatedAt:        time.Unix(w.UpdatedAt, 0).UTC(),
+		UpstreamResponse: w.UpstreamResponse,
+	}
+	if w.EvictedAt != nil {
+		r.EvictedAt = time.Unix(*w.EvictedAt, 0).UTC()
+	}
+	return r, nil
 }
 
 // Record is the value stored under a retry-tag key in bbolt. All time.Time
@@ -72,23 +91,6 @@ type Record struct {
 	// UpstreamResponse is populated on completed, failed, and failed_timeout
 	// transitions. It is nil for pending and tombstone records.
 	UpstreamResponse *UpstreamResponse `json:"upstream_response,omitempty"`
-}
-
-// ErrUnknownStatus is returned by Unmarshal when the stored status string does
-// not match any of the five known Status values.
-var ErrUnknownStatus = errors.New("asyncjob: unknown status")
-
-// NewPendingRecord returns a Record in StatusPending state for the given tag,
-// with CreatedAt and UpdatedAt set to now (UTC). EvictedAt and UpstreamResponse
-// are zero / nil.
-func NewPendingRecord(tag string, now time.Time) Record {
-	t := now.UTC()
-	return Record{
-		Tag:       tag,
-		Status:    StatusPending,
-		CreatedAt: t,
-		UpdatedAt: t,
-	}
 }
 
 // Marshal serialises r to JSON. Timestamps are encoded as Unix seconds (int64)
@@ -120,6 +122,45 @@ func (r Record) Marshal() ([]byte, error) {
 	return b, nil
 }
 
+// Status is a typed string representing the lifecycle state of an async job.
+// The five valid values are declared as Status* constants below.
+type Status string
+
+// String returns the underlying string value of s.
+func (s Status) String() string { return string(s) }
+
+// UpstreamResponse holds the HTTP response captured from the upstream for
+// completed, failed, and failed_timeout records. It is omitted entirely from
+// tombstone records.
+type UpstreamResponse struct {
+	// StatusCode is the HTTP response status code from the upstream.
+	StatusCode int `json:"status_code"`
+	// Header contains the upstream response headers. Keys are preserved
+	// verbatim — they are not passed through http.Header.Set or CanonicalMIME
+	// so header casing round-trips exactly.
+	Header http.Header `json:"header"`
+	// Body is the raw upstream response body. A nil value means no body was
+	// recorded; an empty []byte means the upstream sent a zero-length body.
+	// The distinction is preserved across marshal/unmarshal.
+	Body []byte `json:"body"`
+}
+
+// maxStatusEchoLen caps the number of bytes echoed in an ErrUnknownStatus
+// message to prevent a corrupt record from flooding logs with a huge string.
+const maxStatusEchoLen = 32
+
+// wireRecord is the JSON-serialisable representation of Record. Timestamps are
+// stored as Unix seconds (int64) instead of RFC3339 strings to keep the
+// tombstone record compact.
+type wireRecord struct {
+	Tag              string            `json:"tag"`
+	Status           Status            `json:"status"`
+	CreatedAt        int64             `json:"created_at"`
+	UpdatedAt        int64             `json:"updated_at"`
+	EvictedAt        *int64            `json:"evicted_at,omitempty"`
+	UpstreamResponse *UpstreamResponse `json:"upstream_response,omitempty"`
+}
+
 // unmarshalStatus parses only the status field from JSON bytes produced by
 // Marshal. It is cheaper than Unmarshal when the caller only needs to bucket
 // a record by status (e.g. Counts) and must not allocate the full Record.
@@ -137,47 +178,6 @@ func unmarshalStatus(data []byte) (Status, error) {
 	}
 	return w.Status, nil
 }
-
-// Unmarshal deserialises a Record from JSON bytes produced by Marshal.
-// It returns ErrUnknownStatus (sentinel) when the stored status string is not
-// one of the five known values. All time.Time values in the returned Record
-// are in UTC.
-func Unmarshal(data []byte) (Record, error) {
-	var w wireRecord
-	if err := json.Unmarshal(data, &w); err != nil {
-		return Record{}, fmt.Errorf("asyncjob: unmarshal record: %w", err)
-	}
-	if err := validateStatus(w.Status); err != nil {
-		return Record{}, err
-	}
-	r := Record{
-		Tag:              w.Tag,
-		Status:           w.Status,
-		CreatedAt:        time.Unix(w.CreatedAt, 0).UTC(),
-		UpdatedAt:        time.Unix(w.UpdatedAt, 0).UTC(),
-		UpstreamResponse: w.UpstreamResponse,
-	}
-	if w.EvictedAt != nil {
-		r.EvictedAt = time.Unix(*w.EvictedAt, 0).UTC()
-	}
-	return r, nil
-}
-
-// wireRecord is the JSON-serialisable representation of Record. Timestamps are
-// stored as Unix seconds (int64) instead of RFC3339 strings to keep the
-// tombstone record compact.
-type wireRecord struct {
-	Tag              string            `json:"tag"`
-	Status           Status            `json:"status"`
-	CreatedAt        int64             `json:"created_at"`
-	UpdatedAt        int64             `json:"updated_at"`
-	EvictedAt        *int64            `json:"evicted_at,omitempty"`
-	UpstreamResponse *UpstreamResponse `json:"upstream_response,omitempty"`
-}
-
-// maxStatusEchoLen caps the number of bytes echoed in an ErrUnknownStatus
-// message to prevent a corrupt record from flooding logs with a huge string.
-const maxStatusEchoLen = 32
 
 // validateStatus returns ErrUnknownStatus when s is not one of the five known
 // Status values.

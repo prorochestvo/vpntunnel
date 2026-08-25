@@ -18,77 +18,6 @@ import (
 // compile-time assertion that *recoveryFakeStore satisfies asyncjob.Store.
 var _ asyncjob.Store = (*recoveryFakeStore)(nil)
 
-// recoveryFakeStore is a minimal Store stub used only by the store-error
-// subtest. Every method except BatchDelete panics to catch unintended calls.
-type recoveryFakeStore struct {
-	batchDeleteErr error
-}
-
-func (s *recoveryFakeStore) Get(_ string) (asyncjob.Record, bool, error) {
-	panic("recoveryFakeStore.Get: not expected in recovery tests")
-}
-
-func (s *recoveryFakeStore) Put(_ string, _ asyncjob.Record) error {
-	panic("recoveryFakeStore.Put: not expected in recovery tests")
-}
-
-func (s *recoveryFakeStore) CompareAndSwapStatus(_ string, _ asyncjob.Status, _ func(asyncjob.Record) asyncjob.Record) (asyncjob.Record, error) {
-	panic("recoveryFakeStore.CompareAndSwapStatus: not expected in recovery tests")
-}
-
-func (s *recoveryFakeStore) BatchTransition(_ func(asyncjob.Record) bool, _ func(asyncjob.Record) asyncjob.Record) (int, error) {
-	panic("recoveryFakeStore.BatchTransition: not expected in recovery tests")
-}
-
-func (s *recoveryFakeStore) BatchDelete(_ func(asyncjob.Record) bool) (int, error) {
-	// filter is intentionally ignored — this fake is used only for error-path
-	// tests; the success-path uses a real store.
-	if s.batchDeleteErr != nil {
-		return 0, s.batchDeleteErr
-	}
-	return 0, nil
-}
-
-func (s *recoveryFakeStore) Counts() (asyncjob.JobCounts, error) {
-	panic("recoveryFakeStore.Counts: not expected in recovery tests")
-}
-
-func (s *recoveryFakeStore) Close() error { return nil }
-
-// newCapturingLogger returns a *slog.Logger backed by a JSON handler writing
-// to buf. The caller can decode log lines from buf to assert structured
-// attributes.
-func newCapturingLogger(buf *bytes.Buffer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-// parseLogLines decodes every newline-terminated JSON object from buf into a
-// slice of map[string]any for attribute inspection.
-func parseLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
-	t.Helper()
-	var lines []map[string]any
-	dec := json.NewDecoder(buf)
-	for dec.More() {
-		var m map[string]any
-		require.NoError(t, dec.Decode(&m))
-		lines = append(lines, m)
-	}
-	return lines
-}
-
-// seedSimpleRecord writes a record with the given status into store.
-func seedSimpleRecord(t *testing.T, s asyncjob.Store, tag string, status asyncjob.Status) {
-	t.Helper()
-	now := time.Now().UTC().Truncate(time.Second)
-	rec := asyncjob.Record{
-		Tag:       tag,
-		Status:    status,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	require.NoError(t, s.Put(tag, rec))
-}
-
 func TestRunRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -226,4 +155,75 @@ func TestRunRecovery(t *testing.T) {
 		assert.True(t, hasErr, "err attribute must be present in the error log line")
 		assert.Contains(t, fmt.Sprint(errVal), sentinel.Error(), "err attribute must contain the store error text")
 	})
+}
+
+// recoveryFakeStore is a minimal Store stub used only by the store-error
+// subtest. Every method except BatchDelete panics to catch unintended calls.
+type recoveryFakeStore struct {
+	batchDeleteErr error
+}
+
+func (s *recoveryFakeStore) Get(_ string) (asyncjob.Record, bool, error) {
+	panic("recoveryFakeStore.Get: not expected in recovery tests")
+}
+
+func (s *recoveryFakeStore) Put(_ string, _ asyncjob.Record) error {
+	panic("recoveryFakeStore.Put: not expected in recovery tests")
+}
+
+func (s *recoveryFakeStore) CompareAndSwapStatus(_ string, _ asyncjob.Status, _ func(asyncjob.Record) asyncjob.Record) (asyncjob.Record, error) {
+	panic("recoveryFakeStore.CompareAndSwapStatus: not expected in recovery tests")
+}
+
+func (s *recoveryFakeStore) BatchTransition(_ func(asyncjob.Record) bool, _ func(asyncjob.Record) asyncjob.Record) (int, error) {
+	panic("recoveryFakeStore.BatchTransition: not expected in recovery tests")
+}
+
+func (s *recoveryFakeStore) BatchDelete(_ func(asyncjob.Record) bool) (int, error) {
+	// filter is intentionally ignored — this fake is used only for error-path
+	// tests; the success-path uses a real store.
+	if s.batchDeleteErr != nil {
+		return 0, s.batchDeleteErr
+	}
+	return 0, nil
+}
+
+func (s *recoveryFakeStore) Counts() (asyncjob.JobCounts, error) {
+	panic("recoveryFakeStore.Counts: not expected in recovery tests")
+}
+
+func (s *recoveryFakeStore) Close() error { return nil }
+
+// newCapturingLogger returns a *slog.Logger backed by a JSON handler writing
+// to buf. The caller can decode log lines from buf to assert structured
+// attributes.
+func newCapturingLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// parseLogLines decodes every newline-terminated JSON object from buf into a
+// slice of map[string]any for attribute inspection.
+func parseLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	dec := json.NewDecoder(buf)
+	for dec.More() {
+		var m map[string]any
+		require.NoError(t, dec.Decode(&m))
+		lines = append(lines, m)
+	}
+	return lines
+}
+
+// seedSimpleRecord writes a record with the given status into store.
+func seedSimpleRecord(t *testing.T, s asyncjob.Store, tag string, status asyncjob.Status) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	rec := asyncjob.Record{
+		Tag:       tag,
+		Status:    status,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	require.NoError(t, s.Put(tag, rec))
 }
