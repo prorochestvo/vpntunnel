@@ -104,9 +104,11 @@ The proxy listener (default `127.0.0.1:7788`) dispatches `CONNECT` to `HandleCON
 everything else to `HandleHTTP`. The API listener (default `127.0.0.1:8888`) serves four frozen
 `/v1` routes behind an `X-Vpntunnel-Token` admin/proxy role split. Two silent breakages:
 
-- **Auth is challenged before any hijack or forwarding.** A `407 Proxy Authentication
-  Required` written after a hijack has no status line left to write. Loopback clients bypass
-  the token check, which is why the listener binds loopback.
+- **Loopback clients are not authenticated at all** — the token check is skipped for
+  them, which is the whole reason the listener binds loopback. Binding anything else
+  exposes the proxy unauthenticated. For every other client the challenge must be written
+  before the hijack: a `407 Proxy Authentication Required` written after it has no status
+  line left to write.
 - **The `/v1/admin/health` body is fixed**: `{status, tunnels: [...]}`, each entry exactly
   `{id, healthy, handshake_age_seconds}`. Never add `peer_endpoint`, key material, the peer
   public key, or `TunnelHealth.Err` text.
