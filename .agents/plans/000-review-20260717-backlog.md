@@ -2,7 +2,7 @@
 
 Source: `tmp/review_20260717.txt` (owner review of the DDD-pragmatic restructure).
 Branch: `refactor/ddd-pragmatic-restructure`. Status: **backlog** — index of plans,
-not itself an implementation plan. Individual `plans/NNN-slug.md` files are written
+not itself an implementation plan. Individual `.agents/plans/NNN-slug.md` files are written
 per wave, just before that wave starts (early structural moves reshape the ground
 under the later cross-cutting sweeps, so writing all plans up front would guarantee
 rework).
@@ -73,7 +73,7 @@ Replace `cmd/generatevpnconfig/{main,main_test}.go` with `scripts/generate-vpn-c
 **Risk: medium (not low).** The cmd is ~31KB `main.go` + ~55KB test — not a thin
 shell-out; it likely carries validation / atomic-write / idempotency the review's
 "only shells out" premise understates. The T01 plan MUST enumerate the current cmd's
-behavior (ref `plans/completed/260621.0001.generate-vpn-config.md`) and preserve
+behavior (ref `.agents/plans/completed/260621.0001.generate-vpn-config.md`) and preserve
 parity before deleting. Also update/remove the Makefile target that runs
 `go run ./cmd/generatevpnconfig` (breaks `make generate-vpn-config` otherwise). Files:
 delete `cmd/generatevpnconfig/`, add `scripts/generate-vpn-config.sh`, edit `Makefile`.

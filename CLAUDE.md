@@ -306,7 +306,7 @@ error is public, generic fallback otherwise). Project-specific constraints:
 
 All non-trivial work follows the plan-first pipeline:
 
-1. **Plan** — the `architect` agent writes `plans/NNN-slug.md` (create via the
+1. **Plan** — the `architect` agent writes `.agents/plans/NNN-slug.md` (create via the
    `pipeline:new-plan` skill). No source edits before a plan exists.
 2. **Implement** — the `engineer` agent executes the plan's tasks with tests.
 3. **Review** — three `reviewer` agents launched in parallel in ONE message, each
@@ -321,5 +321,5 @@ All non-trivial work follows the plan-first pipeline:
    P0/P1 findings loop back to the engineer. Only when every P0/P1 is fixed or
    explicitly accepted: move the plan via the `pipeline:complete-plan` skill.
 
-Plans live in `plans/` (active), `plans/completed/` (shipped, `YYMMDD.NNNN.slug.md`),
-`plans/history/` (abandoned/superseded). One plan per concern.
+Plans live in `.agents/plans/` (active), `.agents/plans/completed/` (shipped, `YYMMDD.NNNN.slug.md`),
+`.agents/plans/history/` (abandoned/superseded). One plan per concern.
