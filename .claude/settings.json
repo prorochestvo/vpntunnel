@@ -9,7 +9,6 @@
     }
   },
   "enabledPlugins": {
-    "pipeline@starterkit": true,
     "stack-go@starterkit": true,
     "knowledge@starterkit": true
   },
