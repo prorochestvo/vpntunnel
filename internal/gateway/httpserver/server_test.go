@@ -17,11 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vpntunnel/internal/application"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/gateway/httpserver"
 )
 
-var _ egress.Dialer = (*stubDialer)(nil)
+var _ dialer = (*stubDialer)(nil)
 
 // stubDialer routes DialContext directly to net.Dial.
 type stubDialer struct{}
@@ -295,4 +294,11 @@ func (n *connectNotifier) HandleCONNECT(w http.ResponseWriter, r *http.Request) 
 
 func (n *connectNotifier) WaitTunnels(ctx context.Context) error {
 	return n.svc.WaitTunnels(ctx)
+}
+
+// dialer mirrors the unexported outbound-connection port application declares
+// for ProxyServiceOptions.Dialer; stubDialer is assigned into that field, which
+// is a structural assignment.
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }

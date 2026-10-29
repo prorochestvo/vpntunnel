@@ -11,19 +11,17 @@ import (
 	"testing"
 	"time"
 
-	"vpntunnel/internal/egress"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var _ egress.Dialer = (*fakeDialer)(nil)
+var _ dialer = (*fakeDialer)(nil)
 
 // compile-time contract assertions: both Notifier implementations satisfy it.
 var _ Notifier = Nop{}
 var _ Notifier = (*TelegramNotifier)(nil)
 
-// fakeDialer is an egress.Dialer test double. When err is set, DialContext
+// fakeDialer is a dialer test double. When err is set, DialContext
 // always fails; otherwise it dials address for real over loopback, letting
 // tests point it at an httptest.Server without a real WireGuard device.
 type fakeDialer struct {

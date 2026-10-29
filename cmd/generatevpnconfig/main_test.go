@@ -20,45 +20,6 @@ import (
 	"vpntunnel/internal/infrastructure/wireguard/wgconf"
 )
 
-// discardLog drops wgconf parser warnings so test output stays clean and does
-// not depend on future fixture content (matches what production passes).
-var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
-
-// ttyCfg returns a runConfig with TTY forced to true, using the supplied
-// reader/writer pair and the given temp dir.
-func ttyCfg(in *bytes.Buffer, out *bytes.Buffer, dir string) runConfig {
-	return runConfig{
-		in:    in,
-		out:   out,
-		dir:   dir,
-		force: false,
-		isTTY: func() bool { return true },
-	}
-}
-
-// genPubKey generates a random WireGuard public key and returns its base64
-// string. Used only for peer-key test inputs.
-func genPubKey(tb testing.TB) string {
-	tb.Helper()
-	k, err := wgtypes.GeneratePrivateKey()
-	require.NoError(tb, err)
-	return k.PublicKey().String()
-}
-
-// validInput assembles a complete multi-line stdin string for a successful run
-// using the supplied conf name. It selects manual mode (choice "1").
-func validInput(name, pubKey string) string {
-	return strings.Join([]string{
-		"1", // mode: manual
-		name,
-		"10.66.1.2/32",
-		pubKey,
-		"185.1.2.3:51820",
-		"", // DNS — accept default
-		"", // AllowedIPs — accept default
-		""}, "\n")
-}
-
 func TestRun(t *testing.T) {
 	t.Parallel()
 
@@ -393,6 +354,30 @@ func TestRun(t *testing.T) {
 	})
 }
 
+func TestApplyPrefix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		prefix string
+		in     string
+		want   string
+	}{
+		{"empty prefix returns name unchanged", "", "al-tia-wg-001", "al-tia-wg-001"},
+		{"plain prefix joined with hyphen", "mullvad", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
+		{"trailing hyphen not doubled", "mullvad-", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
+		{"trailing underscore trimmed", "mullvad_", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
+		{"trailing dot trimmed", "mullvad.", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, applyPrefix(tc.prefix, tc.in))
+		})
+	}
+}
+
 func TestValidateName(t *testing.T) {
 	t.Parallel()
 
@@ -485,6 +470,109 @@ func TestValidateAddress(t *testing.T) {
 	t.Run("garbage is rejected", func(t *testing.T) {
 		t.Parallel()
 		assert.Error(t, validateAddress("not-an-ip"))
+	})
+}
+
+func TestPromptAddress(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid CIDR is accepted and returned", func(t *testing.T) {
+		t.Parallel()
+		in := bytes.NewBufferString("10.66.1.2/32\n")
+		out := &bytes.Buffer{}
+		sc := newScanner(in)
+		got, err := promptAddress(out, sc)
+		require.NoError(t, err)
+		assert.Equal(t, "10.66.1.2/32", got)
+	})
+
+	t.Run("bare IPv4 host is normalized to /32", func(t *testing.T) {
+		t.Parallel()
+		in := bytes.NewBufferString("10.66.1.2\n")
+		out := &bytes.Buffer{}
+		sc := newScanner(in)
+		got, err := promptAddress(out, sc)
+		require.NoError(t, err)
+		assert.Equal(t, "10.66.1.2/32", got)
+	})
+
+	t.Run("bare IPv6 host is normalized to /128", func(t *testing.T) {
+		t.Parallel()
+		in := bytes.NewBufferString("fc00::5\n")
+		out := &bytes.Buffer{}
+		sc := newScanner(in)
+		got, err := promptAddress(out, sc)
+		require.NoError(t, err)
+		assert.Equal(t, "fc00::5/128", got)
+	})
+
+	t.Run("network CIDR is rejected, re-prompts", func(t *testing.T) {
+		t.Parallel()
+		in := bytes.NewBufferString("10.0.0.0/8\n10.66.1.2/32\n")
+		out := &bytes.Buffer{}
+		sc := newScanner(in)
+		got, err := promptAddress(out, sc)
+		require.NoError(t, err)
+		assert.Equal(t, "10.66.1.2/32", got)
+		assert.Contains(t, out.String(), "error:")
+	})
+
+	t.Run("empty input re-prompts", func(t *testing.T) {
+		t.Parallel()
+		in := bytes.NewBufferString("\n10.66.1.2/32\n")
+		out := &bytes.Buffer{}
+		sc := newScanner(in)
+		got, err := promptAddress(out, sc)
+		require.NoError(t, err)
+		assert.Equal(t, "10.66.1.2/32", got)
+	})
+
+	t.Run("EOF returns error", func(t *testing.T) {
+		t.Parallel()
+		in := bytes.NewBufferString("")
+		out := &bytes.Buffer{}
+		sc := newScanner(in)
+		_, err := promptAddress(out, sc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "EOF")
+	})
+}
+
+func TestNormalizeAddress(t *testing.T) {
+	t.Parallel()
+
+	t.Run("IPv4 with CIDR is returned unchanged", func(t *testing.T) {
+		t.Parallel()
+		got, err := normalizeAddress("10.66.1.2/32")
+		require.NoError(t, err)
+		assert.Equal(t, "10.66.1.2/32", got)
+	})
+
+	t.Run("IPv6 with CIDR is returned unchanged", func(t *testing.T) {
+		t.Parallel()
+		got, err := normalizeAddress("fc00::5/128")
+		require.NoError(t, err)
+		assert.Equal(t, "fc00::5/128", got)
+	})
+
+	t.Run("bare IPv4 host gets /32 appended", func(t *testing.T) {
+		t.Parallel()
+		got, err := normalizeAddress("10.66.1.2")
+		require.NoError(t, err)
+		assert.Equal(t, "10.66.1.2/32", got)
+	})
+
+	t.Run("bare IPv6 host gets /128 appended", func(t *testing.T) {
+		t.Parallel()
+		got, err := normalizeAddress("fc00::5")
+		require.NoError(t, err)
+		assert.Equal(t, "fc00::5/128", got)
+	})
+
+	t.Run("garbage returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := normalizeAddress("not-an-ip")
+		require.Error(t, err)
 	})
 }
 
@@ -818,274 +906,131 @@ func TestWriteAtomicConf(t *testing.T) {
 	})
 }
 
-func TestNormalizeAddress(t *testing.T) {
+func TestPromptMode(t *testing.T) {
 	t.Parallel()
 
-	t.Run("IPv4 with CIDR is returned unchanged", func(t *testing.T) {
+	t.Run("choice 1 returns manual mode", func(t *testing.T) {
 		t.Parallel()
-		got, err := normalizeAddress("10.66.1.2/32")
-		require.NoError(t, err)
-		assert.Equal(t, "10.66.1.2/32", got)
-	})
-
-	t.Run("IPv6 with CIDR is returned unchanged", func(t *testing.T) {
-		t.Parallel()
-		got, err := normalizeAddress("fc00::5/128")
-		require.NoError(t, err)
-		assert.Equal(t, "fc00::5/128", got)
-	})
-
-	t.Run("bare IPv4 host gets /32 appended", func(t *testing.T) {
-		t.Parallel()
-		got, err := normalizeAddress("10.66.1.2")
-		require.NoError(t, err)
-		assert.Equal(t, "10.66.1.2/32", got)
-	})
-
-	t.Run("bare IPv6 host gets /128 appended", func(t *testing.T) {
-		t.Parallel()
-		got, err := normalizeAddress("fc00::5")
-		require.NoError(t, err)
-		assert.Equal(t, "fc00::5/128", got)
-	})
-
-	t.Run("garbage returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := normalizeAddress("not-an-ip")
-		require.Error(t, err)
-	})
-}
-
-func TestPromptAddress(t *testing.T) {
-	t.Parallel()
-
-	t.Run("valid CIDR is accepted and returned", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("10.66.1.2/32\n")
+		in := bytes.NewBufferString("1\n")
 		out := &bytes.Buffer{}
-		sc := newScanner(in)
-		got, err := promptAddress(out, sc)
+		got, err := promptMode(out, newScanner(in))
 		require.NoError(t, err)
-		assert.Equal(t, "10.66.1.2/32", got)
+		assert.Equal(t, modeManual, got)
 	})
 
-	t.Run("bare IPv4 host is normalized to /32", func(t *testing.T) {
+	t.Run("empty input defaults to manual mode", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("10.66.1.2\n")
+		in := bytes.NewBufferString("\n")
 		out := &bytes.Buffer{}
-		sc := newScanner(in)
-		got, err := promptAddress(out, sc)
+		got, err := promptMode(out, newScanner(in))
 		require.NoError(t, err)
-		assert.Equal(t, "10.66.1.2/32", got)
+		assert.Equal(t, modeManual, got)
 	})
 
-	t.Run("bare IPv6 host is normalized to /128", func(t *testing.T) {
+	t.Run("choice 2 returns zip mode", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("fc00::5\n")
+		in := bytes.NewBufferString("2\n")
 		out := &bytes.Buffer{}
-		sc := newScanner(in)
-		got, err := promptAddress(out, sc)
+		got, err := promptMode(out, newScanner(in))
 		require.NoError(t, err)
-		assert.Equal(t, "fc00::5/128", got)
+		assert.Equal(t, modeZip, got)
 	})
 
-	t.Run("network CIDR is rejected, re-prompts", func(t *testing.T) {
+	t.Run("invalid input re-prompts then accepts valid", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("10.0.0.0/8\n10.66.1.2/32\n")
+		in := bytes.NewBufferString("9\n2\n")
 		out := &bytes.Buffer{}
-		sc := newScanner(in)
-		got, err := promptAddress(out, sc)
+		got, err := promptMode(out, newScanner(in))
 		require.NoError(t, err)
-		assert.Equal(t, "10.66.1.2/32", got)
-		assert.Contains(t, out.String(), "error:")
-	})
-
-	t.Run("empty input re-prompts", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("\n10.66.1.2/32\n")
-		out := &bytes.Buffer{}
-		sc := newScanner(in)
-		got, err := promptAddress(out, sc)
-		require.NoError(t, err)
-		assert.Equal(t, "10.66.1.2/32", got)
+		assert.Equal(t, modeZip, got)
+		assert.Contains(t, out.String(), "error: enter 1 or 2")
 	})
 
 	t.Run("EOF returns error", func(t *testing.T) {
 		t.Parallel()
 		in := bytes.NewBufferString("")
 		out := &bytes.Buffer{}
-		sc := newScanner(in)
-		_, err := promptAddress(out, sc)
+		_, err := promptMode(out, newScanner(in))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "EOF")
 	})
 }
 
-// newScanner wraps the provided reader in a bufio.Scanner, mirroring what run()
-// does. Extracted here so tests don't need to import bufio.
-func newScanner(r *bytes.Buffer) *bufio.Scanner {
-	return bufio.NewScanner(r)
-}
-
-// zipEntry is a helper type for constructing in-memory test zips.
-type zipEntry struct {
-	name string
-	body string
-}
-
-// buildTestZip writes a zip containing the given entries to a temp file and
-// returns its path.
-func buildTestZip(t *testing.T, entries []zipEntry) string {
-	t.Helper()
-	dir := t.TempDir()
-	zipPath := filepath.Join(dir, "test.zip")
-	f, err := os.Create(zipPath)
-	require.NoError(t, err)
-
-	w := zip.NewWriter(f)
-	for _, e := range entries {
-		fw, wErr := w.Create(e.name)
-		require.NoError(t, wErr)
-		_, wErr = fw.Write([]byte(e.body))
-		require.NoError(t, wErr)
-	}
-	require.NoError(t, w.Close())
-	require.NoError(t, f.Close())
-	return zipPath
-}
-
-// mullvadConf assembles a minimal Mullvad-style wg-quick conf body (no PrivateKey)
-// with the given address, peer public key, and endpoint. PresharedKey is
-// included to verify the injector never touches it.
-func mullvadConf(address, peerPubKey, endpoint string) string {
-	return "[Interface]\n" +
-		"Address = " + address + "\n" +
-		"DNS = 10.64.0.1\n" +
-		"\n" +
-		"[Peer]\n" +
-		"PublicKey = " + peerPubKey + "\n" +
-		"AllowedIPs = 0.0.0.0/0, ::/0\n" +
-		"Endpoint = " + endpoint + "\n" +
-		"PresharedKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM=\n"
-}
-
-// mullvadConfWithKey is like mullvadConf but includes an existing PrivateKey line
-// in [Interface] so the injector replaces rather than inserts.
-func mullvadConfWithKey(address, privKey, peerPubKey, endpoint string) string {
-	return "[Interface]\n" +
-		"PrivateKey = " + privKey + "\n" +
-		"Address = " + address + "\n" +
-		"DNS = 10.64.0.1\n" +
-		"\n" +
-		"[Peer]\n" +
-		"PublicKey = " + peerPubKey + "\n" +
-		"AllowedIPs = 0.0.0.0/0, ::/0\n" +
-		"Endpoint = " + endpoint + "\n" +
-		"PresharedKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM=\n"
-}
-
-func TestInjectPrivateKey(t *testing.T) {
+func TestPromptPrefix(t *testing.T) {
 	t.Parallel()
 
-	peerKey := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" // 44-char dummy
-	newKey := "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA="  // different dummy
-
-	t.Run("existing PrivateKey line is replaced", func(t *testing.T) {
+	t.Run("non-empty value is returned", func(t *testing.T) {
 		t.Parallel()
-		oldKey := "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDM=" // distinct from peerKey
-		input := mullvadConfWithKey("10.1.2.3/32", oldKey, peerKey, "1.2.3.4:51820")
-		got, err := injectPrivateKey(input, newKey)
+		in := bytes.NewBufferString("mullvad\n")
+		out := &bytes.Buffer{}
+		got, err := promptPrefix(out, newScanner(in))
 		require.NoError(t, err)
-		// the entire body must match byte-for-byte with only the PrivateKey
-		// value swapped — no dropped lines, no duplicated key, no reordering.
-		want := mullvadConfWithKey("10.1.2.3/32", newKey, peerKey, "1.2.3.4:51820")
-		assert.Equal(t, want, got)
+		assert.Equal(t, "mullvad", got)
 	})
 
-	t.Run("case-insensitive key match: lowercase privatekey", func(t *testing.T) {
+	t.Run("blank input means no prefix", func(t *testing.T) {
 		t.Parallel()
-		oldKey := "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCM=" // distinct from peerKey
-		body := "[Interface]\nprivatekey = " + oldKey + "\nAddress = 10.1.2.3/32\n\n[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
-		got, err := injectPrivateKey(body, newKey)
+		in := bytes.NewBufferString("\n")
+		out := &bytes.Buffer{}
+		got, err := promptPrefix(out, newScanner(in))
 		require.NoError(t, err)
-		assert.Contains(t, got, "PrivateKey = "+newKey)
-		// old private key value must no longer appear anywhere.
-		assert.NotContains(t, got, oldKey)
+		assert.Equal(t, "", got)
 	})
 
-	t.Run("case-insensitive key match: PRIVATEKEY uppercase", func(t *testing.T) {
+	t.Run("EOF means no prefix, not an error", func(t *testing.T) {
 		t.Parallel()
-		body := "[Interface]\nPRIVATEKEY = " + peerKey + "\nAddress = 10.1.2.3/32\n\n[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
-		got, err := injectPrivateKey(body, newKey)
+		in := bytes.NewBufferString("")
+		out := &bytes.Buffer{}
+		got, err := promptPrefix(out, newScanner(in))
 		require.NoError(t, err)
-		assert.Contains(t, got, "PrivateKey = "+newKey)
+		assert.Equal(t, "", got)
 	})
 
-	t.Run("no PrivateKey in Interface: inserted after header", func(t *testing.T) {
+	t.Run("invalid value re-prompts then accepts", func(t *testing.T) {
 		t.Parallel()
-		body := mullvadConf("10.1.2.3/32", peerKey, "1.2.3.4:51820")
-		got, err := injectPrivateKey(body, newKey)
+		in := bytes.NewBufferString("bad/name\nmullvad\n")
+		out := &bytes.Buffer{}
+		got, err := promptPrefix(out, newScanner(in))
 		require.NoError(t, err)
+		assert.Equal(t, "mullvad", got)
+		assert.Contains(t, out.String(), "error:")
+	})
+}
 
-		// the key must be inserted immediately after the [Interface] header.
-		gotLines := strings.Split(got, "\n")
-		require.Greater(t, len(gotLines), 1)
-		assert.Equal(t, "[Interface]", gotLines[0])
-		assert.Equal(t, "PrivateKey = "+newKey, gotLines[1],
-			"inserted key must be the first line after [Interface]")
-		// exactly one line added, nothing else dropped or reordered.
-		assert.Equal(t, len(strings.Split(body, "\n"))+1, len(gotLines))
+func TestValidateZipPath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing regular zip file is accepted", func(t *testing.T) {
+		t.Parallel()
+		zipPath := buildTestZip(t, nil) // empty but valid zip
+		// even an empty zip is a regular file with .zip extension.
+		assert.NoError(t, validateZipPath(zipPath))
 	})
 
-	t.Run("PresharedKey in Peer is never modified", func(t *testing.T) {
+	t.Run("empty path is rejected", func(t *testing.T) {
 		t.Parallel()
-		psk := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM="
-		body := "[Interface]\nAddress = 10.1.2.3/32\n\n[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\nPresharedKey = " + psk + "\n"
-		got, err := injectPrivateKey(body, newKey)
-		require.NoError(t, err)
-		assert.Contains(t, got, "PresharedKey = "+psk, "PresharedKey must be byte-identical in output")
-		assert.Contains(t, got, "PrivateKey = "+newKey)
+		assert.Error(t, validateZipPath(""))
 	})
 
-	t.Run("PrivateKey-looking line in Peer is not modified", func(t *testing.T) {
+	t.Run("non-.zip extension is rejected", func(t *testing.T) {
 		t.Parallel()
-		// pathological conf: both sections have a PrivateKey line.
-		body := "[Interface]\nPrivateKey = " + peerKey + "\nAddress = 10.1.2.3/32\n\n[Peer]\nPrivateKey = " + peerKey + "\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
-		got, err := injectPrivateKey(body, newKey)
-		require.NoError(t, err)
-		// interface one replaced.
-		lines := strings.Split(got, "\n")
-		interfaceKey := ""
-		peerKeyLine := ""
-		inIface := false
-		for _, l := range lines {
-			trimmed := strings.TrimSpace(l)
-			if strings.EqualFold(trimmed, "[Interface]") {
-				inIface = true
-				continue
-			}
-			if strings.EqualFold(trimmed, "[Peer]") {
-				inIface = false
-				continue
-			}
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(l)), "privatekey") {
-				if inIface && interfaceKey == "" {
-					interfaceKey = l
-				} else if !inIface && peerKeyLine == "" {
-					peerKeyLine = l
-				}
-			}
-		}
-		assert.Contains(t, interfaceKey, newKey, "Interface PrivateKey must be replaced")
-		assert.Contains(t, peerKeyLine, peerKey, "Peer PrivateKey must be unchanged")
+		dir := t.TempDir()
+		p := filepath.Join(dir, "archive.tar.gz")
+		require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
+		assert.Error(t, validateZipPath(p))
 	})
 
-	t.Run("missing Interface section returns error", func(t *testing.T) {
+	t.Run("non-existent file is rejected", func(t *testing.T) {
 		t.Parallel()
-		body := "[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
-		_, err := injectPrivateKey(body, newKey)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "[Interface]")
+		assert.Error(t, validateZipPath("/nonexistent/path/file.zip"))
+	})
+
+	t.Run("directory with .zip extension is rejected", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		zipDir := filepath.Join(dir, "archive.zip")
+		require.NoError(t, os.Mkdir(zipDir, 0o700))
+		assert.Error(t, validateZipPath(zipDir))
 	})
 }
 
@@ -1571,30 +1516,6 @@ func TestIngestZip(t *testing.T) {
 	})
 }
 
-func TestApplyPrefix(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name   string
-		prefix string
-		in     string
-		want   string
-	}{
-		{"empty prefix returns name unchanged", "", "al-tia-wg-001", "al-tia-wg-001"},
-		{"plain prefix joined with hyphen", "mullvad", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
-		{"trailing hyphen not doubled", "mullvad-", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
-		{"trailing underscore trimmed", "mullvad_", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
-		{"trailing dot trimmed", "mullvad.", "al-tia-wg-001", "mullvad-al-tia-wg-001"},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.want, applyPrefix(tc.prefix, tc.in))
-		})
-	}
-}
-
 func TestExtractInterfacePrivateKey(t *testing.T) {
 	t.Parallel()
 
@@ -1629,130 +1550,209 @@ func TestExtractInterfacePrivateKey(t *testing.T) {
 	})
 }
 
-func TestValidateZipPath(t *testing.T) {
+func TestInjectPrivateKey(t *testing.T) {
 	t.Parallel()
 
-	t.Run("existing regular zip file is accepted", func(t *testing.T) {
-		t.Parallel()
-		zipPath := buildTestZip(t, nil) // empty but valid zip
-		// even an empty zip is a regular file with .zip extension.
-		assert.NoError(t, validateZipPath(zipPath))
-	})
+	peerKey := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" // 44-char dummy
+	newKey := "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA="  // different dummy
 
-	t.Run("empty path is rejected", func(t *testing.T) {
+	t.Run("existing PrivateKey line is replaced", func(t *testing.T) {
 		t.Parallel()
-		assert.Error(t, validateZipPath(""))
-	})
-
-	t.Run("non-.zip extension is rejected", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		p := filepath.Join(dir, "archive.tar.gz")
-		require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
-		assert.Error(t, validateZipPath(p))
-	})
-
-	t.Run("non-existent file is rejected", func(t *testing.T) {
-		t.Parallel()
-		assert.Error(t, validateZipPath("/nonexistent/path/file.zip"))
-	})
-
-	t.Run("directory with .zip extension is rejected", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		zipDir := filepath.Join(dir, "archive.zip")
-		require.NoError(t, os.Mkdir(zipDir, 0o700))
-		assert.Error(t, validateZipPath(zipDir))
-	})
-}
-
-func TestPromptMode(t *testing.T) {
-	t.Parallel()
-
-	t.Run("choice 1 returns manual mode", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("1\n")
-		out := &bytes.Buffer{}
-		got, err := promptMode(out, newScanner(in))
+		oldKey := "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDM=" // distinct from peerKey
+		input := mullvadConfWithKey("10.1.2.3/32", oldKey, peerKey, "1.2.3.4:51820")
+		got, err := injectPrivateKey(input, newKey)
 		require.NoError(t, err)
-		assert.Equal(t, modeManual, got)
+		// the entire body must match byte-for-byte with only the PrivateKey
+		// value swapped — no dropped lines, no duplicated key, no reordering.
+		want := mullvadConfWithKey("10.1.2.3/32", newKey, peerKey, "1.2.3.4:51820")
+		assert.Equal(t, want, got)
 	})
 
-	t.Run("empty input defaults to manual mode", func(t *testing.T) {
+	t.Run("case-insensitive key match: lowercase privatekey", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("\n")
-		out := &bytes.Buffer{}
-		got, err := promptMode(out, newScanner(in))
+		oldKey := "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCM=" // distinct from peerKey
+		body := "[Interface]\nprivatekey = " + oldKey + "\nAddress = 10.1.2.3/32\n\n[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
+		got, err := injectPrivateKey(body, newKey)
 		require.NoError(t, err)
-		assert.Equal(t, modeManual, got)
+		assert.Contains(t, got, "PrivateKey = "+newKey)
+		// old private key value must no longer appear anywhere.
+		assert.NotContains(t, got, oldKey)
 	})
 
-	t.Run("choice 2 returns zip mode", func(t *testing.T) {
+	t.Run("case-insensitive key match: PRIVATEKEY uppercase", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("2\n")
-		out := &bytes.Buffer{}
-		got, err := promptMode(out, newScanner(in))
+		body := "[Interface]\nPRIVATEKEY = " + peerKey + "\nAddress = 10.1.2.3/32\n\n[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
+		got, err := injectPrivateKey(body, newKey)
 		require.NoError(t, err)
-		assert.Equal(t, modeZip, got)
+		assert.Contains(t, got, "PrivateKey = "+newKey)
 	})
 
-	t.Run("invalid input re-prompts then accepts valid", func(t *testing.T) {
+	t.Run("no PrivateKey in Interface: inserted after header", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("9\n2\n")
-		out := &bytes.Buffer{}
-		got, err := promptMode(out, newScanner(in))
+		body := mullvadConf("10.1.2.3/32", peerKey, "1.2.3.4:51820")
+		got, err := injectPrivateKey(body, newKey)
 		require.NoError(t, err)
-		assert.Equal(t, modeZip, got)
-		assert.Contains(t, out.String(), "error: enter 1 or 2")
+
+		// the key must be inserted immediately after the [Interface] header.
+		gotLines := strings.Split(got, "\n")
+		require.Greater(t, len(gotLines), 1)
+		assert.Equal(t, "[Interface]", gotLines[0])
+		assert.Equal(t, "PrivateKey = "+newKey, gotLines[1],
+			"inserted key must be the first line after [Interface]")
+		// exactly one line added, nothing else dropped or reordered.
+		assert.Equal(t, len(strings.Split(body, "\n"))+1, len(gotLines))
 	})
 
-	t.Run("EOF returns error", func(t *testing.T) {
+	t.Run("PresharedKey in Peer is never modified", func(t *testing.T) {
 		t.Parallel()
-		in := bytes.NewBufferString("")
-		out := &bytes.Buffer{}
-		_, err := promptMode(out, newScanner(in))
+		psk := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM="
+		body := "[Interface]\nAddress = 10.1.2.3/32\n\n[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\nPresharedKey = " + psk + "\n"
+		got, err := injectPrivateKey(body, newKey)
+		require.NoError(t, err)
+		assert.Contains(t, got, "PresharedKey = "+psk, "PresharedKey must be byte-identical in output")
+		assert.Contains(t, got, "PrivateKey = "+newKey)
+	})
+
+	t.Run("PrivateKey-looking line in Peer is not modified", func(t *testing.T) {
+		t.Parallel()
+		// pathological conf: both sections have a PrivateKey line.
+		body := "[Interface]\nPrivateKey = " + peerKey + "\nAddress = 10.1.2.3/32\n\n[Peer]\nPrivateKey = " + peerKey + "\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
+		got, err := injectPrivateKey(body, newKey)
+		require.NoError(t, err)
+		// interface one replaced.
+		lines := strings.Split(got, "\n")
+		interfaceKey := ""
+		peerKeyLine := ""
+		inIface := false
+		for _, l := range lines {
+			trimmed := strings.TrimSpace(l)
+			if strings.EqualFold(trimmed, "[Interface]") {
+				inIface = true
+				continue
+			}
+			if strings.EqualFold(trimmed, "[Peer]") {
+				inIface = false
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(l)), "privatekey") {
+				if inIface && interfaceKey == "" {
+					interfaceKey = l
+				} else if !inIface && peerKeyLine == "" {
+					peerKeyLine = l
+				}
+			}
+		}
+		assert.Contains(t, interfaceKey, newKey, "Interface PrivateKey must be replaced")
+		assert.Contains(t, peerKeyLine, peerKey, "Peer PrivateKey must be unchanged")
+	})
+
+	t.Run("missing Interface section returns error", func(t *testing.T) {
+		t.Parallel()
+		body := "[Peer]\nPublicKey = " + peerKey + "\nEndpoint = 1.2.3.4:51820\n"
+		_, err := injectPrivateKey(body, newKey)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "EOF")
+		assert.Contains(t, err.Error(), "[Interface]")
 	})
 }
 
-func TestPromptPrefix(t *testing.T) {
-	t.Parallel()
+// discardLog drops wgconf parser warnings so test output stays clean and does
+// not depend on future fixture content (matches what production passes).
+var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	t.Run("non-empty value is returned", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("mullvad\n")
-		out := &bytes.Buffer{}
-		got, err := promptPrefix(out, newScanner(in))
-		require.NoError(t, err)
-		assert.Equal(t, "mullvad", got)
-	})
+// zipEntry is a helper type for constructing in-memory test zips.
+type zipEntry struct {
+	name string
+	body string
+}
 
-	t.Run("blank input means no prefix", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("\n")
-		out := &bytes.Buffer{}
-		got, err := promptPrefix(out, newScanner(in))
-		require.NoError(t, err)
-		assert.Equal(t, "", got)
-	})
+// ttyCfg returns a runConfig with TTY forced to true, using the supplied
+// reader/writer pair and the given temp dir.
+func ttyCfg(in *bytes.Buffer, out *bytes.Buffer, dir string) runConfig {
+	return runConfig{
+		in:    in,
+		out:   out,
+		dir:   dir,
+		force: false,
+		isTTY: func() bool { return true },
+	}
+}
 
-	t.Run("EOF means no prefix, not an error", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("")
-		out := &bytes.Buffer{}
-		got, err := promptPrefix(out, newScanner(in))
-		require.NoError(t, err)
-		assert.Equal(t, "", got)
-	})
+// genPubKey generates a random WireGuard public key and returns its base64
+// string. Used only for peer-key test inputs.
+func genPubKey(tb testing.TB) string {
+	tb.Helper()
+	k, err := wgtypes.GeneratePrivateKey()
+	require.NoError(tb, err)
+	return k.PublicKey().String()
+}
 
-	t.Run("invalid value re-prompts then accepts", func(t *testing.T) {
-		t.Parallel()
-		in := bytes.NewBufferString("bad/name\nmullvad\n")
-		out := &bytes.Buffer{}
-		got, err := promptPrefix(out, newScanner(in))
-		require.NoError(t, err)
-		assert.Equal(t, "mullvad", got)
-		assert.Contains(t, out.String(), "error:")
-	})
+// validInput assembles a complete multi-line stdin string for a successful run
+// using the supplied conf name. It selects manual mode (choice "1").
+func validInput(name, pubKey string) string {
+	return strings.Join([]string{
+		"1", // mode: manual
+		name,
+		"10.66.1.2/32",
+		pubKey,
+		"185.1.2.3:51820",
+		"", // DNS — accept default
+		"", // AllowedIPs — accept default
+		""}, "\n")
+}
+
+// newScanner wraps the provided reader in a bufio.Scanner, mirroring what run()
+// does. Extracted here so tests don't need to import bufio.
+func newScanner(r *bytes.Buffer) *bufio.Scanner {
+	return bufio.NewScanner(r)
+}
+
+// buildTestZip writes a zip containing the given entries to a temp file and
+// returns its path.
+func buildTestZip(t *testing.T, entries []zipEntry) string {
+	t.Helper()
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "test.zip")
+	f, err := os.Create(zipPath)
+	require.NoError(t, err)
+
+	w := zip.NewWriter(f)
+	for _, e := range entries {
+		fw, wErr := w.Create(e.name)
+		require.NoError(t, wErr)
+		_, wErr = fw.Write([]byte(e.body))
+		require.NoError(t, wErr)
+	}
+	require.NoError(t, w.Close())
+	require.NoError(t, f.Close())
+	return zipPath
+}
+
+// mullvadConf assembles a minimal Mullvad-style wg-quick conf body (no PrivateKey)
+// with the given address, peer public key, and endpoint. PresharedKey is
+// included to verify the injector never touches it.
+func mullvadConf(address, peerPubKey, endpoint string) string {
+	return "[Interface]\n" +
+		"Address = " + address + "\n" +
+		"DNS = 10.64.0.1\n" +
+		"\n" +
+		"[Peer]\n" +
+		"PublicKey = " + peerPubKey + "\n" +
+		"AllowedIPs = 0.0.0.0/0, ::/0\n" +
+		"Endpoint = " + endpoint + "\n" +
+		"PresharedKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM=\n"
+}
+
+// mullvadConfWithKey is like mullvadConf but includes an existing PrivateKey line
+// in [Interface] so the injector replaces rather than inserts.
+func mullvadConfWithKey(address, privKey, peerPubKey, endpoint string) string {
+	return "[Interface]\n" +
+		"PrivateKey = " + privKey + "\n" +
+		"Address = " + address + "\n" +
+		"DNS = 10.64.0.1\n" +
+		"\n" +
+		"[Peer]\n" +
+		"PublicKey = " + peerPubKey + "\n" +
+		"AllowedIPs = 0.0.0.0/0, ::/0\n" +
+		"Endpoint = " + endpoint + "\n" +
+		"PresharedKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM=\n"
 }

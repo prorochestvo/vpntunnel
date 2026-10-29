@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"time"
-
-	"vpntunnel/internal/egress"
 )
 
 // defaultProbeEndpoint is the exit-IP lookup service queried through the
@@ -42,7 +40,7 @@ type exitInfo struct {
 // probeTimeout independent of ctx's own deadline. d.DialContext is used
 // directly as the transport's dialer so the request always routes through
 // the tunnel and never through any process-wide proxy.
-func probeExitIP(ctx context.Context, d egress.Dialer, endpoint string) (exitInfo, error) {
+func probeExitIP(ctx context.Context, d dialer, endpoint string) (exitInfo, error) {
 	if d == nil {
 		return exitInfo{}, errors.New("notify: nil dialer")
 	}

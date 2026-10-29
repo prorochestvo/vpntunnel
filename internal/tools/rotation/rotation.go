@@ -7,9 +7,6 @@ package rotation
 
 import "context"
 
-// RotationOutcome enumerates the possible results of a Rotator.Rotate call.
-type RotationOutcome int
-
 const (
 	// RotationRotated means the streaming device was torn down and rebuilt
 	// against a fresh random exit; RotationResult.Country is set.
@@ -23,6 +20,9 @@ const (
 	// shutdown. Nothing changed observably beyond the normal reconnect path.
 	RotationUnavailable
 )
+
+// RotationOutcome enumerates the possible results of a Rotator.Rotate call.
+type RotationOutcome int
 
 // RotationResult is the outcome of a Rotate call. It never carries endpoint,
 // key material, PSK, or peer public key — only the fields the /v1/admin/rotate
@@ -41,6 +41,16 @@ type RotationResult struct {
 	ActiveSessions int64
 }
 
+// NoopRotator is the zero-allocation default used when no Rotator is wired. It
+// always reports RotationUnavailable so /v1/admin/rotate answers with a clean
+// 503 instead of a nil-pointer panic.
+type NoopRotator struct{}
+
+// Rotate implements Rotator by always reporting RotationUnavailable.
+func (NoopRotator) Rotate(context.Context, bool) (RotationResult, error) {
+	return RotationResult{Outcome: RotationUnavailable}, nil
+}
+
 // Rotator triggers a graceful streaming-tunnel rotation. Implementations live
 // outside this package — the cmd/vpntunnel adapter bridges to
 // *tunnelpool.StreamingSupervisor.RotateIfIdle — so the transport layer never
@@ -52,14 +62,4 @@ type Rotator interface {
 	// rotates unconditionally, still via break-before-make + settle. err is
 	// non-nil only when ctx was cancelled before the attempt completed.
 	Rotate(ctx context.Context, force bool) (RotationResult, error)
-}
-
-// NoopRotator is the zero-allocation default used when no Rotator is wired. It
-// always reports RotationUnavailable so /v1/admin/rotate answers with a clean
-// 503 instead of a nil-pointer panic.
-type NoopRotator struct{}
-
-// Rotate implements Rotator by always reporting RotationUnavailable.
-func (NoopRotator) Rotate(context.Context, bool) (RotationResult, error) {
-	return RotationResult{Outcome: RotationUnavailable}, nil
 }

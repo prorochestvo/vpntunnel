@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"vpntunnel/internal/application/asyncjob"
-	"vpntunnel/internal/egress"
+	"vpntunnel/internal/application/tunnelpool"
 )
 
 // NewProxyHandler returns an http.Handler that validates, normalises, and
@@ -81,8 +81,14 @@ type asyncPool interface {
 // satisfies this interface; tests and integration-test helpers may inject
 // alternative implementations (e.g. a plain net/http round-tripper that
 // bypasses the WireGuard dialer for localhost upstreams).
+//
+// The dialer/resolver parameters name tunnelpool's exported ports rather than
+// this package's local ones: Forwarder is implemented from outside handlers
+// (router.Options.ProxyForwarder), and Go matches interface method signatures
+// by type identity, so an unexported parameter type would make the interface
+// unimplementable by any other package.
 type Forwarder interface {
-	Forward(w http.ResponseWriter, r *http.Request, tunnelID string, dialer egress.Dialer, resolver egress.Resolver) error
+	Forward(w http.ResponseWriter, r *http.Request, tunnelID string, dialer tunnelpool.Dialer, resolver tunnelpool.Resolver) error
 }
 
 // proxyHandler implements http.Handler for the /v1/tunnels/{id}/proxy/{scheme}/{rest...} route.

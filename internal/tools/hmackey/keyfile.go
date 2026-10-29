@@ -12,14 +12,6 @@ import (
 	"github.com/prorochestvo/loginjector"
 )
 
-// keyLen is the length in bytes of the HMAC key. 64 is the SHA-256 block size:
-// HMAC uses a key up to the block size directly, whereas a longer key is first
-// hashed down to 32 bytes — no security gain and one extra hash. 64 is
-// therefore the longest key that adds entropy without an extra hashing step.
-// The key is HMAC'd once per name at startup, never per request, so its length
-// has no effect on request-path performance.
-const keyLen = 64
-
 // LoadOrGenerate returns the 64-byte HMAC key at path. If the file does not
 // exist, a fresh 64-byte random key is generated, written to path at mode 0600,
 // and returned. If the file already exists, it is stat-checked (must be 0600),
@@ -64,6 +56,14 @@ func LoadOrGenerate(path, configDir string, opLog *slog.Logger) ([]byte, error) 
 	)
 	return k[:], nil
 }
+
+// keyLen is the length in bytes of the HMAC key. 64 is the SHA-256 block size:
+// HMAC uses a key up to the block size directly, whereas a longer key is first
+// hashed down to 32 bytes — no security gain and one extra hash. 64 is
+// therefore the longest key that adds entropy without an extra hashing step.
+// The key is HMAC'd once per name at startup, never per request, so its length
+// has no effect on request-path performance.
+const keyLen = 64
 
 // loadExistingKey reads, validates, and returns the 64-byte key from an
 // existing file. It enforces mode 0600 and exact length before returning.

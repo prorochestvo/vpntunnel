@@ -33,27 +33,559 @@ import (
 
 	"vpntunnel/internal/application/asyncjob"
 	"vpntunnel/internal/application/tunnelpool"
-	"vpntunnel/internal/constants"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/config"
+	"vpntunnel/internal/policy"
 )
 
-// withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the streaming supervisor. Intended for tests only.
-func withSupervisorBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.supervisorBuilder = b }
+// compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
+var (
+	_ tunnelpool.DialerCloser   = (*smokeDialer)(nil)
+	_ tunnelpool.HealthReporter = (*smokeDialer)(nil)
+	_ tunnelpool.Resolver       = (*smokeDialer)(nil)
+)
+
+// TestRun is the composition-root smoke test. It boots the full
+// run pipeline with a fake tunnel pool (no real WireGuard) and asserts:
+//  1. Both the proxy and API servers become reachable.
+//  2. Context cancellation triggers graceful shutdown (avoids SIGTERM to the
+//     whole test process, which would be unsafe if other tests run in parallel).
+//  3. run returns nil within a reasonable timeout.
+func TestRun(t *testing.T) {
+	// not t.Parallel() — binds to fixed ports 17788 / 18888.
+
+	t.Run("boots and shuts down on context cancel", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17788 / 18888.
+
+		dir := t.TempDir()
+
+		// write a minimal wg-quick .conf the parser will accept into the
+		// tunnels/ subdir so DiscoverConfigs picks it up automatically.
+		tunnelsDir := filepath.Join(dir, "tunnels")
+		require.NoError(t, os.MkdirAll(tunnelsDir, 0o700))
+		confContent := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.99.0.1/32\n\n[Peer]\nPublicKey = %s\nEndpoint = 203.0.113.1:51820\n",
+			genWGKey(t), genWGPubKey(t))
+		require.NoError(t, os.WriteFile(filepath.Join(tunnelsDir, "smoke.conf"), []byte(confContent), 0o600))
+
+		// write three distinct token files.
+		authDir := filepath.Join(dir, "auth")
+		require.NoError(t, os.MkdirAll(authDir, 0o700))
+		userTok := filepath.Join(authDir, "proxy_token")
+		adminTok := filepath.Join(authDir, "admin_token")
+		// each token uses a different alphabet offset so the two SHA-512 hashes
+		// are distinct, satisfying LoadTokens' uniqueness check.
+		writeToken(t, userTok, 0)
+		writeToken(t, adminTok, 1)
+
+		// create the cert dir (apitls.LoadOrGenerate will generate a cert here).
+		certDir := filepath.Join(dir, "tls")
+		require.NoError(t, os.MkdirAll(certDir, 0o700))
+
+		// access log goes into the temp dir.
+		logDir := filepath.Join(dir, "logs")
+		require.NoError(t, os.MkdirAll(logDir, 0o755))
+
+		// write a v6 fixture proxy.json. Tunnels are auto-discovered from
+		// <configDir>/tunnels/ so no "configs" field is needed. TLS settings
+		// travel as CLI flags, not the JSON config.
+		// vpnstream.auth is omitted (proxy auth disabled); api.auth holds the
+		// two API role tokens.
+		asyncDBPath := filepath.Join(dir, "async.db")
+		cfgJSON := fmt.Sprintf(`{
+  "vpnstream": {
+    "listen": "127.0.0.1:17788",
+    "dial_timeout": "5s",
+    "shutdown_timeout": "3s"
+  },
+  "api": {
+    "listen": "127.0.0.1:18888",
+    "shutdown_timeout": "2s",
+    "auth": {
+      "proxy_token_file": %q,
+      "admin_token_file":  %q
+    },
+    "max_request_body_bytes": 1048576,
+    "vpn": {
+      "timeout":      "5s",
+      "max_timeout":  "30s",
+      "async": {
+        "storage_path": %q
+      }
+    }
+  },
+  "access_log": { "path": %q }
+}`, userTok, adminTok, asyncDBPath,
+			filepath.Join(logDir, "access.log"))
+
+		cfgPath := filepath.Join(dir, "proxy.json")
+		require.NoError(t, os.WriteFile(cfgPath, []byte(cfgJSON), 0o644))
+
+		// shutdownCtx is the test-owned cancellation source. Cancelling it drives
+		// the same ctx.Done() branch in run as SIGTERM would in production,
+		// without risking signal delivery to the whole test process.
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+		// run in a goroutine; collect the return value.
+		done := make(chan error, 1)
+		go func() {
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+		}()
+
+		// wait for both servers to become reachable (up to 5 s).
+		proxyReady := waitTCP(t, "127.0.0.1:17788", 5*time.Second)
+		apiReady := waitHTTPS(t, "https://127.0.0.1:18888/v1/admin/health", 5*time.Second)
+		assert.True(t, proxyReady, "proxy listener (127.0.0.1:17788) did not become reachable")
+		assert.True(t, apiReady, "api listener (127.0.0.1:18888) did not become reachable")
+
+		// trigger shutdown by cancelling the injected context.
+		cancel()
+
+		// assert clean shutdown within 10 s.
+		select {
+		case err := <-done:
+			assert.NoError(t, err, "run returned error on context-cancel shutdown")
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not return within 10s after context cancel")
+		}
+	})
+
+	t.Run("async startup: recovery deletes pending records before listeners start", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17790 / 18890.
+
+		dir := t.TempDir()
+		dbPath := filepath.Join(dir, "async.db")
+
+		// seed the database with one pending record before boot.
+		store, err := asyncjob.NewStore(dbPath)
+		require.NoError(t, err, "create seed store")
+		seedRec := asyncjob.NewPendingRecord("seed-tag-001", time.Now())
+		require.NoError(t, store.Put("seed-tag-001", seedRec), "write seed record")
+		require.NoError(t, store.Close(), "close seed store")
+
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr:   "127.0.0.1:17790",
+			apiAddr:     "127.0.0.1:18890",
+			asyncDBPath: dbPath,
+			certDir:     certDir,
+		})
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+		}()
+
+		// wait for the API to become reachable (proves boot + recovery completed).
+		apiReady := waitHTTPS(t, "https://127.0.0.1:18890/v1/admin/health", 10*time.Second)
+		assert.True(t, apiReady, "api listener (127.0.0.1:18890) did not become reachable after async startup")
+
+		// trigger shutdown.
+		cancel()
+
+		select {
+		case runErr := <-done:
+			require.NoError(t, runErr, "run returned an error")
+		case <-time.After(15 * time.Second):
+			t.Fatal("run did not return within 15s after async startup shutdown")
+		}
+
+		// reopen the store and confirm recovery deleted the pending record.
+		postStore, err := asyncjob.NewStore(dbPath)
+		require.NoError(t, err, "reopen store after shutdown")
+		t.Cleanup(func() { _ = postStore.Close() })
+
+		counts, err := postStore.Counts()
+		require.NoError(t, err, "counts after shutdown")
+		assert.Equal(t, 0, counts.Pending, "recovery should have deleted the seeded pending record")
+	})
+
+	t.Run("gc goroutine stops cleanly on context cancel", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17792 / 18892.
+
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr: "127.0.0.1:17792",
+			apiAddr:   "127.0.0.1:18892",
+			certDir:   certDir,
+		})
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+		}()
+
+		// wait until the API is up — guarantees GC goroutine has been launched.
+		apiReady := waitHTTPS(t, "https://127.0.0.1:18892/v1/admin/health", 10*time.Second)
+		assert.True(t, apiReady, "api listener (127.0.0.1:18892) did not become reachable")
+
+		// cancel → GC context fires → GC.Run returns → goroutine exits.
+		cancel()
+
+		select {
+		case runErr := <-done:
+			// clean exit proves the GC goroutine did not block the shutdown path.
+			assert.NoError(t, runErr, "run returned an error on GC shutdown")
+		case <-time.After(15 * time.Second):
+			t.Fatal("run did not return within 15s; GC goroutine may be leaking")
+		}
+	})
+
+	t.Run("missing async store dir is created on startup", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17794 / 18894.
+		// Regression: on a fresh host the async store's parent dir does not exist;
+		// bbolt.Open does not create it, so the daemon must MkdirAll it or it
+		// crash-loops before any listener binds.
+
+		dir := t.TempDir()
+		// nested path whose parent dirs do NOT exist yet.
+		asyncDir := filepath.Join(dir, "state", "nested")
+		dbPath := filepath.Join(asyncDir, "async.db")
+		require.NoDirExists(t, asyncDir, "precondition: async dir must not exist before startup")
+
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr:   "127.0.0.1:17794",
+			apiAddr:     "127.0.0.1:18894",
+			asyncDBPath: dbPath,
+			certDir:     certDir,
+		})
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+		}()
+
+		// API reachability proves the store opened, which proves the dir was created.
+		apiReady := waitHTTPS(t, "https://127.0.0.1:18894/v1/admin/health", 10*time.Second)
+		assert.True(t, apiReady, "api listener (127.0.0.1:18894) did not become reachable; async store dir likely not created")
+		assert.DirExists(t, asyncDir, "daemon should have created the async store parent dir")
+
+		cancel()
+
+		select {
+		case runErr := <-done:
+			assert.NoError(t, runErr, "run returned an error")
+		case <-time.After(15 * time.Second):
+			t.Fatal("run did not return within 15s after shutdown")
+		}
+	})
+
+	t.Run("http mode (no cert dir): API answers over plain HTTP", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17796 / 18896.
+		// Port choice: next available pair after the three TLS-mode subtests
+		// above (17788/18888, 17790/18890, 17792/18892).
+
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "proxy.json")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr: "127.0.0.1:17796",
+			apiAddr:   "127.0.0.1:18896",
+		})
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// an empty cert dir is the HTTP-mode trigger: loadAPICert skips
+		// apitls.LoadOrGenerate, emits the no-TLS WARN, and hands run a nil
+		// certificate. waitHTTPS to the same port is the negative control (TLS
+		// dial to a plain-HTTP listener must fail fast).
+		cfg, cert, opLog := bootFixture(t, cfgPath, "")
+		require.Nil(t, cert, "empty cert dir must select plain-HTTP mode")
+
+		done := make(chan error, 1)
+		go func() {
+			done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+		}()
+
+		// plain-HTTP reachability proves the API is running in HTTP mode.
+		httpReady := waitHTTP(t, "http://127.0.0.1:18896/v1/admin/health", 5*time.Second)
+		assert.True(t, httpReady, "api listener (127.0.0.1:18896) did not become reachable over plain HTTP")
+
+		// TLS dial to a plain-HTTP listener must fail (negative control).
+		// Use a short timeout — the failure is immediate at the record layer.
+		// This is the server-mode smoke only; the full 2x2 target-scheme matrix
+		// is in Wave 6 (TestProxyListenerTargetOrthogonality).
+		tlsReady := waitHTTPS(t, "https://127.0.0.1:18896/v1/admin/health", 1*time.Second)
+		assert.False(t, tlsReady, "TLS dial to plain-HTTP listener must fail (server-mode negative control)")
+
+		cancel()
+
+		select {
+		case err := <-done:
+			assert.NoError(t, err, "run returned error on context-cancel shutdown (HTTP mode)")
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not return within 10s after context cancel (HTTP mode)")
+		}
+	})
+
+	// the former "https mode with unloadable cert dir fails startup" subtest now
+	// lives in TestLoadAPICert/"unloadable cert dir returns an error": run no
+	// longer loads the certificate, so the wrong-perms FAIL-not-fallback
+	// contract is asserted at the cert-load step instead of end to end.
+
+	t.Run("startup fails when allowed_countries matches no discovered config", func(t *testing.T) {
+		// not t.Parallel() — declares the same 17794 / 18894 port pair as the "missing async store dir" subtest; safe only while run aborts before binding.
+		// no port binding — run returns before any listener starts.
+
+		dir := t.TempDir()
+		tunnelsDir := filepath.Join(dir, "tunnels")
+		require.NoError(t, os.MkdirAll(tunnelsDir, 0o700))
+		// write a single conf with a "se-sto" zone that will not match "xx".
+		confContent := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.99.0.2/32\n\n[Peer]\nPublicKey = %s\nEndpoint = 203.0.113.2:51820\n",
+			genWGKey(t), genWGPubKey(t))
+		require.NoError(t, os.WriteFile(filepath.Join(tunnelsDir, "mullvad-se-sto-wg-001.conf"), []byte(confContent), 0o600))
+
+		authDir := filepath.Join(dir, "auth")
+		require.NoError(t, os.MkdirAll(authDir, 0o700))
+		userTok := filepath.Join(authDir, "proxy_token")
+		adminTok := filepath.Join(authDir, "admin_token")
+		writeToken(t, userTok, 6)
+		writeToken(t, adminTok, 7)
+
+		certDir := filepath.Join(dir, "tls")
+		require.NoError(t, os.MkdirAll(certDir, 0o700))
+		logDir := filepath.Join(dir, "logs")
+		require.NoError(t, os.MkdirAll(logDir, 0o755))
+
+		cfgJSON := fmt.Sprintf(`{
+  "vpnstream": {
+    "listen": "127.0.0.1:17794",
+    "allowed_countries": ["xx"],
+    "dial_timeout": "5s",
+    "shutdown_timeout": "3s"
+  },
+  "api": {
+    "listen": "127.0.0.1:18894",
+    "shutdown_timeout": "2s",
+    "auth": {
+      "proxy_token_file": %q,
+      "admin_token_file":  %q
+    },
+    "max_request_body_bytes": 1048576,
+    "vpn": {
+      "timeout": "5s",
+      "max_timeout": "30s",
+      "async": { "storage_path": %q }
+    }
+  },
+  "access_log": { "path": %q }
+}`,
+			userTok, adminTok,
+			filepath.Join(dir, "async.db"),
+			filepath.Join(logDir, "access.log"),
+		)
+		cfgPath := filepath.Join(dir, "proxy.json")
+		require.NoError(t, os.WriteFile(cfgPath, []byte(cfgJSON), 0o644))
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+		err := run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+		require.Error(t, err, "expected startup error when allowed_countries matches no config")
+		assert.Contains(t, err.Error(), "streaming tunnel set",
+			"error must identify the streaming tunnel set as the failing component")
+	})
+
+	t.Run("telegram notifier disabled when VPNTUNNEL_TELEGRAMBOT_DSN is unset", func(t *testing.T) {
+		// not t.Parallel() — binds to fixed ports 17800 / 18900 and, via
+		// captureStdout, temporarily swaps the process-wide os.Stdout; both
+		// require this subtest to run in isolation from parallel siblings.
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr: "127.0.0.1:17800",
+			apiAddr:   "127.0.0.1:18900",
+			certDir:   certDir,
+		})
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		stdout := captureStdout(t, func() {
+			// built inside the captured region: newOperationalLogger binds
+			// os.Stdout at construction, so a logger built before the swap would
+			// write past the pipe and make the assertion below vacuous.
+			cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+			go func() {
+				done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+			}()
+
+			apiReady := waitHTTPS(t, "https://127.0.0.1:18900/v1/admin/health", 10*time.Second)
+			assert.True(t, apiReady, "api listener (127.0.0.1:18900) did not become reachable")
+
+			cancel()
+
+			select {
+			case runErr := <-done:
+				assert.NoError(t, runErr)
+			case <-time.After(15 * time.Second):
+				t.Fatal("run did not return within 15s")
+			}
+		})
+
+		assert.Contains(t, stdout, "telegram notifier disabled: VPNTUNNEL_TELEGRAMBOT_DSN not set")
+	})
+
+	t.Run("malformed telegram dsn warns and disables the notifier without aborting startup", func(t *testing.T) {
+		// not t.Parallel() — see the previous subtest's comment; also uses
+		// t.Setenv, which forbids parallel siblings.
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "proxy.json")
+		certDir := filepath.Join(dir, "tls")
+		writeFixtureConfig(t, cfgPath, fixtureConfig{
+			proxyAddr: "127.0.0.1:17802",
+			apiAddr:   "127.0.0.1:18902",
+			certDir:   certDir,
+		})
+
+		const malformedDSN = "tbot://not-a-valid-dsn"
+		t.Setenv(policy.EnvTelegramBotDSN, malformedDSN)
+
+		shutdownCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		stdout := captureStdout(t, func() {
+			// see the sibling subtest: the logger must be constructed after
+			// captureStdout has swapped os.Stdout.
+			cfg, cert, opLog := bootFixture(t, cfgPath, certDir)
+
+			go func() {
+				done <- run(shutdownCtx, cfg, cert, opLog, smokeBuilder, smokeBuilder)
+			}()
+
+			apiReady := waitHTTPS(t, "https://127.0.0.1:18902/v1/admin/health", 10*time.Second)
+			assert.True(t, apiReady, "api listener (127.0.0.1:18902) did not become reachable")
+
+			cancel()
+
+			select {
+			case runErr := <-done:
+				// a malformed DSN must never abort the proxy — it is auxiliary
+				// telemetry, not a startup precondition.
+				assert.NoError(t, runErr, "run must succeed even with a malformed telegram DSN")
+			case <-time.After(15 * time.Second):
+				t.Fatal("run did not return within 15s")
+			}
+		})
+
+		assert.Contains(t, stdout, "telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN")
+		assert.Contains(t, strings.ToUpper(stdout), "WARN")
+		assert.NotContains(t, stdout, malformedDSN, "the raw DSN must never be logged")
+	})
 }
 
-// withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the on-demand scheduler. Intended for tests only.
-func withSchedulerBuilder(b tunnelpool.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.schedulerBuilder = b }
+func TestLoadAPICert(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty hostname rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := loadAPICert("/tmp/tls", "", "", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "-tls-hostname")
+	})
+
+	t.Run("invalid ip san rejected before any disk access", func(t *testing.T) {
+		t.Parallel()
+		// the SAN list is validated in both modes, so a typo is reported even
+		// when no certificate is minted.
+		_, err := loadAPICert("", "localhost", "not-an-ip", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-an-ip")
+	})
+
+	t.Run("empty cert dir yields no certificate", func(t *testing.T) {
+		t.Parallel()
+		// nil is the one and only spelling of plain-HTTP mode.
+		cert, err := loadAPICert("", "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
+		require.NoError(t, err)
+		assert.Nil(t, cert, "empty cert dir must yield no certificate (HTTP mode)")
+	})
+
+	t.Run("unloadable cert dir returns an error", func(t *testing.T) {
+		t.Parallel()
+		// exercises the FAIL-not-fallback contract via the wrong-perms path:
+		// apitls.ensureCertDir rejects a cert dir whose permissions are not 0700
+		// with a loginjector.PublicDetailsError (apitls.go:121).
+		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
+		poisonDir := filepath.Join(t.TempDir(), "badtls")
+		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
+		require.NoError(t, os.Chmod(poisonDir, 0o777))
+
+		cert, err := loadAPICert(poisonDir, "localhost", "", "127.0.0.1:8888", discardLogger())
+		require.Error(t, err)
+		assert.Nil(t, cert)
+		assert.Contains(t, err.Error(), "load tls cert")
+	})
+
+	t.Run("fresh cert dir yields a usable certificate", func(t *testing.T) {
+		t.Parallel()
+		certDir := filepath.Join(t.TempDir(), "tls")
+		require.NoError(t, os.MkdirAll(certDir, 0o700))
+
+		cert, err := loadAPICert(certDir, "localhost", "127.0.0.1", "127.0.0.1:8888", discardLogger())
+		require.NoError(t, err)
+		require.NotNil(t, cert)
+		assert.NotEmpty(t, cert.Certificate)
+	})
 }
 
-// withShutdownCtx returns a runOpt that replaces signal.NotifyContext with the
-// caller-owned context as the shutdown trigger. Test-only seam.
-func withShutdownCtx(ctx context.Context) runOpt {
-	return func(o *runOptions) { o.shutdownCtx = ctx }
+func TestParseIPSANs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("comma-separated ip sans parsed", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseIPSANs("127.0.0.1,::1")
+		require.NoError(t, err)
+		assert.Len(t, got, 2)
+	})
+
+	t.Run("invalid ip rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := parseIPSANs("127.0.0.1,not-an-ip")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-an-ip")
+	})
+
+	t.Run("empty ip-sans yields none", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseIPSANs("")
+		require.NoError(t, err)
+		assert.Len(t, got, 0)
+	})
+
+	t.Run("trailing comma tolerated", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseIPSANs("127.0.0.1,")
+		require.NoError(t, err)
+		assert.Len(t, got, 1)
+	})
 }
 
 func TestResolveAuthToken(t *testing.T) {
@@ -144,78 +676,34 @@ func TestResolveAuthToken(t *testing.T) {
 	})
 }
 
-func TestParseTLSOptions(t *testing.T) {
+func TestResolveCertDir(t *testing.T) {
 	t.Parallel()
-
-	t.Run("empty hostname rejected", func(t *testing.T) {
-		t.Parallel()
-		_, err := parseTLSOptions("/tmp/tls", "", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "-tls-hostname")
-	})
 
 	t.Run("relative cert dir resolves against cwd", func(t *testing.T) {
 		t.Parallel()
 		cwd, err := os.Getwd()
 		require.NoError(t, err)
-		opts, err := parseTLSOptions("reltls", "localhost", "")
+		got, err := resolveCertDir("reltls")
 		require.NoError(t, err)
-		assert.Equal(t, filepath.Join(cwd, "reltls"), opts.CertDir)
+		assert.Equal(t, filepath.Join(cwd, "reltls"), got)
 	})
 
 	t.Run("absolute cert dir passed through unchanged", func(t *testing.T) {
 		t.Parallel()
-		opts, err := parseTLSOptions("/opt/vpntunnel/tls/", "localhost", "")
+		got, err := resolveCertDir("/opt/vpntunnel/tls/")
 		require.NoError(t, err)
-		assert.Equal(t, "/opt/vpntunnel/tls/", opts.CertDir)
+		assert.Equal(t, "/opt/vpntunnel/tls/", got)
 	})
 
-	t.Run("comma-separated ip sans parsed", func(t *testing.T) {
-		t.Parallel()
-		opts, err := parseTLSOptions("/tmp/tls", "localhost", "127.0.0.1,::1")
-		require.NoError(t, err)
-		assert.Len(t, opts.IPSANs, 2)
-	})
-
-	t.Run("invalid ip rejected", func(t *testing.T) {
-		t.Parallel()
-		_, err := parseTLSOptions("/tmp/tls", "localhost", "127.0.0.1,not-an-ip")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not-an-ip")
-	})
-
-	t.Run("empty ip-sans yields none", func(t *testing.T) {
-		t.Parallel()
-		opts, err := parseTLSOptions("/tmp/tls", "localhost", "")
-		require.NoError(t, err)
-		assert.Len(t, opts.IPSANs, 0)
-	})
-
-	t.Run("trailing comma tolerated", func(t *testing.T) {
-		t.Parallel()
-		opts, err := parseTLSOptions("/tmp/tls", "localhost", "127.0.0.1,")
-		require.NoError(t, err)
-		assert.Len(t, opts.IPSANs, 1)
-	})
-
-	t.Run("empty cert dir yields HTTP-mode tlsOptions", func(t *testing.T) {
+	t.Run("empty cert dir stays empty", func(t *testing.T) {
 		t.Parallel()
 		// regression guard: filepath.Abs("") returns the cwd, which would
-		// silently re-enable HTTPS. The empty branch must preserve CertDir as "".
-		got, err := parseTLSOptions("", "localhost", "127.0.0.1")
+		// silently re-enable HTTPS against an unintended directory.
+		got, err := resolveCertDir("")
 		require.NoError(t, err)
-		assert.Equal(t, "", got.CertDir, "CertDir must stay empty (not resolved to cwd)")
-		assert.Equal(t, "localhost", got.Hostname)
-		assert.Len(t, got.IPSANs, 1)
+		assert.Equal(t, "", got, "empty cert dir must stay empty (not resolved to cwd)")
 	})
 }
-
-// compile-time assertions: smokeDialer must satisfy all interfaces the supervisor and scheduler cast to.
-var (
-	_ egress.DialerCloser   = (*smokeDialer)(nil)
-	_ egress.HealthReporter = (*smokeDialer)(nil)
-	_ egress.Resolver       = (*smokeDialer)(nil)
-)
 
 // smokeDialer is a no-op test double for the full tunnel interface set.
 // DialContext always fails (smoke tests do not actually proxy traffic).
@@ -237,7 +725,7 @@ func (smokeDialer) LookupHost(_ context.Context, _ string) ([]netip.Addr, error)
 }
 
 // smokeBuilder is a tunnelpool.DeviceBuilderFn that returns a smokeDialer for any config path.
-func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (egress.DialerCloser, error) {
+func smokeBuilder(_ context.Context, _, _ string, _ *slog.Logger) (tunnelpool.DialerCloser, error) {
 	return &smokeDialer{}, nil
 }
 
@@ -272,482 +760,6 @@ func writeToken(tb testing.TB, path string, offset int) {
 	require.NoError(tb, os.WriteFile(path, buf, 0o600))
 }
 
-// TestRun is the composition-root smoke test. It boots the full
-// run pipeline with a fake tunnel pool (no real WireGuard) and asserts:
-//  1. Both the proxy and API servers become reachable.
-//  2. Context cancellation triggers graceful shutdown (avoids SIGTERM to the
-//     whole test process, which would be unsafe if other tests run in parallel).
-//  3. run returns nil within a reasonable timeout.
-func TestRun(t *testing.T) {
-	// not t.Parallel() — binds to fixed ports 17788 / 18888.
-
-	t.Run("boots and shuts down on context cancel", func(t *testing.T) {
-		dir := t.TempDir()
-
-		// write a minimal wg-quick .conf the parser will accept into the
-		// tunnels/ subdir so DiscoverConfigs picks it up automatically.
-		tunnelsDir := filepath.Join(dir, "tunnels")
-		require.NoError(t, os.MkdirAll(tunnelsDir, 0o700))
-		confContent := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.99.0.1/32\n\n[Peer]\nPublicKey = %s\nEndpoint = 203.0.113.1:51820\n",
-			genWGKey(t), genWGPubKey(t))
-		require.NoError(t, os.WriteFile(filepath.Join(tunnelsDir, "smoke.conf"), []byte(confContent), 0o600))
-
-		// write three distinct token files.
-		authDir := filepath.Join(dir, "auth")
-		require.NoError(t, os.MkdirAll(authDir, 0o700))
-		userTok := filepath.Join(authDir, "proxy_token")
-		adminTok := filepath.Join(authDir, "admin_token")
-		// each token uses a different alphabet offset so the two SHA-512 hashes
-		// are distinct, satisfying LoadTokens' uniqueness check.
-		writeToken(t, userTok, 0)
-		writeToken(t, adminTok, 1)
-
-		// create the cert dir (apitls.LoadOrGenerate will generate a cert here).
-		certDir := filepath.Join(dir, "tls")
-		require.NoError(t, os.MkdirAll(certDir, 0o700))
-
-		// access log goes into the temp dir.
-		logDir := filepath.Join(dir, "logs")
-		require.NoError(t, os.MkdirAll(logDir, 0o755))
-
-		// write a v6 fixture proxy.json. Tunnels are auto-discovered from
-		// <configDir>/tunnels/ so no "configs" field is needed. TLS settings
-		// travel via tlsOptions (CLI flags), not the JSON config.
-		// vpnstream.auth is omitted (proxy auth disabled); api.auth holds the
-		// two API role tokens.
-		asyncDBPath := filepath.Join(dir, "async.db")
-		cfgJSON := fmt.Sprintf(`{
-  "vpnstream": {
-    "listen": "127.0.0.1:17788",
-    "dial_timeout": "5s",
-    "shutdown_timeout": "3s"
-  },
-  "api": {
-    "listen": "127.0.0.1:18888",
-    "shutdown_timeout": "2s",
-    "auth": {
-      "proxy_token_file": %q,
-      "admin_token_file":  %q
-    },
-    "max_request_body_bytes": 1048576,
-    "vpn": {
-      "timeout":      "5s",
-      "max_timeout":  "30s",
-      "async": {
-        "storage_path": %q
-      }
-    }
-  },
-  "access_log": { "path": %q }
-}`, userTok, adminTok, asyncDBPath,
-			filepath.Join(logDir, "access.log"))
-
-		cfgPath := filepath.Join(dir, "proxy.json")
-		require.NoError(t, os.WriteFile(cfgPath, []byte(cfgJSON), 0o644))
-
-		// shutdownCtx is the test-owned cancellation source. Cancelling it drives
-		// the same ctx.Done() branch in run as SIGTERM would in production,
-		// without risking signal delivery to the whole test process.
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// run in a goroutine; collect the return value.
-		done := make(chan error, 1)
-		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-		}()
-
-		// wait for both servers to become reachable (up to 5 s).
-		proxyReady := waitTCP(t, "127.0.0.1:17788", 5*time.Second)
-		apiReady := waitHTTPS(t, "https://127.0.0.1:18888/v1/admin/health", 5*time.Second)
-		assert.True(t, proxyReady, "proxy listener (127.0.0.1:17788) did not become reachable")
-		assert.True(t, apiReady, "api listener (127.0.0.1:18888) did not become reachable")
-
-		// trigger shutdown by cancelling the injected context.
-		cancel()
-
-		// assert clean shutdown within 10 s.
-		select {
-		case err := <-done:
-			assert.NoError(t, err, "run returned error on context-cancel shutdown")
-		case <-time.After(10 * time.Second):
-			t.Fatal("run did not return within 10s after context cancel")
-		}
-	})
-
-	t.Run("async startup: recovery deletes pending records before listeners start", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17790 / 18890.
-
-		dir := t.TempDir()
-		dbPath := filepath.Join(dir, "async.db")
-
-		// seed the database with one pending record before boot.
-		store, err := asyncjob.NewStore(dbPath)
-		require.NoError(t, err, "create seed store")
-		seedRec := asyncjob.NewPendingRecord("seed-tag-001", time.Now())
-		require.NoError(t, store.Put("seed-tag-001", seedRec), "write seed record")
-		require.NoError(t, store.Close(), "close seed store")
-
-		cfgPath := filepath.Join(dir, "proxy.json")
-		certDir := filepath.Join(dir, "tls")
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr:   "127.0.0.1:17790",
-			apiAddr:     "127.0.0.1:18890",
-			asyncDBPath: dbPath,
-			certDir:     certDir,
-		})
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		done := make(chan error, 1)
-		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-		}()
-
-		// wait for the API to become reachable (proves boot + recovery completed).
-		apiReady := waitHTTPS(t, "https://127.0.0.1:18890/v1/admin/health", 10*time.Second)
-		assert.True(t, apiReady, "api listener (127.0.0.1:18890) did not become reachable after async startup")
-
-		// trigger shutdown.
-		cancel()
-
-		select {
-		case runErr := <-done:
-			require.NoError(t, runErr, "run returned an error")
-		case <-time.After(15 * time.Second):
-			t.Fatal("run did not return within 15s after async startup shutdown")
-		}
-
-		// reopen the store and confirm recovery deleted the pending record.
-		postStore, err := asyncjob.NewStore(dbPath)
-		require.NoError(t, err, "reopen store after shutdown")
-		t.Cleanup(func() { _ = postStore.Close() })
-
-		counts, err := postStore.Counts()
-		require.NoError(t, err, "counts after shutdown")
-		assert.Equal(t, 0, counts.Pending, "recovery should have deleted the seeded pending record")
-	})
-
-	t.Run("gc goroutine stops cleanly on context cancel", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17792 / 18892.
-
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "proxy.json")
-		certDir := filepath.Join(dir, "tls")
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr: "127.0.0.1:17792",
-			apiAddr:   "127.0.0.1:18892",
-			certDir:   certDir,
-		})
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		done := make(chan error, 1)
-		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-		}()
-
-		// wait until the API is up — guarantees GC goroutine has been launched.
-		apiReady := waitHTTPS(t, "https://127.0.0.1:18892/v1/admin/health", 10*time.Second)
-		assert.True(t, apiReady, "api listener (127.0.0.1:18892) did not become reachable")
-
-		// cancel → GC context fires → GC.Run returns → goroutine exits.
-		cancel()
-
-		select {
-		case runErr := <-done:
-			// clean exit proves the GC goroutine did not block the shutdown path.
-			assert.NoError(t, runErr, "run returned an error on GC shutdown")
-		case <-time.After(15 * time.Second):
-			t.Fatal("run did not return within 15s; GC goroutine may be leaking")
-		}
-	})
-
-	t.Run("missing async store dir is created on startup", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17794 / 18894.
-		// Regression: on a fresh host the async store's parent dir does not exist;
-		// bbolt.Open does not create it, so the daemon must MkdirAll it or it
-		// crash-loops before any listener binds.
-
-		dir := t.TempDir()
-		// nested path whose parent dirs do NOT exist yet.
-		asyncDir := filepath.Join(dir, "state", "nested")
-		dbPath := filepath.Join(asyncDir, "async.db")
-		require.NoDirExists(t, asyncDir, "precondition: async dir must not exist before startup")
-
-		cfgPath := filepath.Join(dir, "proxy.json")
-		certDir := filepath.Join(dir, "tls")
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr:   "127.0.0.1:17794",
-			apiAddr:     "127.0.0.1:18894",
-			asyncDBPath: dbPath,
-			certDir:     certDir,
-		})
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		done := make(chan error, 1)
-		go func() {
-			done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-		}()
-
-		// API reachability proves the store opened, which proves the dir was created.
-		apiReady := waitHTTPS(t, "https://127.0.0.1:18894/v1/admin/health", 10*time.Second)
-		assert.True(t, apiReady, "api listener (127.0.0.1:18894) did not become reachable; async store dir likely not created")
-		assert.DirExists(t, asyncDir, "daemon should have created the async store parent dir")
-
-		cancel()
-
-		select {
-		case runErr := <-done:
-			assert.NoError(t, runErr, "run returned an error")
-		case <-time.After(15 * time.Second):
-			t.Fatal("run did not return within 15s after shutdown")
-		}
-	})
-
-	t.Run("http mode (no cert dir): API answers over plain HTTP", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17796 / 18896.
-		// Port choice: next available pair after the three TLS-mode subtests
-		// above (17788/18888, 17790/18890, 17792/18892).
-
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "proxy.json")
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr: "127.0.0.1:17796",
-			apiAddr:   "127.0.0.1:18896",
-		})
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		done := make(chan error, 1)
-		// pass an empty CertDir — this is the HTTP-mode trigger. run
-		// skips apitls.LoadOrGenerate and emits the no-TLS WARN instead.
-		// waitHTTPS to the same port is the negative control (TLS dial to a
-		// plain-HTTP listener must fail fast).
-		go func() {
-			done <- run(cfgPath,
-				tlsOptions{CertDir: "", Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
-				withSupervisorBuilder(smokeBuilder),
-				withSchedulerBuilder(smokeBuilder),
-				withShutdownCtx(shutdownCtx),
-			)
-		}()
-
-		// plain-HTTP reachability proves the API is running in HTTP mode.
-		httpReady := waitHTTP(t, "http://127.0.0.1:18896/v1/admin/health", 5*time.Second)
-		assert.True(t, httpReady, "api listener (127.0.0.1:18896) did not become reachable over plain HTTP")
-
-		// TLS dial to a plain-HTTP listener must fail (negative control).
-		// Use a short timeout — the failure is immediate at the record layer.
-		// This is the server-mode smoke only; the full 2x2 target-scheme matrix
-		// is in Wave 6 (TestProxyListenerTargetOrthogonality).
-		tlsReady := waitHTTPS(t, "https://127.0.0.1:18896/v1/admin/health", 1*time.Second)
-		assert.False(t, tlsReady, "TLS dial to plain-HTTP listener must fail (server-mode negative control)")
-
-		cancel()
-
-		select {
-		case err := <-done:
-			assert.NoError(t, err, "run returned error on context-cancel shutdown (HTTP mode)")
-		case <-time.After(10 * time.Second):
-			t.Fatal("run did not return within 10s after context cancel (HTTP mode)")
-		}
-	})
-
-	t.Run("https mode with unloadable cert dir fails startup", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17798 / 18898 but returns
-		// before any listener starts (startup fails at the cert-load step).
-		// Port choice: next available pair after the HTTP-mode smoke above.
-
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "proxy.json")
-		// the fixture config must be otherwise valid so the pre-cert startup
-		// steps succeed (access log, async store, recovery) and the cert-load
-		// branch is reached. Poison only tlsOptions.CertDir via wrong perms.
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr: "127.0.0.1:17798",
-			apiAddr:   "127.0.0.1:18898",
-		})
-
-		// create a dir with wrong permissions (0777 instead of 0700).
-		// apitls.ensureCertDir rejects dirs whose permissions are not 0700,
-		// giving a deterministic FAIL via a loginjector.PublicDetailsError (apitls.go:121).
-		// os.Chmod must follow os.MkdirAll because MkdirAll honours the umask.
-		// NOTE: do NOT call parseTLSOptions — we inject the tlsOptions directly
-		// to exercise the Wave 3 cert-load branch inside run in isolation.
-		// parseTLSOptions is only invoked from parseFlags (via main) to parse CLI flags.
-		poisonDir := filepath.Join(t.TempDir(), "badtls")
-		require.NoError(t, os.MkdirAll(poisonDir, 0o777))
-		require.NoError(t, os.Chmod(poisonDir, 0o777))
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		err := run(cfgPath,
-			tlsOptions{CertDir: poisonDir, Hostname: "localhost", IPSANs: nil},
-			withSupervisorBuilder(smokeBuilder),
-			withSchedulerBuilder(smokeBuilder),
-			withShutdownCtx(shutdownCtx),
-		)
-		// exercises the FAIL-not-fallback contract via the wrong-perms path
-		// (apitls.ensureCertDir returns a loginjector.PublicDetailsError for non-0700 dirs).
-		// the existing-but-unparseable-cert FAIL variant is gated on a sibling
-		// apitls change and is not asserted here.
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "load tls cert")
-	})
-
-	t.Run("startup fails when allowed_countries matches no discovered config", func(t *testing.T) {
-		// no port binding — run returns before any listener starts.
-
-		dir := t.TempDir()
-		tunnelsDir := filepath.Join(dir, "tunnels")
-		require.NoError(t, os.MkdirAll(tunnelsDir, 0o700))
-		// write a single conf with a "se-sto" zone that will not match "xx".
-		confContent := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.99.0.2/32\n\n[Peer]\nPublicKey = %s\nEndpoint = 203.0.113.2:51820\n",
-			genWGKey(t), genWGPubKey(t))
-		require.NoError(t, os.WriteFile(filepath.Join(tunnelsDir, "mullvad-se-sto-wg-001.conf"), []byte(confContent), 0o600))
-
-		authDir := filepath.Join(dir, "auth")
-		require.NoError(t, os.MkdirAll(authDir, 0o700))
-		userTok := filepath.Join(authDir, "proxy_token")
-		adminTok := filepath.Join(authDir, "admin_token")
-		writeToken(t, userTok, 6)
-		writeToken(t, adminTok, 7)
-
-		certDir := filepath.Join(dir, "tls")
-		require.NoError(t, os.MkdirAll(certDir, 0o700))
-		logDir := filepath.Join(dir, "logs")
-		require.NoError(t, os.MkdirAll(logDir, 0o755))
-
-		cfgJSON := fmt.Sprintf(`{
-  "vpnstream": {
-    "listen": "127.0.0.1:17794",
-    "allowed_countries": ["xx"],
-    "dial_timeout": "5s",
-    "shutdown_timeout": "3s"
-  },
-  "api": {
-    "listen": "127.0.0.1:18894",
-    "shutdown_timeout": "2s",
-    "auth": {
-      "proxy_token_file": %q,
-      "admin_token_file":  %q
-    },
-    "max_request_body_bytes": 1048576,
-    "vpn": {
-      "timeout": "5s",
-      "max_timeout": "30s",
-      "async": { "storage_path": %q }
-    }
-  },
-  "access_log": { "path": %q }
-}`,
-			userTok, adminTok,
-			filepath.Join(dir, "async.db"),
-			filepath.Join(logDir, "access.log"),
-		)
-		cfgPath := filepath.Join(dir, "proxy.json")
-		require.NoError(t, os.WriteFile(cfgPath, []byte(cfgJSON), 0o644))
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		err := run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}},
-			withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-		require.Error(t, err, "expected startup error when allowed_countries matches no config")
-		assert.Contains(t, err.Error(), "streaming tunnel set",
-			"error must identify the streaming tunnel set as the failing component")
-	})
-
-	t.Run("telegram notifier disabled when VPNTUNNEL_TELEGRAMBOT_DSN is unset", func(t *testing.T) {
-		// not t.Parallel() — binds to fixed ports 17800 / 18900 and, via
-		// captureStdout, temporarily swaps the process-wide os.Stdout; both
-		// require this subtest to run in isolation from parallel siblings.
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "proxy.json")
-		certDir := filepath.Join(dir, "tls")
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr: "127.0.0.1:17800",
-			apiAddr:   "127.0.0.1:18900",
-			certDir:   certDir,
-		})
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		done := make(chan error, 1)
-		stdout := captureStdout(t, func() {
-			go func() {
-				done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-			}()
-
-			apiReady := waitHTTPS(t, "https://127.0.0.1:18900/v1/admin/health", 10*time.Second)
-			assert.True(t, apiReady, "api listener (127.0.0.1:18900) did not become reachable")
-
-			cancel()
-
-			select {
-			case runErr := <-done:
-				assert.NoError(t, runErr)
-			case <-time.After(15 * time.Second):
-				t.Fatal("run did not return within 15s")
-			}
-		})
-
-		assert.Contains(t, stdout, "telegram notifier disabled: VPNTUNNEL_TELEGRAMBOT_DSN not set")
-	})
-
-	t.Run("malformed telegram dsn warns and disables the notifier without aborting startup", func(t *testing.T) {
-		// not t.Parallel() — see the previous subtest's comment; also uses
-		// t.Setenv, which forbids parallel siblings.
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "proxy.json")
-		certDir := filepath.Join(dir, "tls")
-		writeFixtureConfig(t, cfgPath, fixtureConfig{
-			proxyAddr: "127.0.0.1:17802",
-			apiAddr:   "127.0.0.1:18902",
-			certDir:   certDir,
-		})
-
-		const malformedDSN = "tbot://not-a-valid-dsn"
-		t.Setenv(constants.EnvTelegramBotDSN, malformedDSN)
-
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		done := make(chan error, 1)
-		stdout := captureStdout(t, func() {
-			go func() {
-				done <- run(cfgPath, tlsOptions{CertDir: certDir, Hostname: "localhost", IPSANs: []net.IP{net.ParseIP("127.0.0.1")}}, withSupervisorBuilder(smokeBuilder), withSchedulerBuilder(smokeBuilder), withShutdownCtx(shutdownCtx))
-			}()
-
-			apiReady := waitHTTPS(t, "https://127.0.0.1:18902/v1/admin/health", 10*time.Second)
-			assert.True(t, apiReady, "api listener (127.0.0.1:18902) did not become reachable")
-
-			cancel()
-
-			select {
-			case runErr := <-done:
-				// a malformed DSN must never abort the proxy — it is auxiliary
-				// telemetry, not a startup precondition.
-				assert.NoError(t, runErr, "run must succeed even with a malformed telegram DSN")
-			case <-time.After(15 * time.Second):
-				t.Fatal("run did not return within 15s")
-			}
-		})
-
-		assert.Contains(t, stdout, "telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN")
-		assert.Contains(t, strings.ToUpper(stdout), "WARN")
-		assert.NotContains(t, stdout, malformedDSN, "the raw DSN must never be logged")
-	})
-}
-
 // fixtureConfig holds the paths needed to write a test proxy.json.
 type fixtureConfig struct {
 	proxyAddr   string
@@ -755,9 +767,33 @@ type fixtureConfig struct {
 	asyncDBPath string
 	// certDir is the directory where apitls.LoadOrGenerate will store/generate
 	// the TLS cert. When empty, writeFixtureConfig derives it as
-	// filepath.Join(dir, "tls"). The caller must pass the same path as
-	// tlsOptions.CertDir to run so the on-disk dir and the flag agree.
+	// filepath.Join(dir, "tls"). The caller must pass the same path to
+	// bootFixture so the on-disk dir and the flag-equivalent argument agree.
 	certDir string
+}
+
+// bootFixture builds the three objects bootstrap builds in production — the
+// loaded config, the API certificate, and the operational logger — from a
+// fixture config path, so TestRun exercises run with production-shaped inputs.
+// An empty certDir selects plain-HTTP mode and yields a nil certificate.
+//
+// Call it from wherever the log output must go: newOperationalLogger binds
+// os.Stdout at construction, so a subtest using captureStdout has to call this
+// inside the captured region.
+func bootFixture(tb testing.TB, cfgPath, certDir string) (config.Config, *tls.Certificate, *slog.Logger) {
+	tb.Helper()
+	cfg, err := config.Load(cfgPath)
+	require.NoError(tb, err, "load fixture config")
+	opLog := newOperationalLogger(cfg.Operational)
+	cert, err := loadAPICert(certDir, "localhost", "127.0.0.1", cfg.API.Listen, opLog)
+	require.NoError(tb, err, "load fixture api certificate")
+	return cfg, cert, opLog
+}
+
+// discardLogger returns a logger that writes nowhere. The TLS helper tests
+// assert on returned values, not on log output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // writeFixtureConfig writes a proxy.json at cfgPath suitable for running
@@ -767,8 +803,8 @@ type fixtureConfig struct {
 //
 // The cert dir is derived from cfg.certDir; when empty it defaults to
 // filepath.Join(dir, "tls"). The caller must pass the same cert-dir path as
-// tlsOptions.CertDir to run — writeFixtureConfig no longer embeds TLS
-// settings in the JSON; they travel as CLI-flag-equivalent tlsOptions.
+// cert-dir path to bootFixture — writeFixtureConfig does not embed TLS
+// settings in the JSON; they travel as CLI flags.
 func writeFixtureConfig(tb testing.TB, cfgPath string, cfg fixtureConfig) {
 	tb.Helper()
 	dir := filepath.Dir(cfgPath)
@@ -815,7 +851,7 @@ func writeFixtureConfig(tb testing.TB, cfgPath string, cfg fixtureConfig) {
 	// v6 config shape: vpnstream block for proxy listener settings; api.vpn
 	// for on-demand VPN knobs; api.auth for the two API role tokens.
 	// Tunnels are auto-discovered from <configDir>/tunnels/; TLS settings
-	// travel via tlsOptions (CLI flags), not the JSON config.
+	// travel as CLI flags, not the JSON config.
 	cfgJSON := fmt.Sprintf(`{
   "vpnstream": {
     "listen": %q,

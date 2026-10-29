@@ -6,12 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/prorochestvo/dsninjector"
+
+	"vpntunnel/internal/domain"
 )
 
 // NewTelegram builds a Telegram notifier from a DataSource (parsed by the
@@ -52,8 +57,8 @@ type TelegramNotifier struct {
 	done   chan struct{}
 	once   sync.Once
 
-	// mu guards the on-demand dedup/rate-limit state below. SourceStreaming
-	// events never touch this state.
+	// mu guards the on-demand dedup/rate-limit state below.
+	// domain.SourceStreaming events never touch this state.
 	mu                   sync.Mutex
 	lastOnDemandFilename string
 	lastOnDemandAt       time.Time
@@ -70,14 +75,14 @@ func (tn *TelegramNotifier) Close() {
 	<-tn.done
 }
 
-// Notify implements Notifier. For SourceOnDemand events it applies the
+// Notify implements Notifier. For domain.SourceOnDemand events it applies the
 // dedup/rate-limit policy (suppressing repeats of the same tunnel within
 // onDemandDedupWindow, and any switch within onDemandMinInterval of the last
-// one) before enqueueing; SourceStreaming events bypass this entirely and are
-// never suppressed. The enqueue is always non-blocking: a full queue drops
-// the event with a warning rather than stalling the caller.
-func (tn *TelegramNotifier) Notify(_ context.Context, ev Event) {
-	if ev.Source == SourceOnDemand && tn.suppressed(ev.Filename) {
+// one) before enqueueing; domain.SourceStreaming events bypass this entirely
+// and are never suppressed. The enqueue is always non-blocking: a full queue
+// drops the event with a warning rather than stalling the caller.
+func (tn *TelegramNotifier) Notify(_ context.Context, ev domain.TunnelChangeEvent) {
+	if ev.Source == domain.SourceOnDemand && tn.suppressed(ev.Filename) {
 		return
 	}
 
@@ -94,7 +99,7 @@ func (tn *TelegramNotifier) Notify(_ context.Context, ev Event) {
 // exit-IP probe, message formatting, and the Telegram send. It runs on the
 // sender goroutine, using the notifier's own background ctx so a per-call
 // caller ctx cancellation can never abort an in-flight send.
-func (tn *TelegramNotifier) handle(ev Event) {
+func (tn *TelegramNotifier) handle(ev domain.TunnelChangeEvent) {
 	var exit *exitInfo
 	if ev.Dialer != nil {
 		info, err := probeExitIP(tn.ctx, ev.Dialer, tn.probeURL)
@@ -184,9 +189,38 @@ var sendClient = &http.Client{
 	},
 }
 
+// tokenPattern is the Bot API token shape: <bot-id>:<secret>.
+var tokenPattern = regexp.MustCompile(`^\d{9,}:[a-zA-Z0-9_-]{35,}$`)
+
 // notifyJob is one unit of work handed from Notify to the sender goroutine.
 type notifyJob struct {
-	ev Event
+	ev domain.TunnelChangeEvent
+}
+
+// extractIdentity pulls the admin chat ID and bot token out of a DataSource
+// parsed (by the caller) from a VPNTUNNEL_TELEGRAMBOT_DSN of the form
+// tbot://<adminChatID>:@<botToken>/. The token is read from Addr() (the
+// host:port pair), not Password(): a Bot API token is <bot-id>:<secret>, so
+// dsninjector.Parse lands <bot-id> in host and <secret> in port, and Addr()
+// rejoins them. Password() is empty in this form. The token shape is validated
+// before use so a garbage DataSource fails with a shape error rather than
+// surfacing a partial token. Returned errors never contain the token.
+//
+// The DSN-string-to-DataSource parse stays with the caller (main), because
+// dsninjector.Parse can embed its raw input — which IS the token — in its
+// error text; keeping that step out of here keeps this function's errors safe.
+func extractIdentity(ds dsninjector.DataSource) (adminChatID int64, token string, err error) {
+	token = strings.TrimSpace(ds.Addr())
+	if !tokenPattern.MatchString(token) {
+		return 0, "", errors.New("notify: bot token is required")
+	}
+
+	adminChatID, err = strconv.ParseInt(ds.Login(), 10, 64)
+	if err != nil || adminChatID == 0 {
+		return 0, "", errors.New("notify: admin chat id must be a non-zero integer")
+	}
+
+	return adminChatID, token, nil
 }
 
 // newTelegramNotifier builds a TelegramNotifier and starts its sender

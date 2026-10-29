@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"vpntunnel/internal/domain"
-	"vpntunnel/internal/egress"
 	"vpntunnel/internal/infrastructure/observability"
 
 	"github.com/prorochestvo/loginjector"
@@ -71,7 +70,7 @@ func NewProxyService(opts ProxyServiceOptions) *ProxyService {
 // and Verifier (nil disables auth).
 type ProxyServiceOptions struct {
 	// Dialer routes outbound TCP connections. Required.
-	Dialer egress.Dialer
+	Dialer dialer
 	// Access is the rotating access log writer.
 	Access *observability.AccessLogger
 	// OpLog is the operational slog logger. If nil, slog.Default() is used.
@@ -93,10 +92,18 @@ type Verifier interface {
 	Verify(header string) bool
 }
 
+// dialer is the minimal outbound-connection contract the proxy service needs:
+// open a TCP connection through whatever egress it represents. It is declared
+// here, in the sole consumer, so the service depends on no concrete egress
+// implementation; the composition root supplies one (the streaming supervisor).
+type dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
 // ProxyService implements forward HTTP proxying (HandleHTTP) and HTTPS
 // tunnelling (HandleCONNECT). Methods are safe for concurrent use.
 type ProxyService struct {
-	dialer      egress.Dialer
+	dialer      dialer
 	verifier    Verifier
 	httpClient  *http.Client
 	access      *observability.AccessLogger
