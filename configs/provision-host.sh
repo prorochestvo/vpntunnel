@@ -24,7 +24,7 @@ APP=/opt/vpntunnel
 # artifacts/ and bin/, and github_aide is not in the root group. Secret
 # isolation comes from the 0700 root-owned subdirs below, not from locking the
 # base dir — traversing a 0755 dir grants no read of a 0700 child.
-install -d -o root -g root -m 0755 "$APP" "$APP/configs" "$APP/deploy"
+install -d -o root -g root -m 0755 "$APP" "$APP/configs" "$APP/configs/nginx"
 install -d -o root -g root -m 0700 "$APP/configs/auth" "$APP/configs/tls" "$APP/configs/tunnels"
 install -d -o root -g root -m 0750 "$APP/state" "$APP/logs"
 

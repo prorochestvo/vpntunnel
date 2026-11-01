@@ -70,7 +70,7 @@ dist
 .claude/*
 !.claude/commands/
 !.claude/agents/
-!.claude/skills/
+!.claude/skills
 !.claude/settings.json
 !.claude/README.md
 

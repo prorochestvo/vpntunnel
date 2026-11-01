@@ -1,0 +1,205 @@
+version: "2"
+
+# Canonical golangci-lint configuration. Copy to .golangci.yml at the repo root.
+#
+# Two blocks need per-project attention and are marked PROJECT below:
+#   - depguard rules (forbidden dependencies and layer boundaries)
+#   - the exclusions paths list
+# Everything else is the shared standard and should not drift between repos.
+
+run:
+  timeout: 10m
+  tests: true
+  relative-path-mode: gomod
+
+linters:
+  default: none
+  enable:
+    # --- standard baseline ---
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # --- resource & lifecycle correctness ---
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+    - noctx
+    - containedctx
+    - contextcheck
+    - fatcontext
+    - durationcheck
+
+    # --- error discipline ---
+    - errorlint
+    - errchkjson
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - forcetypeassert
+
+    # --- type & value traps ---
+    - recvcheck
+    - makezero
+    - prealloc
+    - unconvert
+    - mirror
+    - perfsprint
+    - asasalint
+    - copyloopvar
+    - intrange
+    - reassign
+    - predeclared
+    - usestdlibvars
+
+    # --- structure & API surface ---
+    - gochecknoinits
+    - nakedret
+    - iface
+    - interfacebloat
+    - funcorder
+    - decorder
+    - depguard
+    - forbidigo
+
+    # --- docs & comments ---
+    - godot
+    - godoclint
+    - dupword
+    - misspell
+
+    # --- tests ---
+    - testifylint
+    - paralleltest
+    - thelper
+    - tparallel
+    - usetesting
+
+    # --- meta ---
+    - gocritic
+    - revive
+    - nolintlint
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # check-blank stays off. The house rule permits `_ = x.Close()` inside a
+      # defer, and errcheck cannot tell that position apart from an error
+      # discarded anywhere else — switching it on reports the documented
+      # exception as a violation.
+      check-blank: false
+      # Documented exceptions to "never discard an error".
+      exclude-functions:
+        - (*database/sql.Tx).Rollback
+        - (github.com/jackc/pgx/v5.Tx).Rollback
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+    govet:
+      enable-all: true
+      disable:
+        # Field ordering is a micro-optimisation that fights readability.
+        - fieldalignment
+
+    depguard:
+      rules:
+        domain-is-pure:
+          list-mode: lax
+          files:
+            - "**/internal/domain/**"
+            - "!**/internal/domain/**/*_test.go"
+          deny:
+            - pkg: net/http
+              desc: domain holds value objects only, no protocol types
+            - pkg: database/sql
+              desc: domain holds value objects only, no persistence concerns
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^time\.Sleep$
+          msg: time-dependent tests are flaky by design; synchronise on an event or inject a clock
+
+    revive:
+      rules:
+        - name: early-return
+        - name: defer
+          arguments:
+            - ["loop", "return", "recover"]
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: errorf
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unnecessary-stmt
+        - name: waitgroup-by-value
+        - name: unused-parameter
+        - name: unreachable-code
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - unnamedResult
+      settings:
+        ruleguard:
+          # failOn: all turns a broken rules file into a hard error. Without it
+          # a typo silently disables every custom rule.
+          failOn: all
+          rules: gorules/rules.go
+
+    funcorder:
+      # Standard-library order: the type declaration first, its constructor
+      # after it, methods below. Enforced on new code only — see the baseline
+      # step in the skill; existing files migrate when they are touched.
+      constructor: true
+      struct-method: true
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    godot:
+      scope: declarations
+
+    interfacebloat:
+      max: 8
+
+    nakedret:
+      max-func-lines: 0
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test files: relax the doc and structure rules, keep the correctness ones.
+      - path: _test\.go
+        linters:
+          - godot
+          - godoclint
+          - funcorder
+          - decorder
+          - errcheck
+          - forcetypeassert
+      # The ruleguard rules file is DSL, not production Go.
+      - path: gorules/
+        linters:
+          - godot
+          - godoclint
+          - funcorder
+          - unused
+    paths:
+      - build
+      - tmp
+      - logs
+
+formatters:
+  enable:
+    - gofmt

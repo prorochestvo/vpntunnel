@@ -24,11 +24,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # lint-new diffs against origin/main, which a shallow clone lacks.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - run: make lint
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-only: true
+      - run: make lint-new
       - run: make test
       # production-shape build: CGO off, output into ./build/, matches what
       # release.yml will ship. Catches the "tests pass but prod build breaks"

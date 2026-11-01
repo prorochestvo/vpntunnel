@@ -40,206 +40,113 @@ import (
 	"syscall"
 	"time"
 
-	"vpntunnel/internal/asyncjob"
-	"vpntunnel/internal/auth"
-	"vpntunnel/internal/config"
-	"vpntunnel/internal/notify"
-	"vpntunnel/internal/observability"
-	"vpntunnel/internal/service"
-	"vpntunnel/internal/transport/apiserver"
-	"vpntunnel/internal/transport/apiserver/apitls"
-	"vpntunnel/internal/transport/apiserver/handlers"
-	"vpntunnel/internal/transport/httpserver"
-	lazy "vpntunnel/internal/tunnel/lazy"
+	"github.com/prorochestvo/dsninjector"
+
+	"vpntunnel/internal/application"
+	"vpntunnel/internal/application/asyncjob"
+	"vpntunnel/internal/application/tunnelpool"
+	"vpntunnel/internal/gateway/httpV1/handlers"
+	"vpntunnel/internal/gateway/httpserver"
+	"vpntunnel/internal/gateway/middleware"
+	"vpntunnel/internal/gateway/router"
+	"vpntunnel/internal/gateway/router/apitls"
+	"vpntunnel/internal/infrastructure/config"
+	"vpntunnel/internal/infrastructure/notify"
+	"vpntunnel/internal/infrastructure/observability"
+	"vpntunnel/internal/policy"
+	"vpntunnel/internal/tools/bearerauth"
+	"vpntunnel/internal/tools/hmackey"
 )
 
-// runOpt is a functional option for runWithOpts, used to override internals in
-// tests without altering the production code path.
-type runOpt func(*runOptions)
-
-// runOptions holds optional overrides for run. Zero value is the production
-// configuration (real WireGuard builder, no injection).
-type runOptions struct {
-	// supervisorBuilder overrides the DeviceBuilderFn for the streaming supervisor.
-	// When nil (the default), DefaultDeviceBuilder is used.
-	supervisorBuilder lazy.DeviceBuilderFn
-	// schedulerBuilder overrides the DeviceBuilderFn for the on-demand scheduler.
-	// When nil (the default), DefaultDeviceBuilder is used.
-	schedulerBuilder lazy.DeviceBuilderFn
-	// shutdownCtx, when non-nil, replaces signal.NotifyContext as the
-	// cancellation source. Test-only seam — production omits this to get the
-	// default signal-handling behaviour. The matching cancel func is held by
-	// the caller; runWithOpts never calls it.
-	shutdownCtx context.Context
-}
-
-// withSupervisorBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the streaming supervisor. Intended for tests only.
-func withSupervisorBuilder(b lazy.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.supervisorBuilder = b }
-}
-
-// withSchedulerBuilder returns a runOpt that injects a fake DeviceBuilderFn
-// into the on-demand scheduler. Intended for tests only.
-func withSchedulerBuilder(b lazy.DeviceBuilderFn) runOpt {
-	return func(o *runOptions) { o.schedulerBuilder = b }
-}
-
-// withShutdownCtx returns a runOpt that replaces signal.NotifyContext with the
-// caller-owned context as the shutdown trigger. Test-only seam.
-func withShutdownCtx(ctx context.Context) runOpt {
-	return func(o *runOptions) { o.shutdownCtx = ctx }
-}
-
-// tlsOptions carries the TLS settings sourced from CLI flags, parsed and
-// validated before runWithOpts is called. Relative cert-dir paths are resolved
-// against the process cwd during parsing; production default is absolute.
-type tlsOptions struct {
-	// CertDir is the directory holding the API TLS cert/key. Always absolute.
-	CertDir string
-	// Hostname is the TLS server name embedded in the certificate.
-	Hostname string
-	// IPSANs is the optional list of IP Subject Alternative Names.
-	IPSANs []net.IP
-}
-
-// parseTLSOptions validates and resolves the raw CLI flag values into a
-// tlsOptions ready for use. An empty certDir is the HTTP-mode trigger: it is
-// preserved as-is (not resolved via filepath.Abs, which would return the cwd
-// and silently re-enable HTTPS). A non-empty relative CertDir is resolved
-// against the process cwd via filepath.Abs. Returns a descriptive error for
-// any invalid input.
-func parseTLSOptions(certDir, hostname, ipSANsRaw string) (tlsOptions, error) {
-	if hostname == "" {
-		return tlsOptions{}, errors.New("-tls-hostname: must not be empty")
-	}
-
-	// parse IP SANs once; both the HTTP-mode early return and the HTTPS path use
-	// the same result.
-	var ipSANs []net.IP
-	for _, raw := range strings.Split(ipSANsRaw, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		ip := net.ParseIP(raw)
-		if ip == nil {
-			return tlsOptions{}, fmt.Errorf("-tls-ip-sans: %q is not a valid IP address", raw)
-		}
-		ipSANs = append(ipSANs, ip)
-	}
-
-	if certDir == "" {
-		// empty cert dir is the HTTP-mode trigger: leave CertDir empty (do NOT
-		// resolve it to an absolute path, which would yield the cwd and silently
-		// re-enable HTTPS). Hostname stays required but its only use is the cert
-		// SAN, so it is harmless when no cert is generated.
-		return tlsOptions{CertDir: "", Hostname: hostname, IPSANs: ipSANs}, nil
-	}
-
-	resolvedDir := certDir
-	if !filepath.IsAbs(certDir) {
-		abs, err := filepath.Abs(certDir)
-		if err != nil {
-			return tlsOptions{}, fmt.Errorf("-tls-cert-dir: resolve %q: %w", certDir, err)
-		}
-		resolvedDir = abs
-	}
-
-	return tlsOptions{
-		CertDir:  resolvedDir,
-		Hostname: hostname,
-		IPSANs:   ipSANs,
-	}, nil
-}
-
 func main() {
-	var configPath string
-	var tlsCertDir string
-	var tlsHostname string
-	var tlsIPSANsRaw string
-	flag.StringVar(&configPath, "config", "./configs/proxy.json", "path to JSON config file")
+	cfg, cert, opLog, err := bootstrap()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	// the signal handler is installed only after bootstrap's blocking startup
+	// I/O (config read, cert load/generate) has finished. Until a handler
+	// exists SIGINT/SIGTERM keeps its default action and kills the process
+	// immediately; installing it earlier would capture the signal into a
+	// context nothing is watching yet, leaving startup uninterruptible.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, cfg, cert, opLog, tunnelpool.DefaultDeviceBuilder, tunnelpool.DefaultDeviceBuilder); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// telegramAppTag is the app-identity prefix injected into every Telegram
+// notification (see notify.NewTelegram). It is non-secret and safe to log.
+const telegramAppTag = "#VPNTUNNEL"
+
+// bootstrap parses the process CLI flags and turns them into the finished
+// startup objects run needs: the validated configuration, the API TLS
+// certificate (nil in plain-HTTP mode), and the operational logger. The order
+// is forced — the logger is built from cfg.Operational, and the TLS
+// load/generate step logs through it — so config load, logger construction and
+// cert load all happen here rather than inside run.
+//
+// It calls flag.Parse, so it is only ever called from main, never from a test:
+// flag.Parse in a test process hits the -test.* flags and aborts.
+func bootstrap() (config.Config, *tls.Certificate, *slog.Logger, error) {
+	var (
+		rawConfigPath string
+		tlsCertDir    string
+		tlsHostname   string
+		tlsIPSANsRaw  string
+	)
+	flag.StringVar(&rawConfigPath, "config", "./configs/proxy.json", "path to JSON config file")
 	flag.StringVar(&tlsCertDir, "tls-cert-dir", "", "directory holding the API TLS cert/key; empty runs the API as plain HTTP (loopback/dev only). Relative resolves against CWD.")
 	flag.StringVar(&tlsHostname, "tls-hostname", "localhost", "TLS server name embedded in the API certificate")
 	flag.StringVar(&tlsIPSANsRaw, "tls-ip-sans", "", "comma-separated list of IP Subject Alternative Names")
 	flag.Parse()
 
-	// resolve to an absolute path immediately so that configDir, tunnelsDir, and
-	// every operator-facing error message are absolute and cwd-independent.
-	absPath, err := filepath.Abs(configPath)
+	// resolve the config path so cfg.Dir, tunnelsDir, and every operator-facing
+	// error message are cwd-independent.
+	configPath, err := filepath.Abs(rawConfigPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, fmt.Errorf("resolve config path %q: %w", configPath, err))
-		os.Exit(1)
+		return config.Config{}, nil, nil, fmt.Errorf("resolve config path %q: %w", rawConfigPath, err)
 	}
 
-	tlsOpts, err := parseTLSOptions(tlsCertDir, tlsHostname, tlsIPSANsRaw)
+	certDir, err := resolveCertDir(tlsCertDir)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := run(absPath, tlsOpts); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}
-
-// run is the production entry point. It delegates to runWithOpts with no
-// option overrides.
-func run(configPath string, tlsOpts tlsOptions) error {
-	return runWithOpts(configPath, tlsOpts)
-}
-
-// resolveAuthToken returns the Bearer token to enforce. An empty string means
-// auth is disabled. When a.TokenFile is set, the file is read and its contents
-// are trimmed of surrounding whitespace; relative paths are resolved against
-// configDir. The token value is never returned in any error message.
-//
-// Precondition: not both Token and TokenFile are non-empty (enforced by config
-// validation). If that precondition is violated, Token takes precedence.
-func resolveAuthToken(a config.Auth, configDir string) (string, error) {
-	if a.Token != "" {
-		return strings.TrimSpace(a.Token), nil
-	}
-	if a.TokenFile == "" {
-		return "", nil
-	}
-	path := a.TokenFile
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(configDir, path)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read auth.token_file %s: %w", path, err)
-	}
-	tok := strings.TrimSpace(string(raw))
-	if tok == "" {
-		return "", fmt.Errorf("auth.token_file %s: token is empty after trim", path)
-	}
-	return tok, nil
-}
-
-// runWithOpts is the full startup / run / shutdown path. tlsOpts carries the TLS
-// settings resolved from CLI flags. opts allow tests to inject fakes (e.g. a
-// fake device builder) without altering the production path.
-func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
-	var ro runOptions
-	for _, o := range opts {
-		o(&ro)
+		return config.Config{}, nil, nil, err
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return config.Config{}, nil, nil, fmt.Errorf("load config: %w", err)
 	}
 
-	// wrap the base slog handler with a scrub handler that redacts host:port
-	// patterns from all operational log messages and attributes.
-	baseOpLog := observability.NewOperationalLogger(cfg.Operational)
-	scrubbed := observability.NewScrubHandler(baseOpLog.Handler())
-	opLog := slog.New(scrubbed)
-	opLog.Info("operational log scrubbing active", slog.String("strategy", "host-port-redact"))
+	opLog := newOperationalLogger(cfg.Operational)
 
+	cert, err := loadAPICert(certDir, tlsHostname, tlsIPSANsRaw, cfg.API.Listen, opLog)
+	if err != nil {
+		return config.Config{}, nil, nil, err
+	}
+
+	return cfg, cert, opLog, nil
+}
+
+// run is the full startup / run / shutdown path. ctx is the caller-owned
+// shutdown trigger: cancelling it starts the graceful shutdown sequence. cfg,
+// cert and opLog are the finished objects bootstrap produced; a nil cert means
+// the API listener serves plain HTTP. streamingBuilder and onDemandBuilder
+// construct the tunnel devices for the always-on streaming supervisor and the
+// on-demand scheduler respectively; production passes
+// tunnelpool.DefaultDeviceBuilder for both, tests pass a fake.
+func run(
+	ctx context.Context,
+	cfg config.Config,
+	cert *tls.Certificate,
+	opLog *slog.Logger,
+	streamingBuilder tunnelpool.DeviceBuilderFn,
+	onDemandBuilder tunnelpool.DeviceBuilderFn,
+) error {
 	// build the Telegram tunnel-change notifier from the environment. Absent or
 	// malformed input both leave the proxy running: a bad DSN is auxiliary
 	// telemetry misconfiguration, never a reason to crash-loop the actual
@@ -247,11 +154,18 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// notifier later) purely for its Close lifecycle at shutdown.
 	var notifier notify.Notifier = notify.Nop{}
 	var tgNotifier *notify.TelegramNotifier
-	if dsn := os.Getenv("VPNTUNNEL_TELEGRAMBOT_DSN"); dsn != "" {
-		tn, err := notify.NewTelegram(dsn, opLog)
-		if err != nil {
-			// NewTelegram returns a redacted error (never the DSN or the bot
-			// token); warn and keep running with notifications disabled.
+	if dsn := os.Getenv(policy.EnvTelegramBotDSN); dsn != "" {
+		// dsninjector.Parse embeds its raw input — which IS the bot token — in
+		// its error text, so a parse failure must NEVER log or format that error;
+		// it warns with a generic message only. The DataSource is built here (not
+		// inside notify) so the token-bearing parse error never crosses into the
+		// notify package.
+		ds, perr := dsninjector.Parse(dsn)
+		if perr != nil {
+			opLog.Warn("telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN")
+		} else if tn, err := notify.NewTelegram(ds, telegramAppTag, opLog); err != nil {
+			// NewTelegram returns a safe error (never the DSN or the bot token);
+			// warn and keep running with notifications disabled.
 			opLog.Warn("telegram notifier disabled: invalid VPNTUNNEL_TELEGRAMBOT_DSN",
 				slog.String("err", err.Error()),
 			)
@@ -280,25 +194,18 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	opLog.Info("access log sanitiser configured", slog.Int("patterns", len(sanitizers)))
 	defer func() { _ = access.Close() }()
 
-	// set up the shutdown context early so that a hung startup DNS lookup is
-	// interrupted. In production, signal.NotifyContext is used; in tests a
-	// caller-owned context is injected via withShutdownCtx to avoid sending
-	// SIGTERM to the entire test process.
-	var ctx context.Context
-	var stop context.CancelFunc
-	if ro.shutdownCtx != nil {
-		ctx, stop = context.WithCancel(ro.shutdownCtx)
-	} else {
-		ctx, stop = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	}
+	// derive a cancellable child of the caller's shutdown context so the deferred
+	// stop bounds a hung startup (e.g. a stalled DNS lookup) and releases every
+	// goroutine started below on all return paths, not only the shutdown one.
+	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	configDir := filepath.Dir(configPath)
+	configDir := cfg.Dir
 
 	// discover all *.conf files in <configDir>/tunnels/. Discovery never parses
 	// file contents — it returns a sorted list of absolute paths.
 	tunnelsDir := filepath.Join(configDir, "tunnels")
-	discovered, err := lazy.DiscoverConfigs(tunnelsDir)
+	discovered, err := tunnelpool.DiscoverConfigs(tunnelsDir)
 	if err != nil {
 		return fmt.Errorf("discover tunnel configs: %w", err)
 	}
@@ -307,7 +214,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		slog.Int("count", len(discovered)),
 	)
 
-	hmacKey, err := loadOrGenerateTunnelIDKey(cfg.TunnelIDHMACKeyFile, configDir, opLog)
+	hmacKey, err := hmackey.LoadOrGenerate(cfg.TunnelIDHMACKeyFile, configDir, opLog)
 	if err != nil {
 		return fmt.Errorf("load tunnel-id hmac key: %w", err)
 	}
@@ -315,7 +222,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// build the full set first — covers every discovered config, used by the
 	// on-demand scheduler and the API ZoneChecker. An empty discovered set is
 	// caught here before the country-filter check below.
-	fullSet, err := lazy.NewFullSet(discovered, configDir, hmacKey)
+	fullSet, err := tunnelpool.NewFullSet(discovered, configDir, hmacKey)
 	if err != nil {
 		return fmt.Errorf("build full tunnel set: %w", err)
 	}
@@ -330,7 +237,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// streaming supervisor's random pick. An empty result after filtering means
 	// allowed_countries matches nothing; the supervisor is mandatory so this is
 	// a fatal startup error (RandomPath panics on an empty set).
-	streamingSet, err := lazy.NewEligibleSet(discovered, configDir, cfg.VPNStream.AllowedCountries)
+	streamingSet, err := tunnelpool.NewEligibleSet(discovered, configDir, cfg.VPNStream.AllowedCountries)
 	if err != nil {
 		return fmt.Errorf("build streaming tunnel set: %w", err)
 	}
@@ -338,20 +245,29 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// single-key guard runs over the full discovered set (pre-country-filter) so
 	// the single-account invariant is enforced across all configs the operator
 	// deposited, not just the ones currently enabled by allowed_countries.
-	if err := lazy.VerifySingleKey(discovered, configDir, opLog); err != nil {
+	if err := tunnelpool.VerifySingleKey(discovered, configDir, opLog); err != nil {
 		return fmt.Errorf("single-key guard: %w", err)
 	}
 
+	// a signal delivered while the startup I/O above was running cancelled ctx
+	// before anything was watching it. Check once here, before the first
+	// goroutine and listener, so startup aborts instead of building the whole
+	// daemon only to tear it straight back down.
+	if ctx.Err() != nil {
+		opLog.Info("shutdown signal received during startup; aborting before any listener starts")
+		return nil
+	}
+
 	// build the streaming supervisor (always-on role).
-	supervisor := lazy.NewStreamingSupervisor(lazy.SupervisorOptions{
+	supervisor := tunnelpool.NewStreamingSupervisor(tunnelpool.SupervisorOptions{
 		Eligible:        streamingSet,
-		DeviceBuilder:   ro.supervisorBuilder,
-		HandshakeMaxAge: lazy.DefaultHandshakeMaxAge,
+		DeviceBuilder:   streamingBuilder,
+		HandshakeMaxAge: tunnelpool.DefaultHandshakeMaxAge,
 		ReconnectMin:    cfg.VPNStream.ReconnectMin,
 		ReconnectMax:    cfg.VPNStream.ReconnectMax,
 		// RotateSettle reuses the operator-tuned on-demand settle delay so the
 		// streaming role's rotate honours the same Mullvad-session-free window
-		// without the lazy package importing on-demand config. SettleDelay
+		// without the tunnelpool package importing on-demand config. SettleDelay
 		// always resolves to a valid value (default 15s, 5s minimum,
 		// config.go validation).
 		RotateSettle: cfg.API.VPN.Demand.SettleDelay,
@@ -364,9 +280,9 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	}
 
 	// build the on-demand scheduler.
-	scheduler := lazy.NewOnDemandScheduler(lazy.SchedulerOptions{
+	scheduler := tunnelpool.NewOnDemandScheduler(tunnelpool.SchedulerOptions{
 		Eligible:      fullSet,
-		DeviceBuilder: ro.schedulerBuilder,
+		DeviceBuilder: onDemandBuilder,
 		SettleDelay:   cfg.API.VPN.Demand.SettleDelay,
 		Grace:         cfg.API.VPN.Demand.Grace,
 		IdleTTL:       cfg.API.VPN.Demand.IdleTTL,
@@ -445,9 +361,9 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		return fmt.Errorf("resolve auth token: %w", err)
 	}
 
-	var verifier auth.Verifier
+	var verifier application.Verifier
 	if authToken != "" {
-		verifier = auth.NewBearerVerifier(authToken)
+		verifier = bearerauth.NewBearerVerifier(authToken)
 		source := "inline"
 		if cfg.VPNStream.Auth.TokenFile != "" {
 			source = "file=" + filepath.Base(cfg.VPNStream.Auth.TokenFile)
@@ -461,29 +377,12 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	}
 
 	// wire the API tokens and TLS certificate for the HTTPS API listener.
-	tokens, err := apiserver.LoadTokens(cfg.API.Auth, configDir)
+	tokens, err := middleware.LoadTokens(cfg.API.Auth, configDir)
 	if err != nil {
 		return fmt.Errorf("load api tokens: %w", err)
 	}
 	// log token count (never values, never individual lengths beyond the count).
-	opLog.Info("api tokens loaded", slog.Int("token_count", apiserver.TokenRoleCount))
-
-	var cert *tls.Certificate
-	if tlsOpts.CertDir == "" {
-		opLog.Warn("API running WITHOUT TLS — bearer tokens are sent in plaintext; intended for loopback/dev only",
-			slog.String("api_listen", cfg.API.Listen),
-		)
-	} else {
-		c, fp, err := apitls.LoadOrGenerate(tlsOpts.CertDir, tlsOpts.Hostname, tlsOpts.IPSANs, opLog)
-		if err != nil {
-			return fmt.Errorf("load tls cert: %w", err)
-		}
-		cert = c
-		opLog.Info("API TLS enabled",
-			slog.String("cert_dir", tlsOpts.CertDir),
-			slog.String("sha256_fingerprint", fp),
-		)
-	}
+	opLog.Info("api tokens loaded", slog.Int("token_count", middleware.TokenRoleCount))
 
 	// svc is constructed before apiSrv (reordered from the historical layout)
 	// so the rotateAdapter below can close over it: apiSrv's Options
@@ -491,7 +390,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	// store, jobPool, access, opLog (never svc), and svc's Options reference
 	// only supervisor, verifier, access, opLog, cfg (never apiSrv) — the two
 	// constructions are independent, so reordering changes no behaviour.
-	svc := service.NewProxyService(service.ProxyServiceOptions{
+	proxy := application.NewProxyService(application.ProxyServiceOptions{
 		Dialer:      supervisor,
 		Verifier:    verifier,
 		Access:      access,
@@ -499,7 +398,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		DialTimeout: cfg.VPNStream.DialTimeout,
 	})
 
-	apiSrv := apiserver.New(apiserver.Options{
+	apiSrv := router.New(router.Options{
 		Addr:                cfg.API.Listen,
 		ShutdownTimeout:     cfg.API.ShutdownTimeout,
 		Cert:                cert,
@@ -511,21 +410,21 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		MaxRequestBodyBytes: cfg.API.MaxRequestBodyBytes,
 		UpstreamTimeout:     cfg.API.VPN.Timeout,
 		MaxUpstreamTimeout:  cfg.API.VPN.MaxTimeout,
-		HealthMaxAge:        lazy.DefaultHandshakeMaxAge,
+		HealthMaxAge:        tunnelpool.DefaultHandshakeMaxAge,
 		JobCounter:          store,
 		JobPool:             jobPool,
 		Access:              access,
-		Rotator:             rotateAdapter{sup: supervisor, svc: svc},
+		Rotator:             rotateAdapter{sup: supervisor, svc: proxy},
 	}, opLog)
 
-	srv := httpserver.New(httpserver.Options{
+	vpnSrv := httpserver.New(httpserver.Options{
 		Listen:            cfg.VPNStream.Listen,
 		ReadHeaderTimeout: cfg.VPNStream.DialTimeout,
 		IdleTimeout:       cfg.VPNStream.IdleTimeout,
-	}, svc, opLog)
+	}, proxy, opLog)
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- srv.Start() }()
+	go func() { errCh <- vpnSrv.Start() }()
 	go func() { errCh <- apiSrv.Start() }()
 
 	select {
@@ -534,7 +433,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 		// before returning so we don't leak a goroutine into the cleanup path.
 		earlyCtx, earlyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer earlyCancel()
-		_ = srv.Shutdown(earlyCtx)
+		_ = vpnSrv.Shutdown(earlyCtx)
 		_ = apiSrv.Shutdown(earlyCtx)
 		return fmt.Errorf("server start: %w", err)
 	case <-ctx.Done():
@@ -555,7 +454,7 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	defer cancel()
 
 	var shutdownErr error
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := vpnSrv.Shutdown(shutdownCtx); err != nil {
 		opLog.Error("proxy shutdown failed", "err", err.Error())
 		shutdownErr = fmt.Errorf("proxy shutdown: %w", err)
 	}
@@ -620,4 +519,118 @@ func runWithOpts(configPath string, tlsOpts tlsOptions, opts ...runOpt) error {
 	}
 	opLog.Info("shutdown complete")
 	return nil
+}
+
+// loadAPICert returns the API TLS certificate, or (nil, nil) when certDir is
+// empty — the plain-HTTP mode trigger. hostname is the server name embedded in
+// the certificate and is required in both modes; ipSANsRaw is the raw
+// comma-separated -tls-ip-sans flag value, validated in both modes so a typo is
+// reported even when no certificate is minted. apiListen is used only as an
+// attribute on the no-TLS warning.
+//
+// The only certificate facts logged are the cert dir and the SHA256
+// fingerprint; key material never reaches a log line.
+func loadAPICert(certDir, hostname, ipSANsRaw, apiListen string, opLog *slog.Logger) (*tls.Certificate, error) {
+	if hostname == "" {
+		return nil, errors.New("-tls-hostname: must not be empty")
+	}
+
+	ipSANs, err := parseIPSANs(ipSANsRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	if certDir == "" {
+		opLog.Warn("API running WITHOUT TLS — bearer tokens are sent in plaintext; intended for loopback/dev only",
+			slog.String("api_listen", apiListen),
+		)
+		return nil, nil
+	}
+
+	cert, fp, err := apitls.LoadOrGenerate(certDir, hostname, ipSANs, opLog)
+	if err != nil {
+		return nil, fmt.Errorf("load tls cert: %w", err)
+	}
+	opLog.Info("API TLS enabled",
+		slog.String("cert_dir", certDir),
+		slog.String("sha256_fingerprint", fp),
+	)
+	return cert, nil
+}
+
+// newOperationalLogger builds the operational logger wrapped in the scrub
+// handler that redacts host:port patterns from every message and attribute. It
+// is a named function rather than three inline lines so production and tests
+// construct identically-configured loggers.
+//
+// The underlying handler binds os.Stdout at construction time: a caller that
+// redirects os.Stdout must do so before calling this.
+func newOperationalLogger(cfg config.Operational) *slog.Logger {
+	base := observability.NewOperationalLogger(cfg)
+	opLog := slog.New(observability.NewScrubHandler(base.Handler()))
+	opLog.Info("operational log scrubbing active", slog.String("strategy", "host-port-redact"))
+	return opLog
+}
+
+// parseIPSANs parses the comma-separated -tls-ip-sans flag value into IP
+// Subject Alternative Names. Blank entries (including the one a trailing comma
+// produces) are skipped; an unparseable entry is an error naming the offending
+// value.
+func parseIPSANs(raw string) ([]net.IP, error) {
+	var ipSANs []net.IP
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		ip := net.ParseIP(entry)
+		if ip == nil {
+			return nil, fmt.Errorf("-tls-ip-sans: %q is not a valid IP address", entry)
+		}
+		ipSANs = append(ipSANs, ip)
+	}
+	return ipSANs, nil
+}
+
+// resolveAuthToken returns the Bearer token to enforce. An empty string means
+// auth is disabled. When a.TokenFile is set, the file is read and its contents
+// are trimmed of surrounding whitespace; relative paths are resolved against
+// configDir. The token value is never returned in any error message.
+//
+// Precondition: not both Token and TokenFile are non-empty (enforced by config
+// validation). If that precondition is violated, Token takes precedence.
+func resolveAuthToken(a config.Auth, configDir string) (string, error) {
+	if a.Token != "" {
+		return strings.TrimSpace(a.Token), nil
+	}
+	if a.TokenFile == "" {
+		return "", nil
+	}
+	path := a.TokenFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(configDir, path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read auth.token_file %s: %w", path, err)
+	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
+		return "", fmt.Errorf("auth.token_file %s: token is empty after trim", path)
+	}
+	return tok, nil
+}
+
+// resolveCertDir returns certDir as an absolute path. An empty certDir is the
+// plain-HTTP mode trigger and is preserved as-is: filepath.Abs("") returns the
+// cwd, which would silently re-enable HTTPS against an unintended directory.
+func resolveCertDir(certDir string) (string, error) {
+	if certDir == "" || filepath.IsAbs(certDir) {
+		return certDir, nil
+	}
+	abs, err := filepath.Abs(certDir)
+	if err != nil {
+		return "", fmt.Errorf("-tls-cert-dir: resolve %q: %w", certDir, err)
+	}
+	return abs, nil
 }

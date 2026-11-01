@@ -3,15 +3,19 @@ module vpntunnel
 go 1.26
 
 require (
+	github.com/go-telegram/bot v1.22.0
 	github.com/prorochestvo/dsninjector v0.0.2
+	github.com/prorochestvo/loginjector v1.0.8
 	github.com/stretchr/testify v1.11.1
 	go.etcd.io/bbolt v1.4.3
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
-require golang.org/x/net v0.55.0 // indirect
+require (
+	github.com/quasilyte/go-ruleguard/dsl v0.3.23 // indirect
+	golang.org/x/net v0.55.0 // indirect
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

@@ -1,6 +1,0 @@
-private_key=0000000000000000000000000000000000000000000000000000000000000000
-public_key=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-endpoint=192.0.2.1:51820
-persistent_keepalive_interval=25
-allowed_ip=0.0.0.0/0
-allowed_ip=::/0
